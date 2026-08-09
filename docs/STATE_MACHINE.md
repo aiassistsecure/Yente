@@ -10,15 +10,15 @@ being sent must never imply a meeting.
 
 ## 1. Person
 
-A person carries their population as a role, and can hold both roles at once — a
-hedge fund partner is a member when hiring and a candidate when raising. Each
-role runs its own instance of this machine.
+A person carries their role independently, and can hold both at once — an angel
+who is also building a product is an investor in one relationship and a founder
+in another. Each role runs its own instance of this machine.
 
 ```
                      ┌──────────┐
                      │   NEW    │  first seen: wrote in, or was CC'd
                      └────┬─────┘
-                          │ triage assigns population
+                          │ triage assigns role
                           ▼
                   ┌────────────────┐
                   │  INTERVIEWING  │  multi-turn, 1–2 questions per message
@@ -47,45 +47,45 @@ would violate INV-3 downstream.
 
 ## 2. Proposal
 
-One proposal occupies one of a member's 2–5 slots for its entire life.
+One proposal occupies one of a recipient's 2–5 slots for its entire life.
 
 ```
         match scored, both directions fire, above threshold
                           │
-                          │  slot available?  ──no──▶ QUEUED (not sent)
+                          │  slot available? ──no──▶ QUEUED (not sent)
                           ▼
                    ┌─────────────┐
-                   │  PROPOSED   │  member sees candidate + reason + evidence
-                   └──┬───┬───┬──┘
-        member passes │   │   │ member interested
-                      │   │   │
-       ┌──────────────┘   │   └──────────────┐
-       ▼                  │                  ▼
-  DECLINED_MEMBER         │          ┌────────────────┐
-                          │          │ CANDIDATE_ASKED│  availability requested
-             no response  │          └───┬────────┬───┘
-             by N days    │   candidate  │        │ candidate confirms
-                          ▼    passes    ▼        ▼
-                      EXPIRED        DECLINED_  ┌──────────────┐
-                   (one reminder     CANDIDATE  │ INVITE_SENT  │
-                    at midpoint)                └──────┬───────┘
-                                                       │
-                                                       ▼
-                                              (see meeting machine)
+                   │  PROPOSED   │  recipient sees the match, reason, evidence
+                   └──┬───────┬──┘
+      recipient passes│       │recipient interested
+                      │       ▼
+                      │  ┌────────────────┐
+                      │  │  SUBJECT_ASKED │  availability requested
+                      │  └───┬────────┬───┘
+                      │      │        │ they confirm
+                      │      │        ▼
+                      │      │  ┌──────────────┐
+                      │      │  │ INVITE_SENT  │──▶ (meeting machine)
+                      │      │  └──────────────┘
+                      │      │ they pass
+                      ▼      ▼
+        DECLINED_RECIPIENT  DECLINED_SUBJECT
+
+        no response by N days (one reminder at midpoint) ──▶ EXPIRED
 ```
 
 **Every terminal state reopens the slot**, whichever arrives first:
-`DECLINED_MEMBER` · `DECLINED_CANDIDATE` · `EXPIRED` · and all meeting terminals.
+`DECLINED_RECIPIENT` · `DECLINED_SUBJECT` · `EXPIRED` · and all meeting terminals.
 
 ### Rules
 
 - **One reminder, at the midpoint of N.** Then expire. No third message.
 - **A queued match is not a sent proposal.** Queued matches age out and are
   re-scored rather than sat on — a fit that was true a month ago may not be.
-- **A pass is never re-proposed within the same cycle.** Re-suggesting a rejected
-  candidate is the behavior that makes a desk feel like spam.
-- **The reason ships with the proposal, not after.** The member decides using the
-  same evidence CCME used.
+- **A pass is never re-proposed within the same cycle.** Re-suggesting someone
+  already rejected is the behavior that makes a desk feel like spam.
+- **The reason ships with the proposal, not after.** The recipient decides using
+  the same evidence CCME used.
 
 ---
 
@@ -124,19 +124,19 @@ than asserted.
 ## 4. Triage — the entry point for every inbound message
 
 One typed tool call per message, before any other logic (INV-1). It answers: who,
-which population, what state, what intent.
+which role, what state, what intent.
 
 | intent | condition | action |
 |---|---|---|
-| `new_inbound` | sender unknown | enroll, assign population, start interview |
+| `new_inbound` | sender unknown | enroll, assign role, start interview |
 | `interview_answer` | sender INTERVIEWING | advance interview |
-| `proposal_interested` | member has live proposal | → CANDIDATE_ASKED |
-| `proposal_pass` | member has live proposal | → DECLINED_MEMBER, reopen slot |
-| `candidate_available` | candidate was asked | → INVITE_SENT |
+| `proposal_interested` | recipient has live proposal | → SUBJECT_ASKED |
+| `proposal_pass` | recipient has live proposal | → DECLINED_RECIPIENT, reopen slot |
+| `availability_reply` | the other side was asked | → INVITE_SENT |
 | `invite_response` | invite outstanding | accept / decline / reschedule |
 | `reschedule_request` | meeting scheduled | → RESCHEDULING |
 | `unsubscribe` | any | → STOPPED (INV-5) |
-| `delete_me` | any | → DELETED (INV-7) |
+| `delete_me` | any | → DELETED (INV-9) |
 | `question_or_other` | any | answer if answerable, else escalate |
 | `unknown` | anything else | **escalate — do not reply** |
 
@@ -153,10 +153,11 @@ more trustworthy behavior. Same principle, applied to the inbox.
 
 ## 5. CC handling
 
-When a member CCs CCME on a thread with other participants:
+When someone CCs CCME on a thread with other participants:
 
-1. Each other participant is enrolled as a **candidate** (`NEW`), with provenance
-   recording the thread and the member who surfaced them.
-2. CCME may email them to begin an interview — this is the intended mechanic.
-3. Their enrollment is subject to every ordinary rule: unsubscribe, deletion, the
-   confidence threshold, and the slot cap of whichever member they are matched to.
+1. Each other participant is enrolled (`NEW`), with provenance recording the
+   thread and who surfaced them. Triage assigns the role — founder or investor.
+2. CCME emails them to begin an interview. This is the intended mechanic, not a
+   side effect; it is what the product is named after.
+3. Enrollment is subject to every ordinary rule: unsubscribe, deletion, the
+   confidence threshold, and the slot cap on whoever they are matched to.

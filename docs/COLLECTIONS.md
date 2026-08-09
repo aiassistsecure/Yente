@@ -24,7 +24,7 @@ Every inbound and outbound email. The audit spine.
 | `subject` | string | |
 | `body_text` | string | plain text; HTML stripped on ingest |
 | `has_attachment` | bool | |
-| `cc_addresses` | array | drives candidate enrollment |
+| `cc_addresses` | array | drives CC enrollment (SPEC §2.2) |
 | `triage_intent` | enum | null for outbound |
 | `triage_confidence` | number | |
 
@@ -34,7 +34,7 @@ Every inbound and outbound email. The audit spine.
 
 ## `people`
 One record per human. **Roles are separate from the person** — the same person can
-be a member in one relationship and a candidate in another.
+be a founder in one relationship and an investor in another.
 
 | field | type | notes |
 |---|---|---|
@@ -42,38 +42,41 @@ be a member in one relationship and a candidate in another.
 | `display_name` | string | |
 | `org_name` | string | |
 | `stopped_at` | date | INV-5; blocks all outbound when set |
-| `deleted_at` | date | INV-7 |
+| `deleted_at` | date | INV-9 |
+| `founding_member_no` | number | 1–1000, free for life; **badge only, never read during matching (INV-7)** |
+| `contribution_state` | enum | `none` \| `contributing`; **never read during matching (INV-7)** |
 
 `caused_by`: the message that first surfaced them.
 
 ---
 
 ## `roles`
-A person's participation as a member or a candidate. One person may hold both.
+A person's participation as a founder, an investor, or a builder. One person may
+hold several.
 
 | field | type | notes |
 |---|---|---|
 | `person_address` | string | |
-| `population` | enum | `member` \| `candidate` |
+| `role` | enum | `founder` \| `investor` \| `builder` |
 | `state` | enum | see STATE_MACHINE.md §1 |
-| `member_kind` | enum | `employer` \| `investor` \| `hedge_fund` \| `marketing_partner` \| `influencer` \| `other` — null for candidates |
-| `sourced_by` | string | for CC-enrolled candidates, the member whose thread surfaced them |
-| `slot_cap` | number | members only, 2–5, default 3 |
-| `timeout_days` | number | members only, default 7 |
+| `investor_kind` | enum | `angel` \| `vc` \| `fund` \| `other` — null for founders |
+| `sourced_by` | string | for CC-enrolled people, who surfaced them |
+| `slot_cap` | number | 2–5, default 3 |
+| `timeout_days` | number | default 7 |
 
 `caused_by`: the message that created the role.
 
 ---
 
 ## `interviews`
-The stated side of the join. Both populations are interviewed (SPEC §7).
+The stated side of the join. Both sides are interviewed (SPEC §8).
 
 | field | type | notes |
 |---|---|---|
 | `role_id` | string | |
 | `state` | enum | `open` \| `complete` \| `incomplete` |
 | `turns` | array | question/answer pairs, each citing a message |
-| `ideal_profile` | object | the typed result — ideal candidate, or ideal member |
+| `ideal_profile` | object | the typed result — founder profile, or investor thesis |
 | `confidence` | number | below threshold ⇒ `incomplete`, excluded from matching |
 
 `caused_by`: every inbound message that contributed an answer.
@@ -81,7 +84,7 @@ The stated side of the join. Both populations are interviewed (SPEC §7).
 ---
 
 ## `attributes`
-Extracted capability and intent. **Capability and intent only** (INV-6).
+Extracted capability, traction and intent. **Never sensitive attributes** (INV-8).
 
 | field | type | notes |
 |---|---|---|
@@ -95,7 +98,7 @@ Extracted capability and intent. **Capability and intent only** (INV-6).
 **Rows graded `INVENTED` are stored and never matched.** Keeping them measures
 drift over time; matching them would mean lying to someone.
 
-**No protected attribute or proxy is ever written here.** A CI linter enforces it
+**No sensitive attribute or proxy is ever written here.** A CI linter enforces it
 against both the taxonomy and the extraction schema (D5).
 
 `caused_by`: the extraction run or the interview turn.
@@ -107,7 +110,7 @@ Computed, scored, both directions required.
 
 | field | type | notes |
 |---|---|---|
-| `member_role_id` / `candidate_role_id` | string | |
+| `recipient_role_id` / `subject_role_id` | string | who receives the proposal, who it is about |
 | `score` | number | |
 | `above_threshold` | bool | false ⇒ never proposed (INV-3) |
 | `reason` | string | plain English, built from stored evidence spans |
@@ -128,7 +131,7 @@ existing must never imply a proposal.
 | field | type | notes |
 |---|---|---|
 | `match_id` | string | |
-| `member_role_id` | string | the slot owner |
+| `recipient_role_id` | string | the slot owner |
 | `state` | enum | see STATE_MACHINE.md §2 |
 | `proposed_at` | date | slot occupied from here |
 | `reminded_at` | date | at most one, at midpoint of N |
@@ -138,7 +141,7 @@ existing must never imply a proposal.
 `caused_by`: the match, plus the messages carrying each party's answer.
 
 ### The slot query
-Live proposals for a member are those with `closed_at` unset. The cap (INV-2) is
+Live proposals for a person are those with `closed_at` unset. The cap (INV-2) is
 asserted inside the proposal function against this query, under a lock, so a
 concurrency race cannot exceed it (D3).
 
@@ -179,8 +182,8 @@ answerable with `AS OF`, including which weights were running.
 ```
 TRACE caused_by starting at a meeting:
 
-  meeting ─▶ proposal ─▶ match ─┬▶ member interview   ─▶ inbound messages
-                                ├▶ candidate interview ─▶ inbound messages
+  meeting ─▶ proposal ─▶ match ─┬▶ recipient interview ─▶ inbound messages
+                                ├▶ the other interview  ─▶ inbound messages
                                 └▶ attributes ─▶ extraction_run ─▶ the PDF they sent
 ```
 

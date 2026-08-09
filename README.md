@@ -1,53 +1,60 @@
 # CCME
 
-**An AI matchmaking desk that runs out of an inbox. You cc it; it explains itself.**
+**Founders meet investors. You cc it; it explains itself.**
 
-CCME keeps a CRM of two populations, interviews both sides by email, and produces
-one thing: **a meeting on a calendar, with a Google Meet link, that both parties
-accepted.**
+CCME connects **founders of digital products** — SaaS, devtools, AI infrastructure,
+marketplaces — with **angels, VCs and funds.** It interviews both sides by email
+and produces one thing: **a meeting on a calendar, with a Google Meet link, that
+both parties accepted.**
 
-Not a match. Not an introduction email. A booked meeting — because that is the
-thing that is actually worth something, and the thing you can count.
-
----
-
-## How it works
-
-**Members** are decision-makers: employers, investors, hedge funds, marketing
-partners, influencers. CCME interviews them to learn their ideal candidate.
-
-**Candidates** are the fit for those members. CCME interviews them to learn their
-ideal member.
-
-When both sides fire — their ideal matches yours, yours matches theirs — CCME
-proposes, gets interest from both, and books the meeting.
-
-Candidates arrive two ways: they write in, or **you cc CCME on a thread and it
-picks them up from there.** That is the mechanic the name is describing.
+Venture runs on warm introductions, which means it runs on who you already know.
+CCME is a warm introduction for people without the network.
 
 ---
 
-## Three design decisions worth arguing with
+## No fee. Ever.
 
-**Two to five. Never more.**
-A member holds at most 2–5 live candidates at a time. Slots reopen only when
-something actually resolves — a pass, a meeting, a decline, or a timeout.
+CCME takes **nothing** for an introduction. No success fee, no percentage, no
+carry, no payment tied to a round closing. It gives no advice on terms, never
+negotiates, and never touches money or securities. It books the meeting and gets
+out of the way.
 
-This is the quality mechanism and the volume control at once. Nobody sends a
-hiring manager forty résumés and calls it service, and a system that *can't*
-flood you is more trustworthy than one that promises not to.
+That is not modesty — it is the only reason the email is worth opening. An honest
+broker is credible exactly when there is nothing in it for them.
 
-**An empty slot beats a weak fill.**
-Under a cap of five, every proposal is expensive. CCME leaves slots open rather
-than filling them with a maybe. This came out of measurement: in model testing,
-the larger model's apparent failures were almost entirely *refusals to guess*, and
-under a throttle that is the behavior you want.
+**Monetization is pay-what-you-want, and the first 1,000 people are free for life.**
+A contribution supports the infrastructure and buys nothing: payment status is
+invisible to the match engine, by invariant and by test. PWYW that changes nothing
+is a tip. PWYW that changes outcomes is a price.
 
-**Capability and intent only.**
-Members include employers, so this is employment-adjacent matching. Protected
-attributes and their proxies are never extracted, never stored as match features,
-and never appear in a proposal's reason. That is enforced by a linter in CI, not
-by good intentions.
+---
+
+## Two to five. Never more.
+
+You hold at most 2–5 live proposals at a time. A slot reopens only when something
+actually resolves — a pass, a meeting, a decline, or a timeout.
+
+This is the quality mechanism and the volume control at once. Nobody sends an
+investor forty decks and calls it service, and a system that *cannot* flood you is
+more trustworthy than one that promises not to.
+
+**An empty slot beats a weak fill.** Under a cap of five every proposal is
+expensive, so CCME leaves slots open rather than filling them with a maybe. This
+came out of measurement: in model testing the larger model's apparent failures
+were almost entirely *refusals to guess*, and under a throttle that is exactly the
+behavior you want.
+
+**Portfolio conflicts are exclusions.** An investor holding a competing company is
+never proposed — something a warm intro from a friend does not protect you from.
+
+---
+
+## How people arrive
+
+1. They email CCME directly.
+2. **They are CC'd into a thread**, and CCME picks it up from there.
+
+That second one is the mechanic the name is describing.
 
 ---
 
@@ -59,26 +66,36 @@ sentence, in whose email or document, extracted under which model weights, on wh
 date, caused two people to meet.
 
 Extraction runs on our own hardware: a 1.28 GB open-weights model on our own
-server. Matching is superlinear in pool size, so metered inference fails exactly
-when the product starts working — and people's professional histories should not
-be routinely shipped to a third-party inference provider.
+server. With no fee per introduction that is not a margin choice, it is the
+difference between viable and not — and founders' unannounced raise plans should
+not be routinely shipped to a third-party inference provider.
+
+---
+
+## Scope
+
+**In:** founders of digital products ⇄ investors. Secondarily, founders ⇄
+co-founders, technical partners and advisors.
+
+**Out:** employment. Matching people to salaried roles is a different regulatory
+regime, and partnership formation is not employment. If hiring is ever added it
+is a separate decision with its own gates.
 
 ---
 
 ## Status
 
-**Phase 0b — specification.** No runtime yet.
+**Phase 0c — specification.** No runtime yet.
 
 | document | what it settles |
 |---|---|
-| [`SPEC.md`](SPEC.md) | invariants, architecture, the slot ledger, model measurement, D1–D8 gates |
+| [`SPEC.md`](SPEC.md) | invariants, architecture, the slot ledger, monetization, D1–D9 gates |
 | [`docs/STATE_MACHINE.md`](docs/STATE_MACHINE.md) | person, proposal and meeting machines; triage table |
 | [`docs/COLLECTIONS.md`](docs/COLLECTIONS.md) | the NEDB data model and the shape of a receipt |
 
-v0.1 specified a consent-gated peer-to-peer B2B matchmaker. It was superseded
-after real-profile testing showed most people are not businesses — they are
-candidates. [SPEC §12](SPEC.md#12-what-changed-from-v01-and-why) records what
-changed and why.
+Earlier revisions specified a consent-gated peer-to-peer B2B matchmaker (v0.1) and
+a generic two-population desk spanning employers and influencers (v0.2). Both were
+superseded. [SPEC §12](SPEC.md#12-what-changed-from-v02-and-why) records why.
 
 ---
 
