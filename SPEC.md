@@ -1,141 +1,259 @@
-# CCME — Specification v0.1
+# CCME — Specification v0.2
 
-**Status:** draft, Phase 0
+**Status:** draft, Phase 0b
 **Owner:** Interchained LLC
+**Supersedes:** v0.1 (consent-gated B2B matchmaker). See §12 for what changed and why.
 **Written for external review.** Anyone should be able to read this and tell us we are wrong.
 
 ---
 
 ## 1. What CCME is
 
-CCME is a B2B matchmaker that lives in an inbox.
+CCME is an AI matchmaking **desk** that runs out of an inbox.
 
-A person emails it their LinkedIn profile export. CCME reads it, tells them what it understood, asks them one question about what they need, and then — only when two people have each said yes — introduces them to each other in a single email thread.
+It keeps a CRM of two populations, interviews both sides by email, and produces
+one thing: **a meeting on a calendar, with a Google Meet link, that both parties
+accepted.**
 
 The name is the interface. You cc it. It explains itself.
 
-### 1.1 What CCME is not
+### 1.1 The output is a booked meeting
 
-- Not a scraper. Nothing enters the graph that a person did not personally send in.
-- Not an outreach tool. It will not contact anyone who has not written to it first.
-- Not a job board. Individuals looking for employment are out of scope for v0.1 (see §4.3).
-- Not a black box. Every introduction can print the evidence that caused it.
+Not a "match." Not an introduction email. A match is an internal artifact; a
+booked meeting is a business outcome. It is countable, it is what a member would
+pay for, and it produces a feedback signal — accepted invites and their outcomes
+are the training data that improves matching over time.
 
----
+### 1.2 What CCME is not
 
-## 2. Hard invariants
-
-These are not guidelines. A change that violates one of these is a defect, regardless of how much it improves any metric.
-
-**INV-1 — Consent by construction.**
-A person exists in the match graph if and only if that person sent an email to CCME from their own address. There is no other write path into the `people` collection.
-
-**INV-2 — CC does not confer membership.**
-Being CC'd on a thread does not enroll anyone. If Alice emails Bob and CCs CCME, CCME may act *on Alice's behalf*, because Alice addressed it. Bob is a third party who did not opt in. Bob is never added to the graph, never extracted, never matched, and never emailed by CCME as a result of that thread.
-
-> *Rationale: the product's name invites a mechanic that would otherwise smuggle non-consenting people into the dataset. Naming the invariant is cheaper than discovering it later.*
-
-**INV-3 — No unsolicited outbound.**
-Every outbound message is either (a) a direct reply to a message that person sent, or (b) an introduction that person explicitly said yes to. There is no third category.
-
-**INV-4 — Two yeses or no intro.**
-An introduction is sent only after both parties have independently affirmed. A single non-response is a no. Silence is never consent.
-
-**INV-5 — Every claim is traceable.**
-Any capability CCME attributes to a person must be traceable to a span of text that person supplied. Untraceable claims are flagged and excluded from matching.
-
-**INV-6 — Deletion is real.**
-"Delete my data" removes the person from the graph and stops all processing. Provenance nodes may retain a tombstone, never the content.
+- Not a job board. Nobody browses a list.
+- Not a bulk outreach tool. Volume is capped by construction (§5).
+- Not a black box. Every proposal can print the evidence that caused it.
 
 ---
 
-## 3. Architecture
+## 2. The two populations
+
+**MEMBERS** are decision-makers with capital, hiring authority, budget, or reach:
+employers, investors, hedge funds, marketing partners, social-media influencers.
+They are interviewed to define their **ideal candidate**. They are the paying side.
+
+**CANDIDATES** are the fit for those members. They are interviewed to define their
+**ideal member**. They are the supply side.
+
+Candidates arrive two ways, and both are first-class:
+
+1. They email CCME directly.
+2. **They are CC'd into a thread.** Being CC'd enrolls you as a candidate, and
+   CCME will email you. This is the core mechanic, not a side effect — it is why
+   the product is called CCME.
+
+A person's population is a **property of the relationship, not the person.** A
+hedge fund partner is a member when hiring and a candidate when raising. The
+record carries both roles independently.
+
+---
+
+## 3. Hard invariants
+
+A change that violates one of these is a defect regardless of how much it
+improves any metric.
+
+**INV-1 — Triage decides everything.**
+No inbound message is acted upon until it has been classified by a typed triage
+call that identifies the sender, their population, their pipeline state, and
+their intent. There is no code path that replies before triage.
+
+**INV-2 — The slot ledger is the volume control.**
+A member holds between **2 and 5 live candidate proposals**, never more. A slot
+reopens only on a terminal outcome or a timeout (§5.2). This cap is enforced in
+the proposal function itself, not at its call sites.
+
+**INV-3 — An empty slot beats a weak fill.**
+Proposals below the confidence threshold are not sent. Leaving a slot open is an
+acceptable, expected, and frequently correct outcome. Under a 2–5 cap every
+proposal is expensive; precision dominates recall.
+
+**INV-4 — Every claim is traceable.**
+Any attribute CCME asserts about a person must trace to a span of text that
+person supplied, in an interview answer or a document they sent. Untraceable
+claims are flagged and excluded from matching.
+
+**INV-5 — Stop means stop, everywhere.**
+An unsubscribe halts all outbound to that address within one processing cycle,
+across both populations, permanently, without requiring any further interaction.
+
+**INV-6 — Protected attributes are never match features.**
+Members include employers, so CCME performs employment-adjacent matching. Race,
+sex, age, national origin, religion, disability, pregnancy, and veteran status —
+and close proxies for them, including photographs, names-as-ethnicity signals,
+and graduation years — are never extracted as match features, never stored as
+match features, and never surfaced in a proposal reason. The taxonomy is
+capability-and-intent only.
+
+> *This is an engineering constraint with legal teeth, not a values statement.
+> A matching system that can be shown to have used protected attributes is a
+> liability to every employer member who used it.*
+
+**INV-7 — Deletion is real.**
+"Delete my data" removes content and stops processing. Provenance nodes may
+retain a tombstone, never the content.
+
+---
+
+## 4. Architecture
 
 ```
-  inbound mail ──▶ triage (typed tool call) ──▶ state machine ──▶ outbound mail
-                          │                          │
-                          ▼                          ▼
-                    human queue                    NEDB
-                    (unknown intent)        (causal graph, receipts)
-                                                     ▲
-                                                     │
-                       extraction service (Qwen3.5-2B, self-hosted)
+  inbound mail ──▶ TRIAGE (typed tool call)
+                       │  who / population / state / intent
+        ┌──────────────┼───────────────────┐
+        ▼              ▼                   ▼
+   MEMBER flow    CANDIDATE flow     new or unrecognised
+   interview      interview          ─▶ enroll as candidate, begin interview
+        │              │
+        └──────┬───────┘
+               ▼
+        MATCH ENGINE — member.ideal_candidate ⇄ candidate.ideal_member
+               │  confidence-scored, both directions
+               ▼
+        SLOT GATE — 2–5 live per member (INV-2), threshold enforced (INV-3)
+               │
+               ▼
+        PROPOSAL — sent to member with the reason and the evidence
+               │  member interested?
+               ▼
+        INVITE — Google Calendar event + Meet link, sent to both
+               │
+               ▼
+        OUTCOME — accepted / declined / expired / no-show → slot reopens
 ```
 
-### 3.1 Components
+### 4.1 Components
 
 | Component | Choice | Why |
 |---|---|---|
 | Mail transport | Mail-in-a-Box, Contabo VPS | Already running and owned |
-| Extraction model | Qwen3.5-2B Q4_K_M, apache-2.0, on llama.cpp | Measured best of three candidates (§6) |
-| Store | nedbd (NEDB) | Causal provenance is native, not bolted on |
-| Tunnel | PORTAL-BRIDGE-V1 HMAC | Already built, golden vectors, replay-protected |
-| Workspace (Phase 5) | Portal | Shares theme tokens with salon-platform |
+| Extraction + interview parsing | Qwen3.5-2B Q4_K_M, apache-2.0, llama.cpp | Measured best of three (§9) |
+| Store | nedbd (NEDB) | Causal provenance is native |
+| Calendar | **Google Calendar API**, real Meet links | Decided; iCal-only was rejected |
+| Tunnel | PORTAL-BRIDGE-V1 HMAC | Already built, replay-protected |
+| Workspace (Phase 6) | Portal | Shares theme tokens with salon-platform |
 
-### 3.2 Why extraction is self-hosted
+### 4.2 Why extraction is self-hosted
 
-Matching is superlinear in pool size. If every comparison and every intake is a metered API call, unit economics fail exactly when the product starts working. A 1.28 GB model on a VPS we already pay for has no marginal cost per match.
+Matching is superlinear in pool size and interviews are multi-turn, so metered
+inference fails exactly when the product starts working. A 1.28 GB model on a VPS
+we already pay for has no marginal cost per interview turn.
 
-Secondary reason, equally real: a matchmaker holds people's professional histories. Those should not be shipped to a third-party inference provider as a matter of routine.
-
----
-
-## 4. The data model
-
-### 4.1 The match unit — OFFER ↔ NEED
-
-Every participant is reduced to two things:
-
-- **OFFER** — what their organization can do for another business
-- **NEED** — what their organization wants from another business
-
-A match is `A.offer` against `B.need` **and** `B.offer` against `A.need`. Both directions must fire. One direction is a lead, not a match, and v0.1 does not act on leads.
-
-Both are drawn from **one shared controlled vocabulary**. This is deliberate: a shared enum makes matching a deterministic join rather than a vector-similarity guess, and it makes every match explainable in one sentence. The taxonomy *is* the matching engine.
-
-### 4.2 OFFER comes from the document. NEED does not.
-
-Measured across 40 extractions on 5 real profiles: `need_category` was `none` **35 times**.
-
-This is correct behavior, not a model failure. A LinkedIn profile records what someone *did*. It does not record what they *want*. Nobody writes "seeking a fractional CFO" in their work history.
-
-Therefore the need is **asked**, in CCME's first reply, as a single question. A stated need also carries a timestamp and live intent, which is worth more for matching than anything inferred from a résumé.
-
-### 4.3 The qualifying gate
-
-In testing, three of five real profiles belonged to **employees**, not businesses — a material handler at Tesla, a logistics manager at Zoox, a production control manager at Base Power.
-
-An employee has a job, not an offer. Extracting `manufacturing_supply` from a Tesla material handler's profile is technically correct and commercially meaningless; Tesla will not take a meeting because someone matched their material handler.
-
-CCME asks, before anything enters the graph, whether the person is here **on behalf of a business** or **as an individual**. Only the former enters the match graph. Individuals receive an honest note that CCME is not built for them yet.
-
-### 4.4 Collections
-
-See `docs/COLLECTIONS.md`. Summary:
-
-`people` · `offers` · `needs` · `matches` · `intros` · `messages` · `extraction_runs`
-
-Every node cites its causes via `caused_by`, so `TRACE caused_by` on an intro yields: intro → match → both offers and needs → both extraction runs → both inbound emails.
-
-> Engine note, learned the hard way: the identity field is `_id`, not `id`, and `caused_by` goes at the **top level** of a put, not inside `doc`. A `caused_by` placed inside `doc` is stored as ordinary user data and creates no causal edge.
+Secondary and equally real: CCME holds people's professional histories and their
+stated ambitions. Those should not be routinely shipped to a third-party
+inference provider.
 
 ---
 
-## 5. The email state machine
+## 5. Matching under scarcity
 
-Full diagram in `docs/STATE_MACHINE.md`.
+### 5.1 The join
 
-Triage is a **typed tool call**, not free-text classification. One tool, enum slots, an explicit `unknown` member. Intents:
+The member states an ideal candidate. The candidate states an ideal member. A
+proposal requires **both directions to fire** and both to clear the confidence
+threshold.
 
-`signup_with_attachment` · `signup_no_attachment` · `need_reply` · `intro_yes` · `intro_no` · `unsubscribe` · `delete_me` · `unknown`
+Both sides draw from one shared controlled vocabulary. A shared enum makes
+matching a deterministic join rather than a similarity guess, and makes every
+proposal explainable in one sentence. **The taxonomy is the matching engine.**
 
-`unknown` routes to a human queue. It does not guess. A matchmaker that confidently replies to a message it misread destroys the trust the entire product runs on, and the cost of a human glancing at an ambiguous email is approximately zero.
+### 5.2 The slot ledger
+
+Each member has 2–5 live proposals. A slot is occupied from the moment a proposal
+is sent until a terminal outcome.
+
+A slot reopens on **whichever comes first**:
+
+| terminal outcome | meaning |
+|---|---|
+| `declined_by_member` | member passed |
+| `declined_by_candidate` | candidate passed |
+| `meeting_completed` | the meeting happened |
+| `meeting_declined` | invite declined by either party |
+| `no_show` | invite accepted, meeting did not occur |
+| `expired` | **timeout** — no response within N days |
+
+`N` is configurable per member, defaulting to 7 days, with exactly one reminder
+at the midpoint. A non-response is not pursued beyond that reminder.
+
+### 5.3 Why the throttle is also the anti-spam architecture
+
+Outbound volume is capped at the *demand* side by a rule that exists for quality
+reasons anyway. A member with 5 live slots generates at most 5 candidate contacts.
+Scarcity does the work that a consent wall would otherwise do, and it matches how
+a competent human recruiter already behaves — nobody sends a hiring manager forty
+résumés and calls it service.
 
 ---
 
-## 6. Model selection — the measurement behind the choice
+## 6. Triage
 
-Five real LinkedIn PDF exports, 34 chunks, 33 scoreable. One unit excluded: a donut shop, for which the taxonomy had no valid category — a defect in the taxonomy, not a model error, and excluded rather than scored as a miss.
+One typed tool call per inbound message. Enum slots, no free-text authoring, an
+explicit `unknown` member.
+
+Triage answers four questions: **who is this**, **which population**, **what
+pipeline state are they in**, **what do they want**.
+
+| intent | routed to |
+|---|---|
+| `new_inbound` | enroll, choose population, begin interview |
+| `interview_answer` | advance the interview |
+| `proposal_interested` | move toward invite |
+| `proposal_pass` | terminal outcome, reopen slot |
+| `invite_response` | accept / decline / reschedule |
+| `reschedule_request` | calendar flow |
+| `unsubscribe` | INV-5 |
+| `delete_me` | INV-7 |
+| `question_or_other` | answer if answerable, escalate if not |
+| `unknown` | escalate — do not guess |
+
+`unknown` does not answer. A confidently wrong reply from a matchmaking desk
+costs more than a slow one, and the cost of a human glancing at an ambiguous
+message is near zero.
+
+---
+
+## 7. Interviews
+
+Both populations are interviewed by email, multi-turn, one or two questions per
+message. An attached profile (LinkedIn "Save to PDF") **pre-fills** the interview
+rather than replacing it — extraction supplies the history, the interview supplies
+the intent.
+
+This is the structural fix for a measured problem: `need_category` came back
+`none` in **35 of 40** extractions, because a profile records what someone did and
+never what they want (§9.2). Both sides of this join are now *stated*, never
+inferred.
+
+An interview that ends below the confidence threshold does not enter matching.
+The person is told plainly what is still missing.
+
+---
+
+## 8. Calendar and meetings
+
+Google Calendar API, real Meet links, invites sent to both parties.
+
+- The event is created only after the member expresses interest **and** the
+  candidate confirms availability.
+- Accept, decline, reschedule and no-show all resolve to terminal outcomes that
+  reopen the slot (§5.2).
+- Outcomes are recorded against the match, and become the feedback signal for
+  matching quality over time.
+
+---
+
+## 9. Model selection — the measurement behind the choice
+
+Five real LinkedIn PDF exports, 34 chunks, 33 scoreable. One excluded: a donut
+shop, for which the taxonomy had no valid category — a taxonomy defect, not a
+model error, excluded rather than scored as a miss.
 
 | model | size | s/chunk | well-formed calls | evidence exact | category correct |
 |---|---|---|---|---|---|
@@ -143,82 +261,128 @@ Five real LinkedIn PDF exports, 34 chunks, 33 scoreable. One unit excluded: a do
 | **Qwen3.5-2B** | **1.28 GB** | **12.4** | **34/34** | **33/34** | **27/33 — 82%** |
 | Qwen3.5-4B | 2.74 GB | 30.8 | 34/34 | 27/34 | 16/33 — 48% |
 
-**All three produced 34/34 well-formed tool calls.** The mechanics are not in question at any size.
+**All three produced 34/34 well-formed tool calls.** The mechanics are not in
+question at any size.
 
-Two findings worth carrying forward:
+### 9.1 Abstention is a feature under a throttle
 
-1. **The 4B did not fail — it abstained.** All 17 of its misses were `offer_category: "none"`. Shown `Company: Tesla / Title: Production control Team Lead`, it declined to infer what Tesla sells, because the excerpt does not say. That is arguably the correct behavior for a product that promises receipts, and the scoring rubric punished it. The likely fix is context, not capacity: the profile headline and top-skills block are present in the PDF and the chunker currently discards them. This is an open question, not a settled one.
+All 17 of the 4B's misses were `offer_category: "none"` — abstentions, not errors.
+Shown `Company: Tesla / Title: Production control Team Lead`, it declined to infer
+what Tesla sells because the excerpt does not say.
 
-2. **Description length has an optimum at small scale.** A 2,269-character parameter description covering all 20 categories scored *worse* on the 0.8B (36%) than a 700-character one covering 8 (52%). More guidance is not monotonically better.
+Under v0.1 scoring that looked like losing. **Under INV-3 it is precisely the
+desired behavior.** The 4B remains a live candidate for the proposal-confidence
+step even though 2B is chosen for extraction throughput. Open question in §13.
 
-### 6.1 Honest limits of this measurement
+### 9.2 Two findings that shaped the design
 
-- n = 5 profiles. Four are supply-chain professionals. This is a signal, not a benchmark.
-- Ground-truth labels were written by the implementer, not a domain expert. Several "misses" are debatable — Edelman was labelled `accounting_finance` and the model said `consulting_strategy`; Edelman is a communications consultancy, so the model may be right.
-- The taxonomy has a known hole (no food/hospitality) and a known fuzzy seam (manufacturing vs logistics), both scored generously on purpose.
+- A profile encodes capability, never intent — hence interviews (§7).
+- Description length has an optimum at small scale: a 2,269-character parameter
+  description scored *worse* (36%) on the 0.8B than a 700-character one (52%).
+  More guidance is not monotonically better.
+
+### 9.3 Honest limits
+
+n = 5 profiles, four of them supply-chain professionals. Labels were written by
+the implementer, not a domain expert, and several "misses" are debatable — Edelman
+was labelled `accounting_finance` where the model said `consulting_strategy`, and
+Edelman is a communications consultancy. This is a signal, not a benchmark.
 
 ---
 
-## 7. Definition of done — gates
+## 10. Definition of done — gates
 
-A gate is met only when it is demonstrated by a command anyone can run, producing output anyone can check. "It looked right" is not a gate.
+A gate is met only when demonstrated by a command anyone can run, producing
+output anyone can check. "It looked right" is not a gate.
 
-### D1 — Consent invariants are enforced in code
-- [ ] There is exactly one write path into `people`, and it requires a verified inbound sender address.
-- [ ] A test CCs CCME on a thread with a synthetic third party; the third party appears nowhere in the graph and receives nothing.
-- [ ] A test attempts to send to an address with no inbound history; the send is refused.
-
-### D2 — Extraction is grounded
-- [ ] Every stored capability carries an evidence span.
-- [ ] The grounding grader passes its own fixtures in both directions (known-good passes, known-bad fails).
-- [ ] Claims graded `INVENTED` never reach the match graph.
-
-### D3 — Triage is honest
+### D1 — Triage
 - [ ] Every intent enum is exercised by a fixture email.
-- [ ] Ambiguous fixtures produce `unknown` and land in the human queue, not a guess.
+- [ ] Ambiguous fixtures produce `unknown` and escalate rather than guess.
 - [ ] Triage asserts arguments, not just the tool name.
+- [ ] No reply path exists that bypasses triage.
 
-### D4 — Two-yes introductions
-- [ ] No intro is emitted with fewer than two recorded affirmations.
-- [ ] Silence from either side produces no intro and no follow-up beyond a single reminder.
+### D2 — CRM and populations
+- [ ] A CC'd participant is enrolled as a candidate with correct provenance.
+- [ ] One person can hold member and candidate roles simultaneously without collision.
+- [ ] Interview state survives restart and out-of-order replies.
 
-### D5 — Receipts
-- [ ] `TRACE caused_by` on any intro returns the full chain to both source emails.
-- [ ] The plain-English reason shown to users is generated from stored evidence spans, never re-generated by a model at read time.
+### D3 — The slot ledger
+- [ ] A member never holds more than 5 live proposals; asserted in the proposal function.
+- [ ] Each terminal outcome reopens exactly one slot.
+- [ ] Timeout fires at N days with exactly one reminder at the midpoint.
+- [ ] A concurrency test cannot drive live proposals above the cap.
 
-### D6 — Deliverability
-- [ ] SPF, DKIM and DMARC pass on a real third-party inbox placement test.
-- [ ] Outbound is rate-limited per address and globally capped.
-- [ ] A single config flag halts all outbound sending.
+### D4 — Precision
+- [ ] Sub-threshold matches are not proposed; the slot stays open.
+- [ ] A run over the test corpus reports proposals made vs slots left open.
+- [ ] The threshold is configurable and its effect is measured, not assumed.
 
-### D7 — Data rights
-- [ ] `unsubscribe` stops all outbound within one processing cycle.
-- [ ] `delete_me` removes content and leaves only a tombstone.
-- [ ] Every outbound message states how to do both.
+### D5 — Fairness
+- [ ] No protected attribute or close proxy appears in any match feature.
+- [ ] A linter over the taxonomy and extraction schema fails CI on violation.
+- [ ] Proposal reasons are generated only from capability and intent spans.
+
+### D6 — Calendar
+- [ ] Events carry working Meet links and reach both parties.
+- [ ] Accept, decline, reschedule and no-show each resolve correctly.
+- [ ] A declined invite reopens the slot without further messaging.
+
+### D7 — Deliverability
+- [ ] SPF, DKIM and DMARC pass a third-party inbox placement test.
+- [ ] Sending domain is warmed and volume ramped before live use.
+- [ ] Bounces and complaints feed a suppression list automatically.
+- [ ] Every outbound carries a working unsubscribe and a postal address.
+- [ ] One config flag halts all outbound.
+
+### D8 — Receipts and data rights
+- [ ] `TRACE caused_by` on any meeting returns the full chain to both interviews.
+- [ ] Proposal reasons are generated once from stored spans, never re-generated at read time.
+- [ ] `unsubscribe` and `delete_me` are honoured within one cycle and confirmed once.
 
 ---
 
-## 8. Known risks
+## 11. Risks
 
 | Risk | Severity | Mitigation |
 |---|---|---|
-| Intro emails land in spam | **Kills the product** | D6 before any real send; test placement, do not assume |
-| Cold start — pool too small to match | **Kills the product** | Shareable OFFER card as the acquisition loop |
-| Taxonomy too coarse for real industries | High | Known hole + known seam; expand from real intake, not imagination |
-| A wrong match damages someone's reputation | High | Two-yes gate; show the reason before asking |
-| Model misreads a thin profile | Medium | Abstain rather than guess; ask the human |
+| Domain blacklisted — CCME now emails people who did not write in first | **Existential** | D7 in full before first live send; warm, ramp, suppress |
+| Weak candidates burn a member's trust | **Existential** | INV-3, D4; an empty slot is acceptable |
+| Employment-matching legal exposure | High | INV-6, D5, enforced by a CI linter |
+| Cold start — no candidate supply | High | CC mechanic is the supply loop; every member thread seeds candidates |
+| Interview abandonment mid-flow | Medium | Short turns, resumable state, one reminder |
+| Taxonomy too coarse for real industries | Medium | Known hole and known seam; expand from real intake |
 
 ---
 
-## 9. Out of scope for v0.1
+## 12. What changed from v0.1, and why
 
-Payments · public directory · profile editing UI · social channels · Netrows enrichment · any outbound to a person who has not written in first.
+v0.1 was a consent-gated peer-to-peer B2B matchmaker: only people who wrote in
+could be enrolled, matches were symmetric offer↔need, and introductions were
+double-opt-in emails.
+
+Three problems, two of them found by measurement:
+
+1. **The employee finding was a dead end.** Three of five real test profiles were
+   employees, and under a business-to-business-only design a Tesla production
+   control lead has "a job, not an offer." The two-population model **inverts
+   this into the supply side** — that person is a strong candidate, and the
+   corpus already collected is candidate supply.
+2. **Consent-gating starved the graph.** Requiring everyone to write in first made
+   cold start nearly unsolvable. The CC mechanic solves supply directly.
+3. **The output was too weak to charge for.** An introduction email is not a
+   business outcome. A booked meeting is.
+
+The volume protection that consent-gating provided is preserved — relocated to
+the slot throttle (§5.3), where it derives from quality rather than from a wall.
 
 ---
 
-## 10. Open questions
+## 13. Open questions
 
-1. Sending domain and address for the agent.
-2. Does CCME reply to a CC'd thread at all, or only to direct mail? INV-2 governs membership; it does not settle whether CCME should speak in a thread where a third party can read it.
-3. Whether the 4B's abstention is preferable to the 2B's inference once headline context is supplied (§6, finding 1).
-4. Whether individuals get a waiting list or a flat "not yet".
+1. Sending domain and address.
+2. Pricing and which side pays — presumed members, unconfirmed.
+3. Whether the 4B should serve the proposal-confidence step while 2B serves
+   extraction (§9.1).
+4. Default timeout `N` — 7 days assumed, unvalidated.
+5. Whether a candidate may hold their own slot cap across multiple members.
+6. Whether members can veto a candidate permanently or only for one cycle.

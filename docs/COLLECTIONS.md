@@ -2,120 +2,160 @@
 
 Database: `ccme` on nedbd.
 
-Engine notes that cost real debugging time elsewhere, recorded here so they are
-not rediscovered:
+Engine notes that cost real debugging time elsewhere, recorded so they are not
+rediscovered:
 
-- The identity field is **`_id`**, not `id`. `WHERE id = "..."` matches nothing
-  and returns zero rows, which reads like a broken query rather than a typo.
+- The identity field is **`_id`**, not `id`. `WHERE id = "..."` matches nothing and
+  returns zero rows, which reads like a broken query rather than a typo.
 - **`caused_by` goes at the top level of a put**, not inside `doc`. Placed inside
   `doc` it is stored as ordinary user data and creates **no causal edge**.
-- The engine normalizes integer seqs to hash strings; stored rows expose
-  `_caused_by`.
+- The engine normalizes integer seqs to hash strings; stored rows expose `_caused_by`.
 
 ---
 
 ## `messages`
-Every inbound and outbound email. The audit spine — nothing else is trusted as
-the record of what was said.
+Every inbound and outbound email. The audit spine.
 
 | field | type | notes |
 |---|---|---|
 | `direction` | enum | `inbound` \| `outbound` |
-| `address` | string | the counterparty |
-| `message_id` | string | RFC 5322 Message-ID |
-| `in_reply_to` | string | threading |
+| `address` | string | counterparty, lowercased |
+| `message_id` / `in_reply_to` | string | RFC 5322 threading |
 | `subject` | string | |
-| `body_text` | string | plain text only; HTML is stripped on ingest |
+| `body_text` | string | plain text; HTML stripped on ingest |
 | `has_attachment` | bool | |
+| `cc_addresses` | array | drives candidate enrollment |
 | `triage_intent` | enum | null for outbound |
-| `third_parties` | array | addresses seen in To/CC, **recorded, never enrolled** (INV-2) |
+| `triage_confidence` | number | |
 
 `caused_by`: for outbound, the inbound message that prompted it.
 
 ---
 
 ## `people`
-One per consenting participant. **Only write path is a verified inbound sender.**
+One record per human. **Roles are separate from the person** — the same person can
+be a member in one relationship and a candidate in another.
 
 | field | type | notes |
 |---|---|---|
-| `address` | string | lowercased, the primary key in practice |
-| `state` | enum | see STATE_MACHINE.md |
-| `actor_type` | enum | `business` \| `individual` \| `unknown` |
-| `display_name` | string | as given |
-| `org_name` | string | from the profile |
-| `unsubscribed_at` | date | null when active |
+| `address` | string | primary key in practice |
+| `display_name` | string | |
+| `org_name` | string | |
+| `stopped_at` | date | INV-5; blocks all outbound when set |
+| `deleted_at` | date | INV-7 |
 
-`caused_by`: the inbound message that created them.
-
----
-
-## `offers`
-One per extracted capability. A person may have several.
-
-| field | type | notes |
-|---|---|---|
-| `person_address` | string | flat relation key |
-| `category` | enum | the shared vocabulary |
-| `evidence` | string | span copied from the source |
-| `grounding` | enum | `exact` \| `fuzzy` \| `INVENTED` |
-| `customer_type` | enum | `businesses` \| `consumers` \| `both` \| `none` |
-| `is_current` | bool | |
-| `source_chunk_id` | string | |
-
-**Rows graded `INVENTED` are stored and never matched.** Keeping them is how we
-measure drift over time; matching them is how we would lie to someone.
-
-`caused_by`: the extraction run, which cites the inbound message.
+`caused_by`: the message that first surfaced them.
 
 ---
 
-## `needs`
-Stated, never inferred. See SPEC §4.2.
+## `roles`
+A person's participation as a member or a candidate. One person may hold both.
 
 | field | type | notes |
 |---|---|---|
 | `person_address` | string | |
-| `category` | enum | same vocabulary as offers |
-| `stated_text` | string | their words, verbatim |
-| `stated_at` | date | intent decays; timestamp matters |
+| `population` | enum | `member` \| `candidate` |
+| `state` | enum | see STATE_MACHINE.md §1 |
+| `member_kind` | enum | `employer` \| `investor` \| `hedge_fund` \| `marketing_partner` \| `influencer` \| `other` — null for candidates |
+| `sourced_by` | string | for CC-enrolled candidates, the member whose thread surfaced them |
+| `slot_cap` | number | members only, 2–5, default 3 |
+| `timeout_days` | number | members only, default 7 |
 
-`caused_by`: the inbound message containing the answer.
+`caused_by`: the message that created the role.
+
+---
+
+## `interviews`
+The stated side of the join. Both populations are interviewed (SPEC §7).
+
+| field | type | notes |
+|---|---|---|
+| `role_id` | string | |
+| `state` | enum | `open` \| `complete` \| `incomplete` |
+| `turns` | array | question/answer pairs, each citing a message |
+| `ideal_profile` | object | the typed result — ideal candidate, or ideal member |
+| `confidence` | number | below threshold ⇒ `incomplete`, excluded from matching |
+
+`caused_by`: every inbound message that contributed an answer.
+
+---
+
+## `attributes`
+Extracted capability and intent. **Capability and intent only** (INV-6).
+
+| field | type | notes |
+|---|---|---|
+| `role_id` | string | |
+| `kind` | enum | `capability` \| `intent` |
+| `category` | enum | the shared vocabulary |
+| `evidence` | string | span copied from source |
+| `grounding` | enum | `exact` \| `fuzzy` \| `INVENTED` |
+| `source` | enum | `document` \| `interview` |
+
+**Rows graded `INVENTED` are stored and never matched.** Keeping them measures
+drift over time; matching them would mean lying to someone.
+
+**No protected attribute or proxy is ever written here.** A CI linter enforces it
+against both the taxonomy and the extraction schema (D5).
+
+`caused_by`: the extraction run or the interview turn.
 
 ---
 
 ## `matches`
-Computed. Both directions must fire.
+Computed, scored, both directions required.
 
 | field | type | notes |
 |---|---|---|
-| `a_address` / `b_address` | string | stored sorted, so a pair has one identity |
-| `a_offer_id` / `b_need_id` | string | the A→B leg |
-| `b_offer_id` / `a_need_id` | string | the B→A leg |
-| `reason` | string | plain English, built from stored evidence spans |
+| `member_role_id` / `candidate_role_id` | string | |
 | `score` | number | |
+| `above_threshold` | bool | false ⇒ never proposed (INV-3) |
+| `reason` | string | plain English, built from stored evidence spans |
+| `scored_at` | date | queued matches age out and are re-scored |
 
-`caused_by`: all four contributing offer/need nodes.
+`caused_by`: both interviews and the contributing attributes.
 
 The `reason` is generated **once, at match time, from stored spans** — never
-re-generated by a model when someone reads it. Two people must never be shown
-different explanations for the same introduction.
+re-generated by a model at read time. Two people must never see different
+explanations for the same meeting.
 
 ---
 
-## `intros`
-The lifecycle of an actual introduction. Separate from `matches` because a match
-existing must never imply an intro happening.
+## `proposals`
+Occupies a slot for its entire life. Separate from `matches` because a match
+existing must never imply a proposal.
 
 | field | type | notes |
 |---|---|---|
 | `match_id` | string | |
-| `state` | enum | see STATE_MACHINE.md |
-| `a_answer` / `b_answer` | enum | `pending` \| `yes` \| `no` \| `silent` |
-| `reminded_at` | date | at most one |
-| `sent_at` | date | null until two yeses |
+| `member_role_id` | string | the slot owner |
+| `state` | enum | see STATE_MACHINE.md §2 |
+| `proposed_at` | date | slot occupied from here |
+| `reminded_at` | date | at most one, at midpoint of N |
+| `terminal_state` | enum | which outcome reopened the slot |
+| `closed_at` | date | slot released |
 
-`caused_by`: the match, plus both affirming inbound messages.
+`caused_by`: the match, plus the messages carrying each party's answer.
+
+### The slot query
+Live proposals for a member are those with `closed_at` unset. The cap (INV-2) is
+asserted inside the proposal function against this query, under a lock, so a
+concurrency race cannot exceed it (D3).
+
+---
+
+## `meetings`
+
+| field | type | notes |
+|---|---|---|
+| `proposal_id` | string | |
+| `gcal_event_id` | string | Google Calendar event |
+| `meet_url` | string | |
+| `scheduled_for` | date | |
+| `state` | enum | see STATE_MACHINE.md §3 |
+| `outcome_note` | string | optional, from either party |
+
+`caused_by`: the proposal, plus both acceptance messages.
 
 ---
 
@@ -127,27 +167,23 @@ Provenance for the model itself.
 | `model` | string | e.g. `Qwen3.5-2B-Q4_K_M` |
 | `model_sha256` | string | the actual file hash |
 | `schema_version` | string | |
-| `chunk_count` | number | |
-| `well_formed` | number | |
-| `invented_count` | number | |
+| `chunk_count` / `well_formed` / `invented_count` | number | |
 
-`caused_by`: the inbound message carrying the document.
-
-Recording the model hash means a future question — *"why did CCME think that in
-March?"* — is answerable with `AS OF`, including which weights were running.
+Recording the model hash means *"why did CCME think that in March?"* is
+answerable with `AS OF`, including which weights were running.
 
 ---
 
 ## The receipt
 
 ```
-TRACE caused_by starting at an intro:
+TRACE caused_by starting at a meeting:
 
-  intro ─▶ match ─▶ a_offer ─▶ extraction_run ─▶ inbound message (A's email)
-                 ├▶ b_need  ─▶ inbound message (B's reply)
-                 ├▶ b_offer ─▶ extraction_run ─▶ inbound message (B's email)
-                 └▶ a_need  ─▶ inbound message (A's reply)
+  meeting ─▶ proposal ─▶ match ─┬▶ member interview   ─▶ inbound messages
+                                ├▶ candidate interview ─▶ inbound messages
+                                └▶ attributes ─▶ extraction_run ─▶ the PDF they sent
 ```
 
-Every introduction resolves to the literal sentences, in whose email, on what
-date, under which model, that caused two people to meet.
+Every booked meeting resolves to the literal sentences, in whose email or
+document, on what date, under which model weights, that caused two people to
+meet.

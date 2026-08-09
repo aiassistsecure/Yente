@@ -1,122 +1,162 @@
-# CCME — email state machine
+# CCME — state machines
 
 Written before any code, on purpose. If the states are wrong, the code is wrong.
 
+Three machines run concurrently: **person**, **proposal**, **meeting**. They are
+separate because a match existing must never imply a proposal, and a proposal
+being sent must never imply a meeting.
+
 ---
 
-## Person states
+## 1. Person
+
+A person carries their population as a role, and can hold both roles at once — a
+hedge fund partner is a member when hiring and a candidate when raising. Each
+role runs its own instance of this machine.
 
 ```
-                    ┌──────────┐
-                    │  UNKNOWN │   never written in; not in the graph
-                    └────┬─────┘
-                         │ sends mail to CCME
-                         ▼
-                  ┌──────────────┐
-                  │  QUALIFYING  │   asked: business or individual?
-                  └──┬────────┬──┘
-        "individual" │        │ "business"
-                     ▼        ▼
-              ┌───────────┐  ┌──────────────┐
-              │ DECLINED  │  │ AWAITING_DOC │  asked for LinkedIn PDF
-              │ (honest   │  └──────┬───────┘
-              │  note)    │         │ attachment received
-              └───────────┘         ▼
-                             ┌──────────────┐
-                             │  EXTRACTED   │  offers stored w/ evidence
-                             └──────┬───────┘
-                                    │ reply: OFFER card + the one need question
-                                    ▼
-                            ┌────────────────┐
-                            │ AWAITING_NEED  │
-                            └───────┬────────┘
-                                    │ need parsed
+                     ┌──────────┐
+                     │   NEW    │  first seen: wrote in, or was CC'd
+                     └────┬─────┘
+                          │ triage assigns population
+                          ▼
+                  ┌────────────────┐
+                  │  INTERVIEWING  │  multi-turn, 1–2 questions per message
+                  └───┬────────┬───┘
+         below        │        │  interview complete + above threshold
+         threshold    │        │
+                      ▼        ▼
+             ┌──────────────┐  ┌──────────┐
+             │  INCOMPLETE  │  │  ACTIVE  │  eligible for matching
+             │ (told what's │  └────┬─────┘
+             │  missing)    │       │
+             └──────────────┘       │ unsubscribe
                                     ▼
                               ┌───────────┐
-                              │  MATCHABLE│  in the graph, eligible
-                              └─────┬─────┘
-                                    │ unsubscribe / delete_me
-                                    ▼
-                              ┌───────────┐
-                              │  DORMANT  │  no outbound, retained
+                              │  STOPPED  │  no outbound, ever, permanently
                               └───────────┘
 ```
 
 `DELETED` is terminal from any state: content removed, tombstone retained.
 
+**INCOMPLETE is not a failure state.** It is the honest outcome of a thin
+interview, and the person is told plainly what is still needed. Guessing past it
+would violate INV-3 downstream.
+
 ---
 
-## Introduction states
+## 2. Proposal
 
-A match is a node. An intro is a separate node with its own lifecycle, because a
-match existing must never imply an intro happening.
+One proposal occupies one of a member's 2–5 slots for its entire life.
 
 ```
-   MATCH_FOUND
-        │  ask side A: "want an intro to <B, described by evidence>?"
-        ▼
-   A_ASKED ──── A says no ──▶ CLOSED_DECLINED  (never re-ask this pair)
-        │
-        │ A says yes
-        ▼
-   B_ASKED ──── B says no ──▶ CLOSED_DECLINED  (A is told nothing about B's answer)
-        │
-        │ B says yes
-        ▼
-   INTRO_SENT   one thread, both parties, reason included
-        │
-        ▼
-     CLOSED
+        match scored, both directions fire, above threshold
+                          │
+                          │  slot available?  ──no──▶ QUEUED (not sent)
+                          ▼
+                   ┌─────────────┐
+                   │  PROPOSED   │  member sees candidate + reason + evidence
+                   └──┬───┬───┬──┘
+        member passes │   │   │ member interested
+                      │   │   │
+       ┌──────────────┘   │   └──────────────┐
+       ▼                  │                  ▼
+  DECLINED_MEMBER         │          ┌────────────────┐
+                          │          │ CANDIDATE_ASKED│  availability requested
+             no response  │          └───┬────────┬───┘
+             by N days    │   candidate  │        │ candidate confirms
+                          ▼    passes    ▼        ▼
+                      EXPIRED        DECLINED_  ┌──────────────┐
+                   (one reminder     CANDIDATE  │ INVITE_SENT  │
+                    at midpoint)                └──────┬───────┘
+                                                       │
+                                                       ▼
+                                              (see meeting machine)
 ```
+
+**Every terminal state reopens the slot**, whichever arrives first:
+`DECLINED_MEMBER` · `DECLINED_CANDIDATE` · `EXPIRED` · and all meeting terminals.
 
 ### Rules
 
-- **One reminder, then stop.** A non-answer is a no. No third message.
-- **B learns nothing until A has said yes.** B is not told that A declined, and
-  A is not told that B declined — only that it did not work out.
-- **A declined pair is never re-proposed.** Repeatedly re-suggesting the same
-  person is the behavior that makes matchmakers feel like spam.
-- **The reason ships with the ask, not after.** The recipient decides using the
+- **One reminder, at the midpoint of N.** Then expire. No third message.
+- **A queued match is not a sent proposal.** Queued matches age out and are
+  re-scored rather than sat on — a fit that was true a month ago may not be.
+- **A pass is never re-proposed within the same cycle.** Re-suggesting a rejected
+  candidate is the behavior that makes a desk feel like spam.
+- **The reason ships with the proposal, not after.** The member decides using the
   same evidence CCME used.
 
 ---
 
-## Triage — the entry point for every inbound message
+## 3. Meeting
 
-One typed tool call per message. Enum slots, no free-text authoring, an explicit
-`unknown` member with an escalation path.
+```
+   INVITE_SENT  ──▶ Google Calendar event created, Meet link attached,
+        │            both parties invited
+        │
+        ├── either declines ──────────▶ MEETING_DECLINED ──┐
+        │                                                   │
+        ├── reschedule requested ──▶ RESCHEDULING ──┐       │
+        │                                  │        │       │
+        │        ◀─────────────────────────┘        │       │
+        │                                           │       │
+        └── both accept ──▶ SCHEDULED ──────────────┘       │
+                                 │                          │
+                    ┌────────────┴────────────┐             │
+                    ▼                         ▼             │
+              MEETING_COMPLETED          NO_SHOW ───────────┤
+                    │                                       │
+                    ▼                                       ▼
+                 OUTCOME RECORDED  ────────▶  slot reopens (all paths)
+```
 
-| intent | trigger | action |
+`RESCHEDULING` does **not** reopen the slot — the proposal is still live. Only
+terminal states do.
+
+**Outcomes are the feedback signal.** Accepted invites and completed meetings are
+what tell the match engine it was right. They are recorded against the match, with
+causal links back to both interviews, so quality can be measured over time rather
+than asserted.
+
+---
+
+## 4. Triage — the entry point for every inbound message
+
+One typed tool call per message, before any other logic (INV-1). It answers: who,
+which population, what state, what intent.
+
+| intent | condition | action |
 |---|---|---|
-| `signup_with_attachment` | new sender, PDF attached | qualify → extract |
-| `signup_no_attachment` | new sender, no PDF | reply asking for the export, with instructions |
-| `qualify_reply` | sender in QUALIFYING | route to DECLINED or AWAITING_DOC |
-| `need_reply` | sender in AWAITING_NEED | parse need → MATCHABLE |
-| `intro_yes` | sender has an open ask | advance intro state |
-| `intro_no` | sender has an open ask | CLOSED_DECLINED |
-| `unsubscribe` | any | DORMANT, confirm once |
-| `delete_me` | any | DELETED, confirm once |
-| `unknown` | anything else | **human queue — do not reply** |
+| `new_inbound` | sender unknown | enroll, assign population, start interview |
+| `interview_answer` | sender INTERVIEWING | advance interview |
+| `proposal_interested` | member has live proposal | → CANDIDATE_ASKED |
+| `proposal_pass` | member has live proposal | → DECLINED_MEMBER, reopen slot |
+| `candidate_available` | candidate was asked | → INVITE_SENT |
+| `invite_response` | invite outstanding | accept / decline / reschedule |
+| `reschedule_request` | meeting scheduled | → RESCHEDULING |
+| `unsubscribe` | any | → STOPPED (INV-5) |
+| `delete_me` | any | → DELETED (INV-7) |
+| `question_or_other` | any | answer if answerable, else escalate |
+| `unknown` | anything else | **escalate — do not reply** |
 
 ### Why `unknown` does not answer
 
-A wrong-but-confident reply from a matchmaker is worse than a slow one. The cost
-of a human glancing at an ambiguous email is near zero; the cost of telling
-someone we understood them when we did not is the whole relationship.
+A confidently wrong reply from a matchmaking desk costs more than a slow one, and
+a human glance at an ambiguous email costs near zero.
 
-This mirrors a measured finding from the extraction work: the larger model's
-"failures" were nearly all abstentions rather than errors, and abstention was the
+This mirrors a measured finding: in model testing the larger model's "failures"
+were almost entirely abstentions rather than errors, and abstention proved the
 more trustworthy behavior. Same principle, applied to the inbox.
 
 ---
 
-## Third parties (INV-2)
+## 5. CC handling
 
-If a message has CCME in CC and other humans in To/CC:
+When a member CCs CCME on a thread with other participants:
 
-1. CCME may act for **the sender**, who addressed it deliberately.
-2. Every other participant is a third party. They are **not** enrolled,
-   **not** extracted, **not** matched, and **not** emailed.
-3. Whether CCME replies in-thread at all — where third parties would read it —
-   is an open question in SPEC §10.2. Default until decided: **reply directly to
-   the sender only**, never to the thread.
+1. Each other participant is enrolled as a **candidate** (`NEW`), with provenance
+   recording the thread and the member who surfaced them.
+2. CCME may email them to begin an interview — this is the intended mechanic.
+3. Their enrollment is subject to every ordinary rule: unsubscribe, deletion, the
+   confidence threshold, and the slot cap of whichever member they are matched to.

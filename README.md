@@ -1,62 +1,84 @@
 # CCME
 
-**An email-first B2B matchmaker. You cc it; it explains itself.**
+**An AI matchmaking desk that runs out of an inbox. You cc it; it explains itself.**
 
-Send CCME your LinkedIn profile export. It reads it, tells you what it
-understood, and asks you one question: what do you need from another business?
+CCME keeps a CRM of two populations, interviews both sides by email, and produces
+one thing: **a meeting on a calendar, with a Google Meet link, that both parties
+accepted.**
 
-When someone else's answer matches what you do — and what you need matches what
-they do — CCME asks you both, separately, whether you want an introduction. Two
-yeses and it opens a single thread with both of you, including the reason.
-
-One no, or one silence, and nothing happens.
+Not a match. Not an introduction email. A booked meeting — because that is the
+thing that is actually worth something, and the thing you can count.
 
 ---
 
-## Three things that make it different
+## How it works
 
-**Nothing enters the graph that a person did not send in.**
-No scraping. No purchased lists. No cold profiles waiting to be matched. You are
-in the graph because you emailed in, and for no other reason. This is enforced as
-a schema constraint, not promised in a policy.
+**Members** are decision-makers: employers, investors, hedge funds, marketing
+partners, influencers. CCME interviews them to learn their ideal candidate.
 
-**It runs on our own hardware.**
-Extraction uses a 1.28 GB open-weights model on our own server. Matching is
-superlinear in pool size, so metered inference fails exactly when the product
-starts working. It also means your professional history is not routinely shipped
-to a third-party inference provider.
+**Candidates** are the fit for those members. CCME interviews them to learn their
+ideal member.
 
-**Every introduction can print its receipt.**
-Built on [NEDB](https://github.com/Eth-Interchained/nedb), whose causal
-provenance is native. `TRACE caused_by` on any introduction returns the whole
-chain — which sentence, in whose profile, extracted by which model version, on
-what date, caused two people to meet.
+When both sides fire — their ideal matches yours, yours matches theirs — CCME
+proposes, gets interest from both, and books the meeting.
+
+Candidates arrive two ways: they write in, or **you cc CCME on a thread and it
+picks them up from there.** That is the mechanic the name is describing.
+
+---
+
+## Three design decisions worth arguing with
+
+**Two to five. Never more.**
+A member holds at most 2–5 live candidates at a time. Slots reopen only when
+something actually resolves — a pass, a meeting, a decline, or a timeout.
+
+This is the quality mechanism and the volume control at once. Nobody sends a
+hiring manager forty résumés and calls it service, and a system that *can't*
+flood you is more trustworthy than one that promises not to.
+
+**An empty slot beats a weak fill.**
+Under a cap of five, every proposal is expensive. CCME leaves slots open rather
+than filling them with a maybe. This came out of measurement: in model testing,
+the larger model's apparent failures were almost entirely *refusals to guess*, and
+under a throttle that is the behavior you want.
+
+**Capability and intent only.**
+Members include employers, so this is employment-adjacent matching. Protected
+attributes and their proxies are never extracted, never stored as match features,
+and never appear in a proposal's reason. That is enforced by a linter in CI, not
+by good intentions.
+
+---
+
+## Receipts
+
+Built on [NEDB](https://github.com/Eth-Interchained/nedb), whose causal provenance
+is native. `TRACE caused_by` on any booked meeting returns the whole chain — which
+sentence, in whose email or document, extracted under which model weights, on what
+date, caused two people to meet.
+
+Extraction runs on our own hardware: a 1.28 GB open-weights model on our own
+server. Matching is superlinear in pool size, so metered inference fails exactly
+when the product starts working — and people's professional histories should not
+be routinely shipped to a third-party inference provider.
 
 ---
 
 ## Status
 
-**Phase 0 — specification.** No runtime yet.
+**Phase 0b — specification.** No runtime yet.
 
 | document | what it settles |
 |---|---|
-| [`SPEC.md`](SPEC.md) | invariants, architecture, model selection, gated definition of done |
-| [`docs/STATE_MACHINE.md`](docs/STATE_MACHINE.md) | every state a person or an introduction can be in |
+| [`SPEC.md`](SPEC.md) | invariants, architecture, the slot ledger, model measurement, D1–D8 gates |
+| [`docs/STATE_MACHINE.md`](docs/STATE_MACHINE.md) | person, proposal and meeting machines; triage table |
 | [`docs/COLLECTIONS.md`](docs/COLLECTIONS.md) | the NEDB data model and the shape of a receipt |
 
----
-
-## The invariant worth reading first
-
-> Being CC'd does not enroll anyone.
->
-> If Alice emails Bob and CCs CCME, CCME may act **for Alice**, who addressed it.
-> Bob did not opt in. Bob is never added to the graph, never extracted, never
-> matched, and never emailed.
-
-The product's name invites a mechanic that would otherwise quietly pull
-non-consenting people into the dataset. Naming that invariant up front is cheaper
-than discovering it later. Full list in [SPEC §2](SPEC.md#2-hard-invariants).
+v0.1 specified a consent-gated peer-to-peer B2B matchmaker. It was superseded
+after real-profile testing showed most people are not businesses — they are
+candidates. [SPEC §12](SPEC.md#12-what-changed-from-v01-and-why) records what
+changed and why.
 
 ---
 
