@@ -34,7 +34,18 @@ Not a "match." A match is an internal artifact; a booked meeting is an outcome.
 It is countable, it is the only thing either side actually wanted, and it produces
 the feedback signal that improves matching over time.
 
-### 1.3 What CCME is not
+### 1.3 Inbound-first
+
+CCME is a triage desk before it is anything else. The dominant flow is a message
+arriving and being answered: someone writes in, someone replies to an interview
+question, someone accepts an invite. Proposals are the only genuinely unprompted
+messages CCME sends, and they are capped at 2–5 per person (§5.2).
+
+This matters beyond architecture — an inbound-driven reply pattern is the
+healthiest sending behaviour a mail server can have, which is why deliverability
+is a normal engineering requirement here rather than a crisis (§11).
+
+### 1.4 What CCME is not
 
 - **Not a placement agent, broker, or finder.** No fee is charged for an
   introduction and no payment is ever tied to a round closing (§6).
@@ -251,10 +262,13 @@ system that *cannot* flood you is more trustworthy than one that promises not to
 
 ## 6. Monetization
 
-**Pay what you want. The first 1,000 people are free for life.**
+**Pay what you want. The first 500 founders and the first 500 investors are free
+for life.**
 
-- **Founding 1,000** — free permanently, badged. The remaining count is public and
-  is itself a reason to arrive early, which is a partial answer to cold start.
+- **Founding 1,000 — 500 founders and 500 investors** — free permanently, badged.
+  The two counters are tracked separately and both are public. Splitting them per
+  side is deliberate: it keeps the marketplace balanced during cold start instead
+  of filling 1,000 seats with whichever side arrives fastest.
 - **After that: PWYW**, including zero. A suggested amount is shown; any amount,
   or none, is accepted.
 - **Never contingent.** No success fee, no percentage, no carry, nothing tied to a
@@ -321,13 +335,16 @@ model error, excluded rather than scored as a miss.
 **All three produced 34/34 well-formed tool calls.** The mechanics are not in
 question at any size.
 
-### 9.1 Abstention is a feature under a throttle
+**The model is settled: Qwen3.5-2B.** The table above is the record of why, not an
+open comparison.
 
-All 17 of the 4B's misses were `none` — abstentions, not errors. Shown
-`Company: Tesla / Title: Production control Team Lead`, it declined to infer what
-Tesla sells, because the excerpt does not say. Under v0.2 scoring that looked like
-losing; under INV-3 it is exactly right. The 4B remains a candidate for the
-proposal-confidence step even though 2B is chosen for extraction throughput (§13).
+### 9.1 One principle carried forward from the testing
+
+Larger-model "failures" in that run were overwhelmingly *abstentions* rather than
+wrong answers — shown a chunk that did not state what a company sells, it declined
+to guess. That behaviour is the right one under a throttle, and it is why INV-3
+exists: an empty slot beats a weak fill. The principle is kept; the model choice
+is 2B and is not revisited here.
 
 ### 9.2 Why these numbers should improve under the narrowed scope
 
@@ -389,7 +406,7 @@ anyone can check. "It looked right" is not a gate.
 
 ### D8 — Deliverability
 - [ ] SPF, DKIM and DMARC pass a third-party inbox placement test.
-- [ ] Sending domain warmed and volume ramped before live use.
+- [ ] Sending domain verified against the operator's existing mailbox before live use.
 - [ ] Bounces and complaints feed a suppression list automatically.
 - [ ] Every outbound carries a working unsubscribe and a postal address.
 - [ ] One config flag halts all outbound.
@@ -405,7 +422,7 @@ anyone can check. "It looked right" is not a gate.
 
 | Risk | Severity | Mitigation |
 |---|---|---|
-| Domain blacklisted — CCME emails people who did not write in first | **Existential** | D8 in full before first live send |
+| Sender reputation damage | High | Flow is inbound-first: most outbound is a reply to someone who just wrote in, which is the healthiest sending pattern available. Mailbox and DNS are already provisioned. D8 still gates the first live send. |
 | Weak proposals burn an investor's trust | **Existential** | INV-3, D4; an empty slot is acceptable |
 | Being treated as an unregistered broker | High | INV-6; no fee, no contingent payment, no advice |
 | Leaking an unannounced raise to the wrong party | High | Conflict exclusion, self-hosted inference, no third-party model calls |
@@ -435,9 +452,9 @@ funds, marketing partners and influencers, with members as the paying side.
 
 ## 13. Open questions
 
-1. Sending domain and address. **Long pole** — domain warming is calendar time.
-2. Default slot cap within 2–5. Assumed 3.
-3. Whether the 4B serves the proposal-confidence step while 2B serves extraction.
-4. Default timeout `N` — 7 days assumed, unvalidated.
-5. Is the Founding 1,000 counted across all people, or 1,000 per side?
-6. Does a founder's raise status need an explicit confidentiality mode?
+1. Default slot cap within 2–5. Assumed 3.
+2. Default timeout `N` — 7 days assumed, unvalidated.
+3. Does a founder's raise status need an explicit confidentiality mode?
+
+**Settled:** model is Qwen3.5-2B · mailbox and DNS are provisioned by the operator ·
+Founding seats are 500 per side, 1,000 total.

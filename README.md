@@ -22,7 +22,7 @@ out of the way.
 That is not modesty — it is the only reason the email is worth opening. An honest
 broker is credible exactly when there is nothing in it for them.
 
-**Monetization is pay-what-you-want, and the first 1,000 people are free for life.**
+**Monetization is pay-what-you-want, and the first 500 founders and 500 investors are free for life.**
 A contribution supports the infrastructure and buys nothing: payment status is
 invisible to the match engine, by invariant and by test. PWYW that changes nothing
 is a tip. PWYW that changes outcomes is a price.

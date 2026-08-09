@@ -43,7 +43,7 @@ be a founder in one relationship and an investor in another.
 | `org_name` | string | |
 | `stopped_at` | date | INV-5; blocks all outbound when set |
 | `deleted_at` | date | INV-9 |
-| `founding_member_no` | number | 1–1000, free for life; **badge only, never read during matching (INV-7)** |
+| `founding_seat_no` | number | 1–500 **within a side**; free for life; **badge only, never read during matching (INV-7)** |
 | `contribution_state` | enum | `none` \| `contributing`; **never read during matching (INV-7)** |
 
 `caused_by`: the message that first surfaced them.
