@@ -1,0 +1,406 @@
+{
+ "summary": {
+  "label": "2B + clarity-first schema",
+  "cases": 23,
+  "well_formed": 23,
+  "clear_correct": "9/16",
+  "ambiguous_abstained": "3/7",
+  "overconfident": 4,
+  "overcautious": 2,
+  "misclassified": 5,
+  "evidence_invented": 1
+ },
+ "rows": [
+  {
+   "id": "clear_new_founder",
+   "kind": "clear",
+   "args": {
+    "clarity": "one_clear_intent",
+    "intent": "proposal_interested",
+    "confidence": "likely",
+    "evidence": "\"Hi \u2014 a friend told me about this. I'm building Kettle, a devtools product for CI observability. We're about to start raising a seed round. Happy to send over more detail if useful.\"",
+    "role_signal": "investor",
+    "mentions_attachment": false
+   },
+   "well_formed": true,
+   "problems": [],
+   "grounding": "exact",
+   "clarity": "one_clear_intent",
+   "verdict": "MISCLASSIFIED"
+  },
+  {
+   "id": "clear_new_investor",
+   "kind": "clear",
+   "args": {
+    "clarity": "one_clear_intent",
+    "intent": "proposal_interested",
+    "confidence": "likely",
+    "evidence": "Subject: intro. I run a small angel fund out of Austin. We write $50-250k checks into pre-seed infrastructure and developer tools. Would like to see deal flow if that's what this is.",
+    "role_signal": "investor",
+    "mentions_attachment": false
+   },
+   "well_formed": true,
+   "problems": [],
+   "grounding": "fuzzy",
+   "clarity": "one_clear_intent",
+   "verdict": "MISCLASSIFIED"
+  },
+  {
+   "id": "clear_new_with_deck",
+   "kind": "clear",
+   "args": {
+    "clarity": "one_clear_intent",
+    "intent": "proposal_interested",
+    "confidence": "likely",
+    "evidence": "Subject: Kettle \u2014 seed\nAttaching our deck and my LinkedIn export. We're at 14k MRR growing ~20% MoM, raising $1.5M. Let me know what else you need.",
+    "role_signal": "investor",
+    "mentions_attachment": true
+   },
+   "well_formed": true,
+   "problems": [],
+   "grounding": "fuzzy",
+   "clarity": "one_clear_intent",
+   "verdict": "MISCLASSIFIED"
+  },
+  {
+   "id": "clear_interview_answer",
+   "kind": "clear",
+   "args": {
+    "clarity": "one_clear_intent",
+    "intent": "interview_answer",
+    "confidence": "likely",
+    "evidence": "Subject: Re: a couple of questions\nWe're pre-seed, raising $750k on a SAFE. About 400 weekly active teams, no revenue yet.",
+    "role_signal": "founder",
+    "mentions_attachment": false
+   },
+   "well_formed": true,
+   "problems": [],
+   "grounding": "fuzzy",
+   "clarity": "one_clear_intent",
+   "verdict": "PASS"
+  },
+  {
+   "id": "clear_interview_answer_investor",
+   "kind": "clear",
+   "args": {
+    "clarity": "one_clear_intent",
+    "intent": "interview_answer",
+    "confidence": "likely",
+    "evidence": "Subject: Re: two quick things\nChecks are 100-500k, we lead at pre-seed and follow at seed. Mostly B2B infra. We stay out of consumer social.",
+    "role_signal": "investor",
+    "mentions_attachment": false
+   },
+   "well_formed": true,
+   "problems": [],
+   "grounding": "fuzzy",
+   "clarity": "one_clear_intent",
+   "verdict": "PASS"
+  },
+  {
+   "id": "clear_proposal_interested",
+   "kind": "clear",
+   "args": {
+    "clarity": "one_clear_intent",
+    "intent": "availability_reply",
+    "confidence": "likely",
+    "evidence": "Subject: Re: A founder matching your thesis\nYes, this looks relevant. Happy to take a call with them.",
+    "role_signal": "investor",
+    "mentions_attachment": false
+   },
+   "well_formed": true,
+   "problems": [],
+   "grounding": "fuzzy",
+   "clarity": "one_clear_intent",
+   "verdict": "MISCLASSIFIED"
+  },
+  {
+   "id": "clear_proposal_pass",
+   "kind": "clear",
+   "args": {
+    "clarity": "one_clear_intent",
+    "intent": "proposal_pass",
+    "confidence": "certain",
+    "evidence": "Subject: Re: A founder matching your thesis\n\nNot for us \u2014 too early and we already have something adjacent in the portfolio. Pass, thanks.",
+    "role_signal": "investor",
+    "mentions_attachment": false
+   },
+   "well_formed": true,
+   "problems": [],
+   "grounding": "fuzzy",
+   "clarity": "one_clear_intent",
+   "verdict": "PASS"
+  },
+  {
+   "id": "clear_availability",
+   "kind": "clear",
+   "args": {
+    "clarity": "one_clear_intent",
+    "intent": "availability_reply",
+    "confidence": "certain",
+    "evidence": "Subject: Re: when are you free?\nTuesday or Thursday after 2pm ET works for me. Wednesday I'm out.",
+    "role_signal": "investor",
+    "mentions_attachment": false
+   },
+   "well_formed": true,
+   "problems": [],
+   "grounding": "fuzzy",
+   "clarity": "one_clear_intent",
+   "verdict": "PASS"
+  },
+  {
+   "id": "clear_invite_accept",
+   "kind": "clear",
+   "args": {
+    "clarity": "one_clear_intent",
+    "intent": "invite_response",
+    "confidence": "certain",
+    "evidence": "Subject: Accepted: Kettle <> Ridgeline Capital\nAccepted. See you then.",
+    "role_signal": "investor",
+    "mentions_attachment": false
+   },
+   "well_formed": true,
+   "problems": [],
+   "grounding": "fuzzy",
+   "clarity": "one_clear_intent",
+   "verdict": "PASS"
+  },
+  {
+   "id": "clear_invite_decline",
+   "kind": "clear",
+   "args": {
+    "clarity": "one_clear_intent",
+    "intent": "unsubscribe",
+    "confidence": "certain",
+    "evidence": "Subject: Declined: Kettle <> Ridgeline Capital\nI can't make this one, sorry. Declining.",
+    "role_signal": "investor",
+    "mentions_attachment": false
+   },
+   "well_formed": true,
+   "problems": [],
+   "grounding": "fuzzy",
+   "clarity": "one_clear_intent",
+   "verdict": "MISCLASSIFIED"
+  },
+  {
+   "id": "clear_reschedule",
+   "kind": "clear",
+   "args": {
+    "clarity": "one_clear_intent",
+    "intent": "reschedule_request",
+    "confidence": "likely",
+    "evidence": "Subject: Re: Kettle <> Ridgeline Capital\\n\\nSomething came up Thursday \u2014 can we push this to next week? Same time would be ideal.",
+    "role_signal": "investor",
+    "mentions_attachment": false
+   },
+   "well_formed": true,
+   "problems": [],
+   "grounding": "fuzzy",
+   "clarity": "one_clear_intent",
+   "verdict": "PASS"
+  },
+  {
+   "id": "clear_unsubscribe",
+   "kind": "clear",
+   "args": {
+    "clarity": "one_clear_intent",
+    "intent": "unsubscribe",
+    "confidence": "certain",
+    "evidence": "Subject: stop\nPlease take me off this. I don't want any more emails.",
+    "role_signal": "founder",
+    "mentions_attachment": false
+   },
+   "well_formed": true,
+   "problems": [],
+   "grounding": "fuzzy",
+   "clarity": "one_clear_intent",
+   "verdict": "PASS"
+  },
+  {
+   "id": "clear_delete_me",
+   "kind": "clear",
+   "args": {
+    "clarity": "one_clear_intent",
+    "intent": "delete_me",
+    "confidence": "certain",
+    "evidence": "Subject: delete my data\n\nI'd like everything you hold about me erased, please confirm when it's done.",
+    "role_signal": "investor",
+    "mentions_attachment": false
+   },
+   "well_formed": true,
+   "problems": [],
+   "grounding": "fuzzy",
+   "clarity": "one_clear_intent",
+   "verdict": "PASS"
+  },
+  {
+   "id": "clear_question",
+   "kind": "clear",
+   "args": {
+    "clarity": "one_clear_intent",
+    "intent": "question_or_other",
+    "confidence": "likely",
+    "evidence": "Subject: quick q\nHow does this actually work \u2014 do you charge anything if I end up raising from someone you introduce?",
+    "role_signal": "founder",
+    "mentions_attachment": false
+   },
+   "well_formed": true,
+   "problems": [],
+   "grounding": "fuzzy",
+   "clarity": "one_clear_intent",
+   "verdict": "PASS"
+  },
+  {
+   "id": "clear_auto_reply_ooo",
+   "kind": "clear",
+   "args": {
+    "clarity": "two_or_more_possible",
+    "intent": "auto_reply",
+    "confidence": "likely",
+    "evidence": "Subject: Automatic reply: A founder matching your thesis\n\nI am out of the office until 3 March with limited access to email. For urgent matters please contact ops@ridgeline.vc. This is an automated response.",
+    "role_signal": "founder",
+    "mentions_attachment": false
+   },
+   "well_formed": true,
+   "problems": [],
+   "grounding": "fuzzy",
+   "clarity": "two_or_more_possible",
+   "verdict": "OVERCAUTIOUS"
+  },
+  {
+   "id": "clear_auto_reply_bounce",
+   "kind": "clear",
+   "args": {
+    "clarity": "cannot_tell",
+    "intent": "unknown",
+    "confidence": "unsure",
+    "evidence": "Subject: Undeliverable: two quick things\nDelivery has failed to these recipients. The mailbox is full. Diagnostic code: smtp;552 Requested mail action aborted.\n--- end ---",
+    "role_signal": "unclear",
+    "mentions_attachment": false
+   },
+   "well_formed": true,
+   "problems": [],
+   "grounding": "fuzzy",
+   "clarity": "cannot_tell",
+   "verdict": "OVERCAUTIOUS"
+  },
+  {
+   "id": "amb_bare_ok",
+   "kind": "ambiguous",
+   "args": {
+    "clarity": "one_clear_intent",
+    "intent": "proposal_pass",
+    "confidence": "certain",
+    "evidence": "Subject: Re: ok",
+    "role_signal": "investor",
+    "mentions_attachment": false
+   },
+   "well_formed": true,
+   "problems": [],
+   "grounding": "INVENTED",
+   "clarity": "one_clear_intent",
+   "verdict": "OVERCONFIDENT"
+  },
+  {
+   "id": "amb_thanks_only",
+   "kind": "ambiguous",
+   "args": {
+    "clarity": "one_clear_intent",
+    "intent": "proposal_pass",
+    "confidence": "certain",
+    "evidence": "Subject: Re: An investor matching your raise\nThanks!",
+    "role_signal": "investor",
+    "mentions_attachment": false
+   },
+   "well_formed": true,
+   "problems": [],
+   "grounding": "fuzzy",
+   "clarity": "one_clear_intent",
+   "verdict": "OVERCONFIDENT"
+  },
+  {
+   "id": "amb_forwarded_no_instruction",
+   "kind": "ambiguous",
+   "args": {
+    "clarity": "one_clear_intent",
+    "intent": "availability_reply",
+    "confidence": "likely",
+    "evidence": "\"Sounds good, let's find time.\"",
+    "role_signal": "founder",
+    "mentions_attachment": false
+   },
+   "well_formed": true,
+   "problems": [],
+   "grounding": "exact",
+   "clarity": "one_clear_intent",
+   "verdict": "OVERCONFIDENT"
+  },
+  {
+   "id": "amb_maybe_later",
+   "kind": "ambiguous",
+   "args": {
+    "clarity": "two_or_more_possible",
+    "intent": "question_or_other",
+    "confidence": "unsure",
+    "evidence": "Subject: Re: A founder matching your thesis\n\nInteresting but the timing is bad right now. Maybe circle back in a couple of months?",
+    "role_signal": "investor",
+    "mentions_attachment": false
+   },
+   "well_formed": true,
+   "problems": [],
+   "grounding": "fuzzy",
+   "clarity": "two_or_more_possible",
+   "verdict": "PASS"
+  },
+  {
+   "id": "amb_angry_confused",
+   "kind": "ambiguous",
+   "args": {
+    "clarity": "two_or_more_possible",
+    "intent": "question_or_other",
+    "confidence": "unsure",
+    "evidence": "Subject: who is this\nWhy am I getting these? I don't remember signing up for anything.\n--- end ---",
+    "role_signal": "investor",
+    "mentions_attachment": false
+   },
+   "well_formed": true,
+   "problems": [],
+   "grounding": "fuzzy",
+   "clarity": "two_or_more_possible",
+   "verdict": "PASS"
+  },
+  {
+   "id": "amb_partial_answer_plus_question",
+   "kind": "ambiguous",
+   "args": {
+    "clarity": "one_clear_intent",
+    "intent": "interview_answer",
+    "confidence": "likely",
+    "evidence": "\"Seed, around $2M. Although before I go further \u2014 who else sees this information?\"",
+    "role_signal": "founder",
+    "mentions_attachment": false
+   },
+   "well_formed": true,
+   "problems": [],
+   "grounding": "exact",
+   "clarity": "one_clear_intent",
+   "verdict": "OVERCONFIDENT"
+  },
+  {
+   "id": "amb_third_party_reply",
+   "kind": "ambiguous",
+   "args": {
+    "clarity": "two_or_more_possible",
+    "intent": "question_or_other",
+    "confidence": "likely",
+    "evidence": "Subject: Re: two quick things\nHi, I'm Dana's assistant. She asked me to look at this. What is it you need from her exactly?",
+    "role_signal": "unclear",
+    "mentions_attachment": false
+   },
+   "well_formed": true,
+   "problems": [],
+   "grounding": "fuzzy",
+   "clarity": "two_or_more_possible",
+   "verdict": "PASS"
+  }
+ ]
+}

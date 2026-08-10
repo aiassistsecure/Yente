@@ -1,4 +1,4 @@
-# CCME — state machines
+# Yente — state machines
 
 Written before any code, on purpose. If the states are wrong, the code is wrong.
 
@@ -85,7 +85,7 @@ One proposal occupies one of a recipient's 2–5 slots for its entire life.
 - **A pass is never re-proposed within the same cycle.** Re-suggesting someone
   already rejected is the behavior that makes a desk feel like spam.
 - **The reason ships with the proposal, not after.** The recipient decides using
-  the same evidence CCME used.
+  the same evidence Yente used.
 
 ---
 
@@ -153,11 +153,11 @@ more trustworthy behavior. Same principle, applied to the inbox.
 
 ## 5. CC handling
 
-When someone CCs CCME on a thread with other participants:
+When someone CCs `ccme@` on a thread with other participants:
 
 1. Each other participant is enrolled (`NEW`), with provenance recording the
    thread and who surfaced them. Triage assigns the role — founder or investor.
-2. CCME emails them to begin an interview. This is the intended mechanic, not a
+2. Yente emails them to begin an interview. This is the intended mechanic, not a
    side effect; it is what the product is named after.
 3. Enrollment is subject to every ordinary rule: unsubscribe, deletion, the
    confidence threshold, and the slot cap on whoever they are matched to.

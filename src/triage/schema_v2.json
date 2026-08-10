@@ -1,0 +1,76 @@
+[
+ {
+  "type": "function",
+  "function": {
+   "name": "triage_email",
+   "description": "Classify one inbound email so Yente knows how to handle it. You are given the message and what Yente already knows about the sender. First judge whether the message points at exactly one thing, then label it. Decide from the message and that context only - do not ask for more information. Short replies like 'ok' or 'thanks' are usually NOT clear enough to act on. Always answer with this tool, never with prose, even when you are unsure. Call it exactly once.",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "clarity": {
+      "type": "string",
+      "enum": [
+       "one_clear_intent",
+       "two_or_more_possible",
+       "cannot_tell"
+      ],
+      "description": "Decide this FIRST, before choosing an intent. Does the message point at exactly one thing? 'one_clear_intent' = it plainly says what it wants. 'two_or_more_possible' = it could reasonably mean more than one thing given what is open with this sender. Examples: a bare 'ok' or 'Thanks!' when something is awaiting their answer; a forward with no instruction; 'maybe circle back in a couple of months', which is neither a yes nor a no; a reply that answers a question AND asks one; a reply written by someone other than the person asked. 'cannot_tell' = you genuinely do not know what this is. Anything other than 'one_clear_intent' sends the message to a human, which is a good outcome, not a failure."
+     },
+     "intent": {
+      "type": "string",
+      "enum": [
+       "new_inbound",
+       "interview_answer",
+       "proposal_interested",
+       "proposal_pass",
+       "availability_reply",
+       "invite_response",
+       "reschedule_request",
+       "unsubscribe",
+       "delete_me",
+       "question_or_other",
+       "auto_reply",
+       "unknown"
+      ],
+      "description": "What this message is. 'new_inbound' = a person Yente does not know yet, introducing themselves or asking to join. 'interview_answer' = answering a question Yente asked them. 'proposal_interested' = they want the introduction Yente offered. 'proposal_pass' = they do not want it. 'availability_reply' = they are giving times they are free. 'invite_response' = accepting or declining a calendar invite already sent. 'reschedule_request' = a meeting exists and they want to move it. 'unsubscribe' = stop contacting me. 'delete_me' = erase my data. 'question_or_other' = a genuine question for Yente. 'auto_reply' = an automated bounce, vacation or out-of-office message that no human wrote. 'unknown' = you cannot tell; use it whenever two intents are equally plausible."
+     },
+     "confidence": {
+      "type": "string",
+      "enum": [
+       "certain",
+       "likely",
+       "unsure"
+      ],
+      "description": "How sure you are. 'certain' = the message says it plainly. 'likely' = strongly implied. 'unsure' = you are guessing between options. Use 'unsure' freely; it routes the message to a human instead of a wrong reply."
+     },
+     "evidence": {
+      "type": "string",
+      "description": "The words from the message that decided it, copied exactly. Copy the text; do not paraphrase or invent wording."
+     },
+     "role_signal": {
+      "type": "string",
+      "enum": [
+       "founder",
+       "investor",
+       "builder",
+       "unclear"
+      ],
+      "description": "What the message suggests this person is. 'founder' = building a product or raising money. 'investor' = angel, VC or fund who deploys capital. 'builder' = wants to join a team as a co-founder or advisor. 'unclear' = the message does not say, which is normal for short replies."
+     },
+     "mentions_attachment": {
+      "type": "boolean",
+      "description": "True if the sender refers to a document they attached or shared, such as a profile, deck or memo."
+     }
+    },
+    "required": [
+     "clarity",
+     "intent",
+     "confidence",
+     "evidence",
+     "role_signal",
+     "mentions_attachment"
+    ]
+   }
+  }
+ }
+]

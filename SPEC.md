@@ -1,4 +1,6 @@
-# CCME — Specification v0.3
+# Yente — Specification v0.3
+
+*Yente is the matchmaker. `ccme@` is the address she answers.*
 
 **Status:** draft, Phase 0c
 **Owner:** Interchained LLC
@@ -7,25 +9,26 @@
 
 ---
 
-## 1. What CCME is
+## 1. What Yente is
 
-CCME is an AI matchmaking **desk** that runs out of an inbox.
+Yente is an AI matchmaking **desk** that runs out of an inbox.
 
 It connects **founders of digital products** — SaaS, devtools, AI infrastructure,
 marketplaces — with **investors: angels, VCs and funds.** It interviews both sides
 by email and produces one thing: **a meeting on a calendar, with a Google Meet
 link, that both parties accepted.**
 
-The goal is networking. CCME takes no fee for an introduction, gives no advice on
+The goal is networking. Yente takes no fee for an introduction, gives no advice on
 terms, does not negotiate, and never touches money or securities. It books the
 meeting and gets out of the way.
 
-The name is the interface. You cc it. It explains itself.
+The brand is the instruction: **Yente** is the matchmaker, **`ccme@`** is how you
+reach her. You cc her, and the address explains itself.
 
 ### 1.1 Why it exists
 
 Venture runs on warm introductions, which means it runs on who you already know.
-CCME is a warm introduction for people without the network — and, on the other
+Yente is a warm introduction for people without the network — and, on the other
 side, a filter for investors whose scarce resource is attention, not capital.
 
 ### 1.2 The output is a booked meeting
@@ -36,16 +39,16 @@ the feedback signal that improves matching over time.
 
 ### 1.3 Inbound-first
 
-CCME is a triage desk before it is anything else. The dominant flow is a message
+Yente is a triage desk before it is anything else. The dominant flow is a message
 arriving and being answered: someone writes in, someone replies to an interview
 question, someone accepts an invite. Proposals are the only genuinely unprompted
-messages CCME sends, and they are capped at 2–5 per person (§5.2).
+messages Yente sends, and they are capped at 2–5 per person (§5.2).
 
 This matters beyond architecture — an inbound-driven reply pattern is the
 healthiest sending behaviour a mail server can have, which is why deliverability
 is a normal engineering requirement here rather than a crisis (§11).
 
-### 1.4 What CCME is not
+### 1.4 What Yente is not
 
 - **Not a placement agent, broker, or finder.** No fee is charged for an
   introduction and no payment is ever tied to a round closing (§6).
@@ -73,10 +76,10 @@ building a product holds both roles independently.
 
 ### 2.2 How people arrive
 
-1. They email CCME directly.
-2. **They are CC'd into a thread.** Being CC'd enrolls you, and CCME will email
+1. They email `ccme@` directly.
+2. **They are CC'd into a thread.** Being CC'd enrolls you, and Yente will email
    you to begin an interview. This is the core mechanic, not a side effect — it is
-   why the product is called CCME.
+   exactly what the address instructs.
 
 ### 2.3 Secondary: adjacent builders
 
@@ -86,7 +89,7 @@ advisors** — equity partnerships, to grow the team around the product.
 **Employment is explicitly out of scope.** Co-founder and advisor matching is
 partnership formation; matching people to salaried roles is employment and pulls
 in an entire regulatory regime (EEOC guidance, automated-employment-decision audit
-laws) that CCME is not built to satisfy. If hiring is ever added it is a separate
+laws) that Yente is not built to satisfy. If hiring is ever added it is a separate
 decision with its own gates, not a widening of this one.
 
 ---
@@ -112,7 +115,7 @@ expected, and frequently correct outcome. Under a cap of five, every proposal is
 expensive; precision dominates recall.
 
 **INV-4 — Every claim is traceable.**
-Any attribute CCME asserts must trace to a span of text that person supplied, in
+Any attribute Yente asserts must trace to a span of text that person supplied, in
 an interview answer or a document they sent. Untraceable claims are flagged and
 excluded from matching.
 
@@ -121,7 +124,7 @@ An unsubscribe halts all outbound to that address within one processing cycle,
 across both roles, permanently, without requiring further interaction.
 
 **INV-6 — Never compensated for an introduction.**
-CCME charges no fee for a match, an introduction, or a meeting, and takes no
+Yente charges no fee for a match, an introduction, or a meeting, and takes no
 success fee, percentage, carry, warrants, or any payment contingent on a round
 closing. Contributions are voluntary and decoupled from outcomes (§6).
 
@@ -200,7 +203,7 @@ Note the coupling: an API-based version would have to charge, and charging for
 introductions drags §15(a) back in. **The architecture and the business model are
 the same decision.**
 
-Secondary and equally real: CCME holds founders' unannounced raise plans and
+Secondary and equally real: Yente holds founders' unannounced raise plans and
 traction numbers. Those should not be routinely shipped to a third-party
 inference provider.
 
@@ -276,7 +279,7 @@ for life.**
 - **Never load-bearing.** Payment status is invisible to the match engine (INV-7).
 
 A contribution supports the infrastructure. It buys nothing, and that is the
-point — it is what allows CCME to tell an investor, truthfully, that it has no
+point — it is what allows Yente to tell an investor, truthfully, that it has no
 stake in whether they take the meeting.
 
 ---

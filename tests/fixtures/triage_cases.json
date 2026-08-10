@@ -3,7 +3,7 @@
     "id": "clear_new_founder",
     "kind": "clear",
     "expect": ["new_inbound"],
-    "context": "CCME has never seen this sender before.",
+    "context": "Yente has never seen this sender before.",
     "subject": "hello",
     "body": "Hi — a friend told me about this. I'm building Kettle, a devtools product for CI observability. We're about to start raising a seed round. Happy to send over more detail if useful."
   },
@@ -11,7 +11,7 @@
     "id": "clear_new_investor",
     "kind": "clear",
     "expect": ["new_inbound"],
-    "context": "CCME has never seen this sender before.",
+    "context": "Yente has never seen this sender before.",
     "subject": "intro",
     "body": "I run a small angel fund out of Austin. We write $50-250k checks into pre-seed infrastructure and developer tools. Would like to see deal flow if that's what this is."
   },
@@ -19,7 +19,7 @@
     "id": "clear_new_with_deck",
     "kind": "clear",
     "expect": ["new_inbound"],
-    "context": "CCME has never seen this sender before.",
+    "context": "Yente has never seen this sender before.",
     "subject": "Kettle — seed",
     "body": "Attaching our deck and my LinkedIn export. We're at 14k MRR growing ~20% MoM, raising $1.5M. Let me know what else you need.",
     "note": "attachment mention should be true"
@@ -28,7 +28,7 @@
     "id": "clear_interview_answer",
     "kind": "clear",
     "expect": ["interview_answer"],
-    "context": "Sender is a founder in state INTERVIEWING. CCME last asked: what stage are you at and how much are you raising?",
+    "context": "Sender is a founder in state INTERVIEWING. Yente last asked: what stage are you at and how much are you raising?",
     "subject": "Re: a couple of questions",
     "body": "We're pre-seed, raising $750k on a SAFE. About 400 weekly active teams, no revenue yet."
   },
@@ -36,7 +36,7 @@
     "id": "clear_interview_answer_investor",
     "kind": "clear",
     "expect": ["interview_answer"],
-    "context": "Sender is an investor in state INTERVIEWING. CCME last asked: what is your check size and stage focus?",
+    "context": "Sender is an investor in state INTERVIEWING. Yente last asked: what is your check size and stage focus?",
     "subject": "Re: two quick things",
     "body": "Checks are 100-500k, we lead at pre-seed and follow at seed. Mostly B2B infra. We stay out of consumer social."
   },
@@ -180,7 +180,7 @@
   {
     "id": "amb_third_party_reply",
     "kind": "ambiguous",
-    "why": "reply is from an assistant, not the person CCME asked",
+    "why": "reply is from an assistant, not the person Yente asked",
     "context": "An interview question was sent to Dana Ruiz at this domain.",
     "subject": "Re: two quick things",
     "body": "Hi, I'm Dana's assistant. She asked me to look at this. What is it you need from her exactly?"

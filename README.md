@@ -1,20 +1,22 @@
-# CCME
+# Yente
 
-**Founders meet investors. You cc it; it explains itself.**
+**Founders meet investors. cc me.**
 
-CCME connects **founders of digital products** — SaaS, devtools, AI infrastructure,
+> *Yente is the matchmaker. `ccme@` is how you reach her.*
+
+Yente connects **founders of digital products** — SaaS, devtools, AI infrastructure,
 marketplaces — with **angels, VCs and funds.** It interviews both sides by email
 and produces one thing: **a meeting on a calendar, with a Google Meet link, that
 both parties accepted.**
 
 Venture runs on warm introductions, which means it runs on who you already know.
-CCME is a warm introduction for people without the network.
+Yente is a warm introduction for people without the network.
 
 ---
 
 ## No fee. Ever.
 
-CCME takes **nothing** for an introduction. No success fee, no percentage, no
+Yente takes **nothing** for an introduction. No success fee, no percentage, no
 carry, no payment tied to a round closing. It gives no advice on terms, never
 negotiates, and never touches money or securities. It books the meeting and gets
 out of the way.
@@ -39,7 +41,7 @@ investor forty decks and calls it service, and a system that *cannot* flood you 
 more trustworthy than one that promises not to.
 
 **An empty slot beats a weak fill.** Under a cap of five every proposal is
-expensive, so CCME leaves slots open rather than filling them with a maybe. This
+expensive, so Yente leaves slots open rather than filling them with a maybe. This
 came out of measurement: in model testing the larger model's apparent failures
 were almost entirely *refusals to guess*, and under a throttle that is exactly the
 behavior you want.
@@ -51,10 +53,11 @@ never proposed — something a warm intro from a friend does not protect you fro
 
 ## How people arrive
 
-1. They email CCME directly.
-2. **They are CC'd into a thread**, and CCME picks it up from there.
+1. They email `ccme@` directly.
+2. **They CC `ccme@` into a thread**, and Yente picks it up from there.
 
-That second one is the mechanic the name is describing.
+The address is the instruction. That second path is the one the name describes,
+and it is how most people will arrive.
 
 ---
 

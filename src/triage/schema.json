@@ -3,7 +3,7 @@
     "type": "function",
     "function": {
       "name": "triage_email",
-      "description": "Classify one inbound email so CCME knows how to handle it. You are given the message and what CCME already knows about the sender. Decide from the message text and that context only. You have everything you need - do not ask for more information. If the message does not clearly fit one intent, choose 'unknown' and set confidence to 'unsure'; a human will read it. Choosing 'unknown' is a correct and useful answer, not a failure. Call this exactly once.",
+      "description": "Classify one inbound email so Yente knows how to handle it. You are given the message and what Yente already knows about the sender. Decide from the message text and that context only. You have everything you need - do not ask for more information. If the message does not clearly fit one intent, choose 'unknown' and set confidence to 'unsure'; a human will read it. Choosing 'unknown' is a correct and useful answer, not a failure. Call this exactly once.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -23,7 +23,7 @@
               "auto_reply",
               "unknown"
             ],
-            "description": "What this message is. 'new_inbound' = a person CCME does not know yet, introducing themselves or asking to join. 'interview_answer' = answering a question CCME asked them. 'proposal_interested' = they want the introduction CCME offered. 'proposal_pass' = they do not want it. 'availability_reply' = they are giving times they are free. 'invite_response' = accepting or declining a calendar invite already sent. 'reschedule_request' = a meeting exists and they want to move it. 'unsubscribe' = stop contacting me. 'delete_me' = erase my data. 'question_or_other' = a genuine question for CCME. 'auto_reply' = an automated bounce, vacation or out-of-office message that no human wrote. 'unknown' = you cannot tell; use it whenever two intents are equally plausible."
+            "description": "What this message is. 'new_inbound' = a person Yente does not know yet, introducing themselves or asking to join. 'interview_answer' = answering a question Yente asked them. 'proposal_interested' = they want the introduction Yente offered. 'proposal_pass' = they do not want it. 'availability_reply' = they are giving times they are free. 'invite_response' = accepting or declining a calendar invite already sent. 'reschedule_request' = a meeting exists and they want to move it. 'unsubscribe' = stop contacting me. 'delete_me' = erase my data. 'question_or_other' = a genuine question for Yente. 'auto_reply' = an automated bounce, vacation or out-of-office message that no human wrote. 'unknown' = you cannot tell; use it whenever two intents are equally plausible."
           },
           "confidence": {
             "type": "string",

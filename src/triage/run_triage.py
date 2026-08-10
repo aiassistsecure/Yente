@@ -5,7 +5,7 @@ Two failure modes matter and they pull against each other:
 
   MISCLASSIFIED  - a clear message got the wrong intent
   OVERCONFIDENT  - an ambiguous message got a confident, actionable intent.
-                   This is the dangerous one: CCME would act on a message it
+                   This is the dangerous one: Yente would act on a message it
                    misread. Graded as a pass only if the model either answered
                    'unknown' or marked itself 'unsure'.
   OVERCAUTIOUS   - a clear message was punted to 'unknown'/'unsure'. Not
@@ -22,7 +22,7 @@ import sys
 import urllib.request
 
 SYS = (
-    "You triage inbound email for CCME, a service that introduces startup "
+    "You triage inbound email for Yente, a service that introduces startup "
     "founders to investors. You always answer by calling the triage_email tool "
     "exactly once. You never reply in prose."
 )
@@ -50,13 +50,21 @@ def grounded(evidence, body, subject):
     return "INVENTED"
 
 
-def verdict(kind, expect, intent, conf):
-    """Grade one triage result. Pure function so it can be tested directly."""
-    abstained = (intent == "unknown") or (conf == "unsure")
+def verdict(kind, expect, intent, conf, clarity=None):
+    """Grade one triage result. Pure function so it can be tested directly.
+
+    Abstention is a CODE decision, not a model one: anything other than
+    clarity == 'one_clear_intent' routes to a human regardless of the label the
+    model attached. The model reports a signal; the router enforces the rule.
+    """
+    abstained = (intent == "unknown") or (conf == "unsure") or (
+        clarity is not None and clarity != "one_clear_intent")
     if kind == "clear":
-        if intent in (expect or []):
-            return "PASS"
-        return "OVERCAUTIOUS" if abstained else "MISCLASSIFIED"
+        # Escalation wins over the label: if the router will punt this to a
+        # human, the desk did not act on it, whatever the model called it.
+        if abstained:
+            return "OVERCAUTIOUS"
+        return "PASS" if intent in (expect or []) else "MISCLASSIFIED"
     # ambiguous: abstaining is the correct answer
     if abstained:
         return "PASS"
@@ -65,7 +73,7 @@ def verdict(kind, expect, intent, conf):
 
 def call(url, tools, case, timeout=600):
     user = (
-        f"What CCME knows about the sender: {case['context']}\n\n"
+        f"What Yente knows about the sender: {case['context']}\n\n"
         f"--- message ---\n"
         f"Subject: {case['subject']}\n\n{case['body']}\n--- end ---\n\n"
         f"Triage this message."
@@ -126,24 +134,12 @@ def main():
             conf = args.get("confidence")
             rec["grounding"] = grounded(args.get("evidence"), c["body"], c["subject"])
 
-            if c["kind"] == "clear":
-                if intent in c["expect"]:
-                    rec["verdict"] = "PASS"
-                elif intent == "unknown" or conf == "unsure":
-                    rec["verdict"] = "OVERCAUTIOUS"
-                else:
-                    rec["verdict"] = "MISCLASSIFIED"
-            else:  # ambiguous
-                abstained = (intent == "unknown") or (conf == "unsure")
-                if abstained:
-                    rec["verdict"] = "PASS"
-                elif intent in ACTIONABLE:
-                    rec["verdict"] = "OVERCONFIDENT"
-                else:
-                    rec["verdict"] = "PASS"
+            clarity = args.get("clarity")
+            rec["clarity"] = clarity
+            rec["verdict"] = verdict(c["kind"], c.get("expect"), intent, conf, clarity)
 
-            print(f"  {c['id']:28s} {rec['verdict']:14s} {str(intent):20s} "
-                  f"{str(conf):8s} ground={rec['grounding']:8s} {';'.join(problems)}")
+            print(f"  {c['id']:32s} {rec['verdict']:14s} {str(clarity):22s} "
+                  f"{str(intent):20s} {str(conf):8s} ground={rec['grounding']:8s} {';'.join(problems)}")
         except Exception as ex:
             rec.update(verdict="EXCEPTION", error=str(ex)[:200])
             print(f"  {c['id']:28s} EXCEPTION {str(ex)[:100]}")

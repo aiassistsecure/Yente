@@ -1,6 +1,6 @@
-# CCME — NEDB collections
+# Yente — NEDB collections
 
-Database: `ccme` on nedbd.
+Database: `yente` on nedbd.
 
 Engine notes that cost real debugging time elsewhere, recorded so they are not
 rediscovered:
@@ -172,7 +172,7 @@ Provenance for the model itself.
 | `schema_version` | string | |
 | `chunk_count` / `well_formed` / `invented_count` | number | |
 
-Recording the model hash means *"why did CCME think that in March?"* is
+Recording the model hash means *"why did Yente think that in March?"* is
 answerable with `AS OF`, including which weights were running.
 
 ---
