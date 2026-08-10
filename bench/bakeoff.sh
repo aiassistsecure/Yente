@@ -9,7 +9,7 @@ set -uo pipefail
 
 MODEL_DIR="${MODEL_DIR:-/opt/models}"
 LLAMA_BIN="${LLAMA_BIN:-/opt/llama.cpp/build/bin}"
-PORT="${PORT:-8080}"
+PORT="${PORT:-8399}"   # not 8080; that is commonly already in use
 CTX="${CTX:-8192}"
 SCHEMA="${SCHEMA:-src/triage/schema_v2.json}"
 OUT_DIR="${OUT_DIR:-bench/results}"
@@ -24,6 +24,22 @@ fi
 export LD_LIBRARY_PATH="$LLAMA_BIN"
 mkdir -p "$OUT_DIR"
 
+port_busy() { ss -ltn 2>/dev/null | awk '{print $4}' | grep -qE "[:.]$1\$"; }
+
+# Preflight: a port already in use is the difference between a bake-off and
+# an hour of empty result files. Report the squatter, then move rather than
+# fight it - whatever is on that port is probably meant to be there.
+if port_busy "$PORT"; then
+  echo "port $PORT is already in use:"
+  ss -ltnp 2>/dev/null | grep -E "[:.]$PORT\b" | sed 's/^/    /'
+  for cand in $(seq 8399 8420); do
+    if ! port_busy "$cand"; then PORT="$cand"; break; fi
+  done
+  if port_busy "$PORT"; then echo "no free port in 8399-8420, aborting"; exit 1; fi
+  echo "using free port $PORT instead"
+  echo
+fi
+
 if [ $# -gt 0 ]; then
   MODELS=("$@")
 else
@@ -37,6 +53,7 @@ fi
 [ ${#MODELS[@]} -eq 0 ] && { echo "no models found in $MODEL_DIR"; exit 1; }
 
 echo "physical cores : $CORES"
+echo "port           : $PORT"
 echo "context        : $CTX"
 echo "schema         : $SCHEMA"
 echo "models         : ${MODELS[*]}"
