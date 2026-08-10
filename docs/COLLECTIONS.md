@@ -9,7 +9,29 @@ rediscovered:
   returns zero rows, which reads like a broken query rather than a typo.
 - **`caused_by` goes at the top level of a put**, not inside `doc`. Placed inside
   `doc` it is stored as ordinary user data and creates **no causal edge**.
-- The engine normalizes integer seqs to hash strings; stored rows expose `_caused_by`.
+- **`caused_by` must be HASH STRINGS on the v2 DAG engine, not seqs.** Verified
+  against a live nedbd 2.8.2: passing the integer `seq` from a put response
+  silently creates **no edge** — `_caused_by` comes back `None` and
+  `TRACE caused_by` returns only the starting row, which reads exactly like
+  "TRACE is broken." Read the parent's `_hash` and pass that instead.
+  Note the shipped Python client types the argument `caused_by: List[int]`,
+  which is the **v1** signature; it will accept ints and quietly do nothing.
+- The `seq` in a put response is a **global** counter; the `_seq` on a stored
+  row is per-collection. They are different numbers and are easy to confuse.
+
+Proven working shape, end to end:
+
+```python
+from nedb.client import NedbClient
+c = NedbClient("http://127.0.0.1:7070", db="yente")
+
+c.put("messages", "m1", {...})
+h = c.get_doc("messages", "m1")["_hash"]          # the parent's hash
+c.put("roles", "r1", {...}, caused_by=[h])        # top level, hash string
+
+c.query('FROM interviews WHERE _id = "i1" TRACE caused_by')
+# -> [interviews i1, roles r1, messages m1]
+```
 
 ---
 
