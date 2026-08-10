@@ -19,6 +19,16 @@ LOAD_MODE="${LOAD_MODE:-none}"
 # reads the template, and the Qwen3.5 template turns thinking ON - so every
 # triage call was emitting a chain of thought before the tool call.
 REASONING_BUDGET="${REASONING_BUDGET:-0}"
+# GPU offload. A CUDA build still runs entirely on CPU unless layers are pushed
+# to the device, so default to all-layers when a GPU is visible and zero when it
+# is not. Override with NGL=0 to force CPU on a GPU box.
+if [ -z "${NGL:-}" ]; then
+  if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L >/dev/null 2>&1; then
+    NGL=99
+  else
+    NGL=0
+  fi
+fi
 SCHEMA="${SCHEMA:-src/triage/schema_v2.json}"
 OUT_DIR="${OUT_DIR:-bench/results}"
 
@@ -64,6 +74,7 @@ echo "physical cores : $CORES"
 echo "port           : $PORT"
 echo "context        : $CTX"
 echo "load-mode      : $LOAD_MODE"
+echo "gpu layers     : $NGL$( [ "$NGL" -gt 0 ] && echo "  (GPU)" || echo "  (CPU only)" )"
 echo "reasoning      : budget $REASONING_BUDGET"
 echo "schema         : $SCHEMA"
 echo "models         : ${MODELS[*]}"
@@ -95,7 +106,7 @@ for m in "${MODELS[@]}"; do
   "$LLAMA_BIN/llama-server" -m "$GGUF" \
     --host 127.0.0.1 --port "$PORT" -t "$CORES" -c "$CTX" \
     --jinja -rea off --reasoning-budget "$REASONING_BUDGET" \
-    --load-mode "$LOAD_MODE" --no-warmup > "$LOG" 2>&1 &
+    -ngl "$NGL" --load-mode "$LOAD_MODE" --no-warmup > "$LOG" 2>&1 &
   SRV_PID=$!
 
   # Bigger models take real time to mmap and warm; 5 minutes is generous but
@@ -115,7 +126,10 @@ for m in "${MODELS[@]}"; do
   fi
 
   RSS_KB=$(ps -o rss= -p "$SRV_PID" 2>/dev/null | tr -d ' ')
-  echo "  resident: $(( ${RSS_KB:-0} / 1024 )) MB"
+  echo "  resident: $(( ${RSS_KB:-0} / 1024 )) MB (host)"
+  if [ "$NGL" -gt 0 ] && command -v nvidia-smi >/dev/null 2>&1; then
+    echo "  vram:     $(nvidia-smi --query-gpu=memory.used --format=csv,noheader 2>/dev/null | head -1)"
+  fi
 
   START=$(date +%s)
   python3 src/triage/run_triage.py \
