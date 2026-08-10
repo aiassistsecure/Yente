@@ -11,6 +11,14 @@ MODEL_DIR="${MODEL_DIR:-/opt/models}"
 LLAMA_BIN="${LLAMA_BIN:-/opt/llama.cpp/build/bin}"
 PORT="${PORT:-8399}"   # not 8080; that is commonly already in use
 CTX="${CTX:-8192}"
+# load-mode none = read the model into RAM instead of mmap'ing it. Measured on
+# the VPS: mmap thrashed the disk at ~100 MB/s with the CPU 90% idle and
+# generation at 0.23 t/s; --no-mmap took it to 4.5 t/s, a 20x swing.
+LOAD_MODE="${LOAD_MODE:-none}"
+# reasoning-budget 0 = end thinking immediately. -rea defaults to 'auto', which
+# reads the template, and the Qwen3.5 template turns thinking ON - so every
+# triage call was emitting a chain of thought before the tool call.
+REASONING_BUDGET="${REASONING_BUDGET:-0}"
 SCHEMA="${SCHEMA:-src/triage/schema_v2.json}"
 OUT_DIR="${OUT_DIR:-bench/results}"
 
@@ -55,6 +63,8 @@ fi
 echo "physical cores : $CORES"
 echo "port           : $PORT"
 echo "context        : $CTX"
+echo "load-mode      : $LOAD_MODE"
+echo "reasoning      : budget $REASONING_BUDGET"
 echo "schema         : $SCHEMA"
 echo "models         : ${MODELS[*]}"
 echo
@@ -84,7 +94,8 @@ for m in "${MODELS[@]}"; do
   LOG="/tmp/srv_$m.log"
   "$LLAMA_BIN/llama-server" -m "$GGUF" \
     --host 127.0.0.1 --port "$PORT" -t "$CORES" -c "$CTX" \
-    --jinja -rea off --no-warmup > "$LOG" 2>&1 &
+    --jinja -rea off --reasoning-budget "$REASONING_BUDGET" \
+    --load-mode "$LOAD_MODE" --no-warmup > "$LOG" 2>&1 &
   SRV_PID=$!
 
   # Bigger models take real time to mmap and warm; 5 minutes is generous but
