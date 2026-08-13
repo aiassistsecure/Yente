@@ -57,3 +57,22 @@ test("state and uniqueness survive a process restart", () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("reopening the same path returns the same handle rather than failing on its own lock", () => {
+  // Regression. An earlier closeDatabase cleared the module handle, which made
+  // openDatabase willing to try again — and the retry failed inside the engine
+  // with a lock error naming the caller's OWN pid, because the addon exposes no
+  // close and the flock outlives our bookkeeping. Clearing a handle you cannot
+  // release is worse than not clearing it: the guard that would have said
+  // "already open, here it is" is replaced by an error that reads like an
+  // external process is at fault.
+  const dir = mkdtempSync(join(tmpdir(), "yente-reopen-"));
+  try {
+    run(dir, "write");
+    const reopened = run(dir, "reopen");
+    assert.equal(reopened.sameHandle, true);
+    assert.equal(reopened.verify, true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

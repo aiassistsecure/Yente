@@ -172,3 +172,158 @@ export function createReferenceIntroduction({ match }) {
       `I will step out here and let you take it forward.\n\n— Yente`,
   });
 }
+
+/* -------------------------------------------------------------------------
+ * The enrollment invitation — SPEC v2 §5.4
+ *
+ * The one message that goes to somebody who did not write in. It is both the
+ * acquisition loop and the whole domain risk, and §5.4 leaves almost nothing to
+ * write with: no thread content, no counterpart, no profile, nothing about the
+ * recipient at all. Four slots, and one of them is optional.
+ *
+ * That constraint is the brief rather than an obstacle. With no information to
+ * flatter anyone with, the only thing the email can offer is candour, so the
+ * copy spends its length on what Yente will NOT do. Three of those promises are
+ * enforced elsewhere in this codebase, which is what makes them safe to make:
+ *
+ *   "it is the only time you will hear from me" -> invitationKey is the address,
+ *                                                  once for the lifetime (§5.4)
+ *   "I have not read the thread"                -> no thread content reaches
+ *                                                  this template, and the
+ *                                                  disclosure guard rejects it
+ *   "there is no follow-up"                     -> invitationFollowUp() returns
+ *                                                  null and exists to be empty
+ *
+ * The subject names the member who copied Yente in and states the plain fact. A
+ * stranger's first question is "why is this in my inbox", and answering it in
+ * the subject line is worth more than any cleverness available here.
+ *
+ * DELIBERATELY OMITTED: the thread's subject line. It is the single most useful
+ * piece of context available and it is thread content, so it stays out. Named
+ * here because it is the obvious thing a future edit will want to add back.
+ * ---------------------------------------------------------------------- */
+
+const INVITATION_TEMPLATE = "enrollment_invitation";
+
+const INVITATION_FORBIDDEN = Object.freeze([
+  "any content from the thread, including its subject line",
+  "any fact about the recipient, their employer, or their work",
+  "any other person's name, profile, or summary",
+  "any claim that a match, opportunity, or introduction already exists",
+  "any email address other than the supplied reply address",
+  "any deadline, or any suggestion that silence means yes",
+]);
+
+function requireInvitationSlots({ invitedName, invitingName, replyAddress, unsubscribeUrl }) {
+  for (const [field, value] of Object.entries({ invitingName, replyAddress, unsubscribeUrl })) {
+    if (typeof value !== "string" || value.trim() === "") {
+      throw new TypeError(`An enrollment invitation requires ${field}`);
+    }
+  }
+  if (invitedName !== undefined && invitedName !== null && typeof invitedName !== "string") {
+    throw new TypeError("invitedName must be text when supplied");
+  }
+  return {
+    invitedName:
+      typeof invitedName === "string" && invitedName.trim() !== "" ? invitedName.trim() : null,
+    invitingName: invitingName.trim(),
+    replyAddress: replyAddress.trim(),
+    unsubscribeUrl: unsubscribeUrl.trim(),
+  };
+}
+
+/**
+ * The §11 prompt. Four approved slots and an explicit list of what may not
+ * appear — the forbidden list is longer than the permitted one, which is the
+ * right proportion for the only class addressed to a stranger.
+ */
+export function createEnrollmentInvitationPrompt({
+  invitedName,
+  invitingName,
+  replyAddress,
+  unsubscribeUrl,
+}) {
+  const slots = requireInvitationSlots({ invitedName, invitingName, replyAddress, unsubscribeUrl });
+
+  return createPromptArtifact([
+    {
+      tag: BLOCK_TAGS.TASK,
+      content:
+        "Write one short plain-text email inviting this person to enrol with Yente. " +
+        "They did not write in: a member copied Yente on an email thread they are on, " +
+        "and this is the only message they will ever receive unless they reply. " +
+        "Lead with why it is in their inbox. Be warm, plain and brief. " +
+        "State clearly that Yente has not read the thread and knows nothing about them. " +
+        "Give one clear way to say yes, replying with whatever explains their work, and " +
+        "one clear way to say no, ignoring it or unsubscribing. Promise no follow-up. " +
+        "Do not sell, do not flatter, do not use marketing language, and do not invent " +
+        "any fact about the recipient or anyone else.",
+    },
+    { tag: BLOCK_TAGS.POLICY, json: { approvedSlots: slots, forbidden: INVITATION_FORBIDDEN } },
+    {
+      tag: BLOCK_TAGS.OUTPUT_CONTRACT,
+      content: "Return exactly one META, one SUBJECT, and one EMAIL_TEXT block.",
+    },
+  ]);
+}
+
+/**
+ * The deterministic invitation.
+ *
+ * This is what §11.6 falls back to when the model fails twice, and also the
+ * reference the model is measured against. It is written to be good enough to
+ * send as-is: a fallback nobody would be happy to send is a fallback that turns
+ * a model outage into a product outage.
+ */
+export function createReferenceEnrollmentInvitation({
+  invitedName,
+  invitingName,
+  replyAddress,
+  unsubscribeUrl,
+  threadId,
+  invitedByMemberId,
+}) {
+  const slots = requireInvitationSlots({ invitedName, invitingName, replyAddress, unsubscribeUrl });
+  const greeting = slots.invitedName ? `Hi ${slots.invitedName},` : "Hi,";
+
+  return createEmailArtifact({
+    meta: {
+      template: INVITATION_TEMPLATE,
+      version: 1,
+      thread_id: threadId ?? null,
+      invited_by: invitedByMemberId ?? null,
+      facts_used: [],
+    },
+    subject: `${slots.invitingName} copied me on a thread with you`,
+    text:
+      `${greeting}\n\n` +
+      `${slots.invitingName} copied me on an email thread you are both on. That is the ` +
+      `only reason you are hearing from me, and it is the only time you will unless you ` +
+      `write back.\n\n` +
+      `I am Yente. I make professional introductions over email \u2014 one person to one ` +
+      `person, when there is a real reason for it. No app, no feed, no profile to fill ` +
+      `in. You send me whatever already explains your work: a resume, a LinkedIn export, ` +
+      `a portfolio, or a few sentences. You tell me what you are looking for. When ` +
+      `someone genuinely fits, I write to each of you privately first, and if either of ` +
+      `you would rather not, nothing happens.\n\n` +
+      `Good introductions usually come from who you already know. I am a way to get one ` +
+      `when you don't.\n\n` +
+      `To be plain about what I have: nothing. I have not read the thread, I do not have ` +
+      `your resume, and I know nothing about you beyond the fact that ` +
+      `${slots.invitingName} put us in the same room.\n\n` +
+      `If you would like in, reply to this email with whatever best explains what you do.\n\n` +
+      `If not, ignore this. There is no follow-up and no second message. You can also ` +
+      `unsubscribe and I will drop your address entirely: ${slots.unsubscribeUrl}\n\n` +
+      `— Yente\n${slots.replyAddress}`,
+  });
+}
+
+/** What the disclosure guard is given for this class. */
+export function enrollmentInvitationExpectation({ replyAddress, unsubscribeAddress }) {
+  return {
+    template: INVITATION_TEMPLATE,
+    allowedFactIds: [],
+    allowedAddresses: [replyAddress, unsubscribeAddress].filter(Boolean),
+    forbiddenSubstrings: [],
+  };
+}

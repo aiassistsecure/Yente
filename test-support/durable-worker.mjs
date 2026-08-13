@@ -22,6 +22,19 @@ const T0 = "2026-08-12T12:00:00.000Z";
 const store = openDatabase(path);
 const { messages, outbox } = createRepositories(store);
 
+if (mode === "reopen") {
+  // Opening the same path again must return the same handle, not attempt a
+  // second engine. The addon has no close, so the flock outlives any
+  // bookkeeping on the JS side.
+  closeDatabase(store);
+  const again = openDatabase(path);
+  writeFileSync(
+    resultFile,
+    JSON.stringify({ sameHandle: again === store, seq: again.seq(), verify: again.verify() }),
+  );
+  process.exit(0);
+}
+
 if (mode === "write") {
   messages.recordInbound({ rfcMessageId: "<durable@host>", from: "bob@example.com", receivedAt: T0 });
   outbox.enqueue({
