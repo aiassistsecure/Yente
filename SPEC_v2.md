@@ -166,6 +166,18 @@ authorize outreach.
 Private previews and introductions are delayed consequences of the member's
 inbound request. Every outbound record must trace to that inbound relationship.
 
+**The CC case.** A member may copy Yente on a thread that includes other people.
+Those people did not write in, but they are participants on a thread Yente was
+deliberately placed into by someone who chose to put them in the room. That
+establishes a *thread relationship*, and a thread relationship authorizes
+exactly one message: an `enrollment_invitation` under §5.4. It authorizes
+nothing else — no profile, no matching, no preview, no introduction, and no
+second message. The address becomes a member only by replying.
+
+This is a narrow, enumerated exception and it is the only one. An address
+obtained from a signature block, a forwarded thread Yente was not copied on, a
+public directory, or any other source has no relationship and receives nothing.
+
 ### INV-2 — Triage precedes action
 
 Every inbound message is deduplicated, associated with a thread and member, and
@@ -256,9 +268,14 @@ Only the following outbound purposes exist in the initial runtime:
 | `joint_introduction` | veto window cleared for both members |
 | `stop_confirmation` | member requested global stop |
 | `deletion_confirmation` | member requested deletion |
+| `enrollment_invitation` | a member CC'd Yente on a thread including this address (§5.4) |
 
 There are no newsletters, promotional sequences, cold introductions, or generic
 "checking in" messages.
+
+The list is closed. A purpose absent from this table cannot be enqueued, which
+is what makes the previous sentence a property of the runtime rather than a
+statement of intent.
 
 ### 5.2 First inbound behavior
 
@@ -289,6 +306,59 @@ The runtime does not execute macros, scripts, embedded files, or external
 resources. Password-protected documents, images requiring OCR, unsupported file
 types, and files over the configured size limit are rejected with a plain request
 for an alternate format.
+
+### 5.4 The enrollment invitation
+
+The product is named after this mechanic. A member CCs `yente@ccme.network` on a
+thread, and the other participants on that thread receive one invitation to
+enroll. It is the acquisition loop, and it is the only outbound class addressed
+to someone who has not written in.
+
+Both of those facts point the same direction: it carries the most upside and all
+of the domain risk, so it is the most tightly constrained message in the system.
+
+**Trigger.** A member in good standing CC'd Yente on a thread on which the
+address appears as a participant. The inviting member must exist, be non-stopped
+and non-deleted. Yente being CC'd by a non-member triggers nothing.
+
+**Exactly once per address, for the lifetime of the system.** The idempotency key
+is the normalized address, not the thread and not the pair. A person surfaced on
+six threads by four members receives one invitation, ever. A person who ignored
+an invitation two years ago is not invited again.
+
+**It discloses nothing.** No counterpart facts, no match, no profile content, no
+attachment text, no quotation of the thread. It may name the member who CC'd
+Yente, because that member chose to put the address in the room, and it may
+state in general terms what Yente does. Nothing else about anyone.
+
+**Silence is a no.** An ignored invitation never enrolls anybody and never
+produces a second message. This is explicitly *not* an INV-8 veto window: no
+deadline advances anything, because nothing was disclosed to be vetoed. The
+absence of a reply is the end of the interaction.
+
+**Enrollment happens on reply.** The address becomes a member by writing back,
+at which point ordinary intake begins under §5.2 and INV-1 is satisfied in the
+ordinary way.
+
+**STOP is checked first.** Suppression is evaluated before the invitation is
+composed, per INV-9. A previously stopped address is never invited, and an
+unsubscribe in response is permanent.
+
+**`List-Unsubscribe` is mandatory on this class.** Both the header (RFC 8058,
+with `List-Unsubscribe-Post`) and a plain-language line in the body. Every other
+class goes to a member who asked to be there; this one does not, and a
+one-click, machine-readable opt-out is what separates an invitation from the
+thing we said we would never build.
+
+**Volume is capped.** Invitations are rate-limited per sending domain per day
+independently of all other outbound, and the cap is configuration (§16). A
+matchmaker whose invitations land in spam has no pool to match.
+
+**Care is the requirement, not a nicety.** This email is written to be worth
+opening: it names the person who thought of them, says plainly what Yente would
+do for them, and offers one clear yes and one clear no. It is generated inside a
+§11 output contract like every other class — the model fills approved slots and
+does not author the message.
 
 ---
 
@@ -731,6 +801,8 @@ relationships that permitted outbound.
 - Match idempotency key: policy version + ordered member pair + match cycle.
 - Private preview idempotency key: match + recipient.
 - Introduction idempotency key: match.
+- Enrollment invitation idempotency key: normalized address, system-wide and for
+  the lifetime of the system (§5.4).
 - Outbox idempotency key.
 
 ---
@@ -772,6 +844,18 @@ of focused dependencies only when their slice is implemented.
 - [ ] A supported attachment is extracted and causally linked.
 - [ ] No-document inbound produces one useful request for professional material.
 - [ ] Unsupported or unsafe attachments are rejected without execution.
+
+### D1a — Enrollment invitation
+
+- [ ] A CC'd address receives exactly one invitation, ever, across every thread
+      and every inviting member.
+- [ ] A previously stopped or deleted address receives none.
+- [ ] A CC from a non-member triggers none.
+- [ ] The invitation discloses no counterpart facts, profile content, or thread
+      text.
+- [ ] Ignoring an invitation produces no second message and enrolls nobody.
+- [ ] The invitation carries a `List-Unsubscribe` header and a body opt-out.
+- [ ] Replying begins ordinary intake under §5.2.
 
 ### D2 — Profile and interview
 
@@ -869,5 +953,6 @@ These values are configuration, not architecture:
 4. Initial score weights and bidirectional thresholds.
 5. Whether two explicit approvals introduce immediately or still wait a short
    courtesy interval.
+6. Daily cap on enrollment invitations per sending domain (§5.4).
 
 Everything else in this specification is the v2 product boundary.

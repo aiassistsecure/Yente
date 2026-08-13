@@ -17,18 +17,13 @@
  * recognise it as the same intended email instead of a second one.
  */
 
+import { canReceiveOutbound, normalizeAddress } from "./member.js";
+
 /**
- * The seven outbound purposes of SPEC v2 §5.1. The list is closed — a job with
+ * The eight outbound purposes of SPEC v2 §5.1. The list is closed — a job with
  * any other purpose cannot be enqueued, which is how "there are no newsletters,
  * promotional sequences, cold introductions, or generic checking-in messages"
  * becomes a property of the code rather than a promise in a document.
- *
- * NOTE: an eighth class, `enrollment_invitation` — the one message a CC'd
- * stranger receives, offering enrolment or unsubscribe — was decided on
- * 2026-08-12 but is not yet written into §5.1. It is deliberately absent here.
- * Adding it to the code before the spec would put the runtime ahead of its own
- * contract, and this list is the enforcement point for the rule that outbound
- * classes are enumerated rather than improvised.
  */
 export const OUTBOUND_PURPOSES = Object.freeze({
   PROFILE_REQUEST: "profile_request",
@@ -38,6 +33,7 @@ export const OUTBOUND_PURPOSES = Object.freeze({
   JOINT_INTRODUCTION: "joint_introduction",
   STOP_CONFIRMATION: "stop_confirmation",
   DELETION_CONFIRMATION: "deletion_confirmation",
+  ENROLLMENT_INVITATION: "enrollment_invitation",
 });
 
 const PURPOSE_VALUES = Object.freeze(new Set(Object.values(OUTBOUND_PURPOSES)));
@@ -115,6 +111,7 @@ export function enqueueEmail({
   purpose,
   recipients,
   enqueuedAt,
+  headers = {},
   backoff = {},
 }) {
   if (!jobId) throw new TypeError("An outbox job requires an id");
@@ -124,6 +121,16 @@ export function enqueueEmail({
   }
   if (!Array.isArray(recipients) || recipients.length === 0) {
     throw new TypeError("An outbox job requires at least one recipient");
+  }
+
+  // §5.4 makes List-Unsubscribe mandatory on the one class addressed to someone
+  // who did not write in. Checked here rather than only in the builder, so a
+  // direct enqueueEmail cannot route around it.
+  if (purpose === OUTBOUND_PURPOSES.ENROLLMENT_INVITATION) {
+    requireUnsubscribeHeaders(headers);
+    if (recipients.length !== 1) {
+      throw new TypeError("An enrollment invitation addresses exactly one person");
+    }
   }
 
   const settings = { ...DEFAULT_BACKOFF, ...backoff };
@@ -137,6 +144,7 @@ export function enqueueEmail({
     idempotencyKey,
     purpose,
     recipients: [...recipients],
+    headers: { ...headers },
     state: OUTBOX_STATES.PENDING,
     attempts: 0,
     maxAttempts: settings.maxAttempts,
@@ -147,6 +155,143 @@ export function enqueueEmail({
     lastError: null,
     history: [{ event: "ENQUEUED", at, purpose, idempotencyKey }],
   };
+}
+
+/* -------------------------------------------------------------------------
+ * The enrollment invitation — SPEC v2 §5.4
+ * ---------------------------------------------------------------------- */
+
+/**
+ * The idempotency key is the normalized address and nothing else.
+ *
+ * Not the thread, not the inviting member, not the pair. §5.4: exactly once per
+ * address for the lifetime of the system. Keying on anything narrower would let
+ * a person surfaced on six threads by four members receive six invitations,
+ * each individually defensible and collectively indistinguishable from a
+ * campaign.
+ */
+export function enrollmentInvitationKey(address) {
+  return `enrollment_invitation:${normalizeAddress(address)}`;
+}
+
+function requireUnsubscribeHeaders(headers) {
+  const keys = Object.fromEntries(
+    Object.entries(headers ?? {}).map(([k, v]) => [k.toLowerCase(), v]),
+  );
+  if (!keys["list-unsubscribe"]) {
+    throw new TypeError("An enrollment invitation requires a List-Unsubscribe header (§5.4)");
+  }
+  if (!keys["list-unsubscribe-post"]) {
+    throw new TypeError(
+      "An enrollment invitation requires List-Unsubscribe-Post for one-click opt-out (RFC 8058, §5.4)",
+    );
+  }
+}
+
+/**
+ * Build the one message a CC'd stranger may receive.
+ *
+ * Every gate of §5.4 is a parameter rather than a lookup, because this function
+ * must stay pure and because the caller — which has the database — is the only
+ * thing that can answer "has this address ever been invited". Passing the
+ * answer in makes the check impossible to forget: there is no default.
+ *
+ * @param {object} input
+ * @param {string}   input.jobId
+ * @param {string}   input.invitedAddress
+ * @param {object}   input.invitingMember     a live member who CC'd Yente
+ * @param {string}   input.threadId
+ * @param {string[]} input.threadParticipants addresses on the thread
+ * @param {Set<string>|string[]} input.alreadyInvited normalized addresses ever invited
+ * @param {Set<string>|string[]} input.suppressed     normalized addresses under STOP/DELETE
+ * @param {object}   input.headers            must carry List-Unsubscribe(-Post)
+ * @param {string}   input.enqueuedAt
+ * @returns {object|null} the job, or null when §5.4 says do not send
+ */
+export function enqueueEnrollmentInvitation({
+  jobId,
+  invitedAddress,
+  invitingMember,
+  threadId,
+  threadParticipants,
+  alreadyInvited,
+  suppressed,
+  headers,
+  enqueuedAt,
+  backoff = {},
+}) {
+  const address = normalizeAddress(invitedAddress);
+  const invited = toSet(alreadyInvited);
+  const stopped = toSet(suppressed);
+
+  if (!threadId) throw new TypeError("An enrollment invitation requires the thread that surfaced the address");
+  if (!Array.isArray(threadParticipants)) {
+    throw new TypeError("An enrollment invitation requires the thread participant list");
+  }
+
+  // INV-9 first, before anything else is evaluated or composed.
+  if (stopped.has(address)) return null;
+
+  // Exactly once, ever.
+  if (invited.has(address)) return null;
+
+  // INV-1's narrow exception is a *thread* relationship. An address that was not
+  // on the thread has no relationship at all, and inviting it would be the cold
+  // outbound §2.3 forbids.
+  if (!threadParticipants.map(normalizeAddress).includes(address)) {
+    throw new Error(`${address} is not a participant on thread ${threadId}`);
+  }
+
+  // A CC from a non-member triggers nothing.
+  if (!invitingMember?.memberId) {
+    throw new TypeError("An enrollment invitation requires the member who CC'd Yente");
+  }
+  if (!canReceiveOutbound(invitingMember)) {
+    throw new Error(`Inviting member ${invitingMember.memberId} is ${invitingMember.state}`);
+  }
+
+  // The invitation cannot be addressed to the person who sent it.
+  if (invitingMember.address && normalizeAddress(invitingMember.address) === address) {
+    throw new Error("A member cannot invite themselves");
+  }
+
+  const job = enqueueEmail({
+    jobId,
+    idempotencyKey: enrollmentInvitationKey(address),
+    purpose: OUTBOUND_PURPOSES.ENROLLMENT_INVITATION,
+    recipients: [address],
+    headers,
+    enqueuedAt,
+    backoff,
+  });
+
+  // Provenance, not disclosure: enough to explain why this address was reached,
+  // and nothing about the thread's contents. §5.4 permits naming the member who
+  // CC'd Yente; it permits nothing else.
+  job.invitation = {
+    threadId,
+    invitedByMemberId: invitingMember.memberId,
+  };
+  job.history[0].threadId = threadId;
+  return job;
+}
+
+/**
+ * Silence is a no — §5.4.
+ *
+ * Present as a named function because its emptiness is the specification. There
+ * is no follow-up, no reminder, and no deadline that converts non-response into
+ * enrollment. An INV-8 veto window advances on silence because something was
+ * disclosed to be vetoed; here nothing was, so nothing advances.
+ */
+export function invitationFollowUp() {
+  return null;
+}
+
+function toSet(value) {
+  if (value instanceof Set) return value;
+  if (Array.isArray(value)) return new Set(value.map(normalizeAddress));
+  throw new TypeError("Expected a Set or Array of addresses");
 }
 
 /**
