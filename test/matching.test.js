@@ -33,11 +33,29 @@ test("qualification requires inbound, required values, and evidence", () => {
 });
 
 test("qualification rejects a complete profile in a non-matchable state", () => {
-  const interviewing = { ...member, state: "INTERVIEWING" };
-  const result = evaluateQualification(interviewing, memberQualificationPolicy);
+  // NEW rather than INTERVIEWING. The property under test is unchanged —
+  // allowedStates must refuse a state outside its list — but INTERVIEWING is no
+  // longer an example of one: qualification cannot require the state that
+  // qualification produces (§10.1 QUALIFIED -> ACTIVE), so the member policy now
+  // admits the states a member passes THROUGH on the way to ACTIVE. D8 found
+  // that circularity the first time the whole loop ran.
+  const untriaged = { ...member, state: "NEW" };
+  const result = evaluateQualification(untriaged, memberQualificationPolicy);
 
   assert.equal(result.qualified, false);
   assert.deepEqual(result.blockers, ["member_state_not_allowed"]);
+});
+
+test("qualification still refuses a stopped member whatever the policy allows", () => {
+  // The unconditional half: STOPPED and DELETED are refused by
+  // evaluateQualification itself, not by allowedStates, so widening the policy
+  // cannot accidentally let a suppressed member qualify. INV-9.
+  for (const state of ["STOPPED", "DELETED"]) {
+    const suppressed = { ...member, state };
+    const result = evaluateQualification(suppressed, memberQualificationPolicy);
+    assert.equal(result.qualified, false);
+    assert.ok(result.blockers.includes(`member_${state.toLowerCase()}`));
+  }
 });
 
 test("deterministic matching requires both directions and returns stable output", () => {

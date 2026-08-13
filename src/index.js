@@ -10,3 +10,8 @@ export * from "./store/keys.js";
 export * from "./store/repositories.js";
 export * from "./llm/client.js";
 export * from "./llm/generate.js";
+export * from "./extract/spans.js";
+export * from "./extract/sources.js";
+export * from "./extract/profile.js";
+export * from "./mail/transport.js";
+export * from "./runtime/yente.js";
