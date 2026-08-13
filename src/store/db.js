@@ -47,6 +47,8 @@ export const COLLECTIONS = Object.freeze({
   INTRODUCTIONS: "introductions",
   GENERATION_FAILURES: "generation_failures",
   OUTBOX: "outbox",
+  SUBSCRIBERS: "subscribers",
+  SUBSCRIPTION_EVENTS: "subscription_events",
 });
 
 let openHandle = null;
@@ -149,6 +151,16 @@ export class Store {
     return this.core.query(nql).map((row) => JSON.parse(row));
   }
 
+  createIndex(collection, field, kind) {
+    this.core.createIndex(collection, field, kind);
+  }
+
+  /** Most recent document version in one collection. */
+  tipCollection(collection) {
+    const raw = this.core.tipCollection(collection);
+    return raw === null ? null : JSON.parse(raw);
+  }
+
   /** Ancestry of a document, nearest first, via the causal edges. */
   trace(collection, id) {
     return this.query(`FROM ${collection} WHERE _id = ${quote(id)} TRACE caused_by`);
@@ -165,6 +177,10 @@ export class Store {
 
   head() {
     return this.core.head();
+  }
+
+  scanStatus() {
+    return JSON.parse(this.core.scanStatus());
   }
 
   seq() {

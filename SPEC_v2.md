@@ -93,10 +93,11 @@ its own explicit qualification and compatibility policy.
 - Google Calendar, Google Meet, Zoom, or other meeting APIs.
 - Yente joining or observing a meeting.
 - Automated participation in the shared introduction thread.
-- Web dashboard or member portal.
+- Member-facing dashboard or portal. The internal subscriber desk is operational
+  tooling, not a member product.
 - Social-media automation.
 - Public-web enrichment in the first runtime.
-- Payments, subscriptions, or success fees.
+- Payments, paid subscriptions, or success fees.
 - Vector databases or embedding-based matching.
 - Redis, Kafka, RabbitMQ, or a separate job-queue service.
 - Multi-agent orchestration.
@@ -108,7 +109,9 @@ These omissions are product boundaries, not unfinished integrations.
 ## 3. Vocabulary
 
 **Member**
-A person who has established an inbound relationship with Yente.
+A person who has established an inbound relationship with Yente by emailing,
+replying, or explicitly submitting a Yente-owned intake or waitlist form that
+asks Yente to contact them.
 
 **Source**
 An inbound email, resume, profile, deck, website supplied by the member, or an
@@ -159,9 +162,11 @@ A change violating an invariant is a defect even if it improves a metric.
 
 ### INV-1 — Every recipient came inbound first
 
-Yente sends no message to an address until that address has emailed Yente or has
-replied to a Yente thread. Public availability of a business address does not
-authorize outreach.
+Yente sends no message to an address until that address has emailed Yente,
+replied to a Yente thread, or explicitly submitted a Yente-owned form asking
+Yente to contact them. A form submission records the consent text and version as
+the inbound event. Public availability of a business address does not authorize
+outreach.
 
 Private previews and introductions are delayed consequences of the member's
 inbound request. Every outbound record must trace to that inbound relationship.
