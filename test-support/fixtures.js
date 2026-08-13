@@ -46,7 +46,16 @@ export const opportunity = {
 export const memberQualificationPolicy = {
   id: "employer-member-qualification",
   version: "1",
-  allowedStates: ["ACTIVE"],
+  // Qualification cannot require the state that qualification produces. A
+  // member reaches ACTIVE by qualifying (§10.1: QUALIFIED -> ACTIVE), so a
+  // policy allowing only ACTIVE is unreachable in a live flow — the unit tests
+  // never saw it because their fixture member is already ACTIVE. D8 found it
+  // the first time the whole loop ran.
+  //
+  // §6.4 asks for "no global stop or deletion state", not for ACTIVE, and
+  // evaluateQualification already refuses STOPPED and DELETED unconditionally.
+  // Matchability is a separate gate, enforced at §7.2 gate 2.
+  allowedStates: ["INTERVIEWING", "QUALIFIED", "ACTIVE"],
   requiredFields: [
     "professional.roles",
     "professional.capabilities",

@@ -764,8 +764,11 @@ version explicitly permits them.
 - Invalid blocks are never sent.
 - Extraction may retry once with the validation error.
 - Email generation may retry once.
-- If the second attempt fails, the job becomes reviewable or uses a deterministic
-  fallback template where one exists.
+- If the second attempt fails, the job uses a deterministic fallback template
+  where one exists, and otherwise becomes reviewable.
+- A reviewable job is PERSISTED to `generation_failures` with both attempts'
+  validation errors. A state that is only a return value is not a state: it
+  disappears on restart, and nothing can report that a human is needed.
 - The runtime never fabricates a profile fact or silently substitutes mock data.
 
 ---
@@ -787,6 +790,7 @@ exact physical partitioning may change without changing their contracts.
 | `matches` | pair, policy version, score breakdown, frozen disclosure projections |
 | `preview_decisions` | per-member preview delivery and decision state |
 | `introductions` | joint email state and RFC Message-ID |
+| `generation_failures` | emails that failed generation twice and await a human (§11.6) |
 | `outbox` | durable outbound jobs, retries, and idempotency keys |
 
 Every derived record carries causal links to its inputs. A completed introduction
@@ -803,6 +807,8 @@ relationships that permitted outbound.
 - Introduction idempotency key: match.
 - Enrollment invitation idempotency key: normalized address, system-wide and for
   the lifetime of the system (§5.4).
+- Generation failure key: the outbox idempotency key of the email that could not
+  be written, so a retry of the same intended email cannot queue a second review.
 - Outbox idempotency key.
 
 ---
