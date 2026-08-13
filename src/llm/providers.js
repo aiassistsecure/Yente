@@ -178,6 +178,29 @@ export function createLlmClients({ provider, log } = {}) {
     });
   }
 
+  // A MODEL NAME THAT DOES NOT BELONG TO THE CHOSEN UPSTREAM IS THE EXACT BUG
+  // WE FOUND IN AIAS'S OWN ROUTER: its groq fallback kept the anthropic model
+  // name and every request died as "Groq: The model claude-fable-5 does not
+  // exist". Switching provider to pin while YENTE_LLM_MODEL is still set to a
+  // claude name reproduces it here. Explicit model still wins — the operator may
+  // know something we do not — but it must not be silent.
+  const upstream = name === "pin" ? "pin" : (process.env.YENTE_LLM_UPSTREAM || "");
+  const FAMILIES = [
+    [/^claude/i, "anthropic"],
+    [/^gpt-|^o[0-9]/i, "openai"],
+    [/^llama|^mixtral|^gemma/i, "groq"],
+    [/^pin:/i, "pin"],
+  ];
+  const family = (FAMILIES.find(([re]) => re.test(model)) || [])[1];
+  if (log && family && upstream && family !== upstream) {
+    log("warn", "llm_model_upstream_mismatch", {
+      model, upstream, looks_like: family,
+      note: `model "${model}" looks like a ${family} model but the upstream is `
+        + `${upstream}. This is the shape of the AiAS fallback bug — the gateway `
+        + "will likely reject it. Set YENTE_LLM_MODEL to match, or clear it.",
+    });
+  }
+
   const client = createModelClient({
     baseUrl, model, apiKey,
     fetchImpl: withHeaders(spec.headers()),
