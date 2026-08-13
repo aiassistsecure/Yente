@@ -228,6 +228,60 @@ export class IntroductionRepository {
   }
 }
 
+/* --- generation failures ---------------------------------------------- */
+
+export class ReviewRepository {
+  constructor(store) {
+    this.store = store;
+  }
+
+  /**
+   * Persist a job that failed generation twice — §11.6.
+   *
+   * Keyed by the outbox idempotency key of the email that could not be written,
+   * so retrying the same intended email cannot queue a second review. Without
+   * this collection the reviewable state was only a return value: it vanished
+   * on restart, and the console had nothing to show.
+   */
+  record({ idempotencyKey, purpose, template, failures, recordedAt }, { causedBy = [] } = {}) {
+    const id = outboxKey(idempotencyKey);
+    const existing = this.store.get(COLLECTIONS.GENERATION_FAILURES, id);
+    if (existing && existing.state === "OPEN") return { review: existing, duplicate: true };
+    const review = this.store.put(
+      COLLECTIONS.GENERATION_FAILURES,
+      id,
+      {
+        idempotencyKey,
+        purpose,
+        template: template ?? null,
+        failures: failures ?? [],
+        state: "OPEN",
+        recordedAt,
+        resolvedAt: null,
+      },
+      { causedBy },
+    );
+    return { review, duplicate: false };
+  }
+
+  /** Resolution happens on the CLI, never on the console (§17.1). */
+  resolve(idempotencyKey, { resolvedAt, resolution }) {
+    const id = outboxKey(idempotencyKey);
+    const existing = this.store.get(COLLECTIONS.GENERATION_FAILURES, id);
+    if (!existing) throw new Error(`No open review for ${id}`);
+    return this.store.put(COLLECTIONS.GENERATION_FAILURES, id, {
+      ...existing,
+      state: "RESOLVED",
+      resolution: resolution ?? null,
+      resolvedAt,
+    });
+  }
+
+  open() {
+    return this.store.query(`FROM ${COLLECTIONS.GENERATION_FAILURES} WHERE state = "OPEN"`);
+  }
+}
+
 /* --- outbox ----------------------------------------------------------- */
 
 export class OutboxRepository {
@@ -333,6 +387,7 @@ export function createRepositories(store) {
     matches: new MatchRepository(store),
     previews: new PreviewRepository(store),
     introductions: new IntroductionRepository(store),
+    reviews: new ReviewRepository(store),
     outbox: new OutboxRepository(store),
   });
 }

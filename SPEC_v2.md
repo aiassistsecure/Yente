@@ -93,7 +93,8 @@ its own explicit qualification and compatibility policy.
 - Google Calendar, Google Meet, Zoom, or other meeting APIs.
 - Yente joining or observing a meeting.
 - Automated participation in the shared introduction thread.
-- Web dashboard or member portal.
+- Member-facing web dashboard or portal. (An operator console exists and is
+  strictly read-only — §17. Members never see it and it can change nothing.)
 - Social-media automation.
 - Public-web enrichment in the first runtime.
 - Payments, subscriptions, or success fees.
@@ -764,8 +765,11 @@ version explicitly permits them.
 - Invalid blocks are never sent.
 - Extraction may retry once with the validation error.
 - Email generation may retry once.
-- If the second attempt fails, the job becomes reviewable or uses a deterministic
-  fallback template where one exists.
+- If the second attempt fails, the job uses a deterministic fallback template
+  where one exists, and otherwise becomes reviewable.
+- A reviewable job is PERSISTED to `generation_failures` with both attempts'
+  validation errors. A state that is only a return value is not a state: it
+  disappears on restart, and the operator console has nothing to show.
 - The runtime never fabricates a profile fact or silently substitutes mock data.
 
 ---
@@ -787,6 +791,7 @@ exact physical partitioning may change without changing their contracts.
 | `matches` | pair, policy version, score breakdown, frozen disclosure projections |
 | `preview_decisions` | per-member preview delivery and decision state |
 | `introductions` | joint email state and RFC Message-ID |
+| `generation_failures` | emails that failed generation twice and await a human (§11.6) |
 | `outbox` | durable outbound jobs, retries, and idempotency keys |
 
 Every derived record carries causal links to its inputs. A completed introduction
@@ -803,6 +808,8 @@ relationships that permitted outbound.
 - Introduction idempotency key: match.
 - Enrollment invitation idempotency key: normalized address, system-wide and for
   the lifetime of the system (§5.4).
+- Generation failure key: the outbox idempotency key of the email that could not
+  be written, so a retry of the same intended email cannot queue a second review.
 - Outbox idempotency key.
 
 ---
@@ -956,3 +963,61 @@ These values are configuration, not architecture:
 6. Daily cap on enrollment invitations per sending domain (§5.4).
 
 Everything else in this specification is the v2 product boundary.
+
+---
+
+## 17. The operator console
+
+A read-only view of what the runtime is doing. It exists because three things in
+this specification are otherwise invisible until they have already gone wrong:
+deliverability (§5.4), the outbox (§10.3), and the reviewable jobs of §11.6.
+
+### 17.1 Read-only is structural, not a policy
+
+The console cannot write. Not "does not" — cannot. It is handed a facade
+exposing query methods only, and its HTTP surface answers GET and HEAD and
+refuses every other method.
+
+This is the same argument as INV-4 applied to the operator rather than the
+model. A console that cannot act cannot advance a match, cannot send an email,
+and cannot be tricked into either. It also means a leaked console URL leaks
+visibility rather than control, which for a system whose entire product is not
+emailing people without permission is the correct trade.
+
+Consequently every action stays on the command line, where it is already
+audited: halting outbound (D7's flag), resolving a reviewable job (§11.6),
+retrying a DEAD job. The console shows that these need doing. It does not do
+them.
+
+### 17.2 What it shows
+
+| pane | answers |
+|---|---|
+| Deliverability | Is mail actually going out? IMAP/SMTP reachability, TLS, SPF/DKIM/DMARC, mailbox quota, last sync, and today's invitations against the §5.4 cap. |
+| Outbox | Jobs by state, attempts and backoff, anything DEAD, oldest claimable. |
+| Review | Jobs that failed generation twice and are waiting on a human. |
+| Receipts | For any introduction, the causal chain back through the match, both members, and the inbound messages that permitted outbound. |
+
+The Receipts pane is the only place §12's closing requirement is visible to a
+person rather than to a test.
+
+### 17.3 Not on the console
+
+No member list, no profile browser, and no way to read a member's sources or
+correspondence. INV-6 does not stop applying because the reader is an operator.
+The console reports state and counts; the one place it shows a member's own
+words is a receipt's evidence span, which that member already agreed to disclose.
+
+### 17.4 Roadmap: operator directives
+
+Adjusting matching directives from the console is wanted and is deliberately not
+in v0.1. When it lands, the mechanism is already determined by §7 and §12.1: a
+directive change writes a NEW `match_policies` version and never mutates an
+existing one. Matches in flight keep the frozen version they were scored under,
+`matchKey` already includes the policy version, and qualification is already
+recorded per version — so a live directive change cannot retroactively alter a
+proposal that has been sent, and INV-4 holds unchanged.
+
+That is the only shape this feature may take. A console that edits a live policy
+in place would make two runs of the same inputs disagree, which is the one
+property §7.1 exists to guarantee.

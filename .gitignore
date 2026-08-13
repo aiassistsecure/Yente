@@ -12,3 +12,4 @@ models/
 tmp_*.json
 chunks*.json
 *.log
+console-preview.html

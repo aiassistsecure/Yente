@@ -45,6 +45,7 @@ export const COLLECTIONS = Object.freeze({
   MATCHES: "matches",
   PREVIEW_DECISIONS: "preview_decisions",
   INTRODUCTIONS: "introductions",
+  GENERATION_FAILURES: "generation_failures",
   OUTBOX: "outbox",
 });
 
