@@ -62,8 +62,10 @@ import {
 import { parseEmailArtifact } from "../protocol/blocks.js";
 import { extractText } from "../extract/sources.js";
 import { extractProfileFacts } from "../extract/profile.js";
+import { DEFAULT_POLICIES } from "../domain/policies.js";
+import { extractionVocabulary, questionsFor, resolveField } from "../domain/profile-schema.js";
 import { outboxKeyFor } from "../store/keys.js";
-import { COLLECTIONS } from "../store/db.js";
+import { COLLECTIONS, quote } from "../store/db.js";
 import { buildProfileView, saveProfileView } from "../store/profile-view.js";
 
 /* --- triage ------------------------------------------------------------ */
@@ -97,15 +99,25 @@ export function createRuntime({
   transport,
   extractionClient = null,
   emailClient = null,
-  policies,
+  // A desk with no policies could not qualify anybody: `policies` had no
+  // default and the only qualification policy in the tree lived in
+  // test-support/fixtures.js, so `policies.memberQualification` was undefined in
+  // production and qualify() would have thrown. Defaults are merged per-key, so
+  // overriding one policy does not silently drop the others.
+  policies: policyOverrides = {},
   config = {},
 }) {
   assertTransport(transport);
   const { store } = repositories;
+  const policies = { ...DEFAULT_POLICIES, ...policyOverrides };
   const {
     vetoWindowMs = 48 * 60 * 60 * 1000,
     haltOutbound = false,
-    vocabulary = {},
+    // The model was previously handed `{}` — an EMPTY controlled vocabulary —
+    // so it invented its own field names and every fact it produced was later
+    // dropped by the profile view for not matching a schema nobody had told it
+    // about. See domain/profile-schema.js.
+    vocabulary = extractionVocabulary(),
     cycle = "c1",
   } = config;
 
@@ -233,6 +245,15 @@ export function createRuntime({
 
     /* --- extraction ------------------------------------------------------ */
     const facts = [];
+    // Counted and RETURNED, not discarded. extractProfileFacts already reports
+    // why an extraction produced nothing — MALFORMED_ARTIFACT, a model error,
+    // or excerpts that failed grounding — and this function used to throw all of
+    // it away. That made a failed extraction indistinguishable from an honestly
+    // empty one, and cost a whole debugging session: the tick logged
+    // `ingested=1 sent=0` either way, and the only way to recover the reason was
+    // a second tool re-running extraction by hand.
+    let rejected = 0;
+    const failures = [];
     if (extractionClient) {
       for (const { source, text } of stored) {
         // A prompt-safe alias, not the stored id. §12.1's source key is
@@ -259,6 +280,10 @@ export function createRuntime({
             ),
           );
         }
+        rejected += (extraction.rejected ?? []).length;
+        for (const failure of extraction.failures ?? []) {
+          failures.push({ code: failure.code, message: failure.message });
+        }
       }
     }
 
@@ -268,7 +293,37 @@ export function createRuntime({
       repositories.members.save(member, { causedBy: [message] });
     }
 
-    return { outcome: "intake", address, sources: stored.length, facts: facts.length };
+    // THE DEAD END. Extraction used to be the last thing that happened: facts
+    // were stored, the member was moved to INTERVIEWING, and this returned —
+    // while `qualify()`, the ONLY function that queues the next letter, was
+    // exported and called by nothing in the entire tree. A résumé arrived,
+    // sixteen facts came out of it, and she said nothing, forever. Not a crash,
+    // not a failed send; a pipeline that stopped one step early.
+    //
+    // Qualification is where the conversation continues: it either asks for what
+    // is still missing, or promotes the member and lets acknowledge() confirm.
+    // Its failure must not lose the ingest — the message is already durably
+    // recorded, and throwing here would leave it recorded and unanswered with
+    // no record of why.
+    let outcome = "intake";
+    if (facts.length > 0) {
+      try {
+        const result = qualify(address, null, now);
+        outcome = result.qualified ? "qualified" : "interviewing";
+        if (result.qualified) acknowledge(address, now, [message]);
+      } catch (error) {
+        failures.push({ code: "QUALIFY_FAILED", message: String(error?.message ?? error) });
+        outcome = "intake";
+      }
+    }
+
+    return {
+      outcome, address,
+      sources: stored.length,
+      facts: facts.length,
+      rejected,
+      failures,
+    };
   }
 
   function source_key(attachment) {
@@ -305,16 +360,39 @@ export function createRuntime({
     if (!qualification.qualified) {
       const missing = missingInterviewFields(qualification);
       if (missing.length > 0) {
+        // Asked in words, not in field paths. This used to interpolate the raw
+        // schema — a member would have been sent "I still need: intent.seeks and
+        // intent.introductionTypes", which nobody can answer.
+        const asks = questionsFor(missing);
+        const known = describeKnown(profile);
         queue(
           OUTBOUND_PURPOSES.INTERVIEW_QUESTION,
           `interview:${address}:${missing.join(",")}`,
           [address],
           {
-            subject: "Two quick questions",
-            text: `To match you well I still need: ${missing.join(" and ")}.`,
+            subject: asks.length > 1 ? "Two quick questions" : "One quick question",
+            // Reflecting back what she already read matters more than brevity:
+            // it proves the document was actually understood, and it stops the
+            // member re-sending it because they assumed it was ignored.
+            text: [
+              "Thanks — I read that and it is on file.",
+              known ? `\nWhat I have so far:\n${known}` : null,
+              `\nTo find you the right introduction I still need to know ${
+                asks.length > 1
+                  ? `${asks.slice(0, -1).join(", ")} and ${asks[asks.length - 1]}`
+                  : asks[0]
+              }.`,
+              "\nJust reply in your own words — no forms.",
+            ].filter(Boolean).join("\n"),
           },
           now,
         );
+      } else if (qualification.blockers.length > 0) {
+        // Not qualified, nothing to ask for: a state or relationship blocker.
+        // Nothing to send — a member cannot fix `no_inbound_relationship` by
+        // answering an email — but it must not look like a successful pass, so
+        // the reason is returned rather than swallowed into a bare `false`.
+        return { qualified: false, qualification, blocked: qualification.blockers };
       }
       return { qualified: false, qualification };
     }
@@ -326,7 +404,81 @@ export function createRuntime({
     }
     if (updated.state === MEMBER_STATES.QUALIFIED) updated = activate(updated, now);
     repositories.members.save(updated);
-    return { qualified: true, qualification, member: updated };
+    return { qualified: true, qualification, member: updated, profile };
+  }
+
+  /**
+   * What she understood, in plain lines, for a member to correct.
+   *
+   * Only fields the view actually holds, which means only span-verified explicit
+   * facts — so this cannot describe her as believing something she inferred.
+   * Values are printed verbatim from the evidence, because a member reading
+   * their own words back is how a wrong extraction gets caught by the one person
+   * who can definitely spot it.
+   */
+  function describeKnown(profile) {
+    const LINES = [
+      ["professional.roles", "Role"],
+      ["professional.employers", "Where"],
+      ["professional.capabilities", "Works with"],
+      ["professional.geographies", "Based"],
+      ["professional.industries", "Industries"],
+      ["professional.years_experience", "Experience"],
+      ["professional.education", "Education"],
+      ["intent.seeks", "Looking for"],
+      ["intent.introductionTypes", "Useful introductions"],
+      ["intent.constraints", "Constraints"],
+    ];
+    const out = [];
+    for (const [path, label] of LINES) {
+      const { spec } = resolveField(path);
+      const value = spec ? profile?.[spec.group]?.[spec.key] : null;
+      const text = Array.isArray(value) ? value.join(", ") : value;
+      if (text) out.push(`  ${label}: ${text}`);
+    }
+    return out.join("\n");
+  }
+
+  /**
+   * Tell a newly qualified member what she has, and how to change it.
+   *
+   * Without this, qualifying was ALSO silent: `qualify()` queues a letter only
+   * when something is missing, so the better a member's résumé was, the less
+   * they heard back. Nothing was queued, nothing was sent, and from the outside
+   * that is identical to the extraction having failed.
+   *
+   * Idempotent by construction — the outbox key is per-address and per-fact-count,
+   * so re-qualifying with the same evidence enqueues nothing (INV-10), while a
+   * genuinely updated profile does produce a fresh confirmation.
+   */
+  function acknowledge(address, now, causedBy = []) {
+    const profile = buildProfileView(store, address);
+    const known = describeKnown(profile);
+    if (!known) return null;
+
+    const factCount = store
+      .query(`FROM ${COLLECTIONS.PROFILE_FACTS} WHERE memberId = ${quote(address)}`)
+      .length;
+
+    return queue(
+      OUTBOUND_PURPOSES.PROFILE_CONFIRMATION,
+      `confirm:${address}:${factCount}`,
+      [address],
+      {
+        subject: "Here is what I have for you",
+        text: [
+          "Thanks — I have read what you sent and you are on the list.",
+          "\nThis is what I took from it:",
+          known,
+          "\nEverything above came straight out of your own words; I do not record",
+          "anything I cannot quote back to you.",
+          "\nIf a line is wrong, reply CORRECT and tell me what it should say.",
+          "I will not introduce you to anyone without showing you first.",
+        ].join("\n"),
+      },
+      now,
+      causedBy,
+    );
   }
 
   /* --- 3. matching and previews ------------------------------------------ */
@@ -613,6 +765,7 @@ export function createRuntime({
     triage,
     ingest,
     qualify,
+    acknowledge,
     saveOpportunity,
     proposeMatches,
     advanceDeadlines,

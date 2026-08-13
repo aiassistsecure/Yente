@@ -190,7 +190,34 @@ test("D8 — a cold inbound becomes exactly one consented introduction", async (
     attachments: [{ filename: "bob.txt", mimeType: "text/plain", content: BOB_RESUME }],
   });
   const ingested = await runtime.ingest(T(5));
-  assert.equal(ingested[0].outcome, "intake");
+
+  // "intake" used to be the terminus, and that was the bug: extraction stored
+  // facts, moved the member to INTERVIEWING, and returned — while qualify(), the
+  // only thing that queues the next letter, was called by nothing. A résumé
+  // produced sixteen verified facts in production and she never replied.
+  // Intake now continues into qualification, so the outcome says which.
+  assert.equal(ingested[0].outcome, "interviewing",
+    "intake hands off to qualification instead of dead-ending");
+  assert.equal(ingested[0].facts, 5);
+  assert.equal(ingested[0].failures.length, 0, "extraction failures are reported, not swallowed");
+
+  // A résumé says what somebody has done, not what they want, so the honest
+  // next step is to ask — in words a person can answer, not field paths.
+  const asked = store.query(`FROM ${COLLECTIONS.OUTBOX}`)
+    .filter((j) => j.purpose === "interview_question");
+  assert.equal(asked.length, 1, "exactly one interview question, and it was actually queued");
+
+  // Bob's résumé does say what he seeks, so exactly one field is outstanding —
+  // and she asks for that one, in words, rather than reciting the schema.
+  assert.equal(asked[0].email.subject, "One quick question");
+  assert.match(asked[0].email.text, /the kind of introduction that would be useful/);
+  assert.doesNotMatch(asked[0].email.text, /intent\.|professional\./,
+    "the schema must never reach a member's inbox");
+
+  // And it proves the document was read, which is what stops a member
+  // re-sending it assuming they were ignored.
+  assert.match(asked[0].email.text, /What I have so far/);
+  assert.match(asked[0].email.text, /Role: technical_operator/);
 
   // The ungrounded fact was rejected and never stored — INV-5.
   const storedFacts = store.query(`FROM ${COLLECTIONS.PROFILE_FACTS}`);
