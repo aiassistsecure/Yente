@@ -12,6 +12,7 @@
     "check": "node --test"
   },
   "dependencies": {
+    "nedb-engine": "^2.8.2",
     "sentinel-blocks": "1.0.2"
   }
 }

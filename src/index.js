@@ -5,3 +5,6 @@ export * from "./domain/matching.js";
 export * from "./domain/workflow.js";
 export * from "./domain/outbox.js";
 export * from "./domain/email-artifacts.js";
+export * from "./store/db.js";
+export * from "./store/keys.js";
+export * from "./store/repositories.js";
