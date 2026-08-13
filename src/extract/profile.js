@@ -40,7 +40,21 @@ export function createExtractionPrompt({ sourceId, text, vocabulary }) {
     { tag: BLOCK_TAGS.CONTROLLED_VOCABULARY, json: vocabulary },
     {
       tag: BLOCK_TAGS.OUTPUT_CONTRACT,
-      content: "Return exactly one PROFILE_FACTS block containing a JSON object with a facts array.",
+      // The delimiters are specified in the SYSTEM message, not here. A block's
+      // content cannot contain a sentinel token — requireText throws
+      // NESTED_SENTINEL — which is the protocol's whole point: a prompt must not
+      // be able to draw its own boundaries, or injected text could forge them.
+      // So the shape of the reply is told to the model out of band.
+      content:
+        "Return exactly one PROFILE_FACTS block and nothing else: no prose "
+        + "before or after it, and no markdown code fence. Its content is a "
+        + "single JSON object with a facts array. Each fact has exactly these "
+        + "keys: field, value, source_id, evidence, explicit. `evidence` must be "
+        + "copied character-for-character from the SOURCE block — it is checked "
+        + "against the source and any fact whose evidence cannot be found there "
+        + "is discarded. `explicit` is true when the source states the fact "
+        + "outright, false when you inferred it. If the source supports no "
+        + "facts, return an empty facts array.",
     },
   ]);
 }
@@ -64,6 +78,38 @@ export function createExtractionPrompt({ sourceId, text, vocabulary }) {
  * @property {number} attempts
  * @property {Array} failures
  */
+/**
+ * The block syntax, told to the model OUT OF BAND.
+ *
+ * It cannot go in the prompt: `requireText` rejects any block whose content
+ * holds a sentinel token, because a prompt that can draw its own delimiters is a
+ * prompt that injected text can forge. The system message is not an artifact, so
+ * it is the one place the shape can actually be shown.
+ *
+ * Naming the tag without showing it was the entire bug. Both llama-3.3-70b and
+ * claude-sonnet-5 answered with correct facts wrapped in a markdown fence under
+ * a bare `PROFILE_FACTS` line, and the parser rejected every one with
+ * MALFORMED_ARTIFACT. Two unrelated models resolving an ambiguity the same way
+ * is not two model failures; it is one specification failure.
+ */
+const EXTRACTION_SYSTEM = [
+  "You reply only in Sentinel Blocks. A block is a line containing three",
+  "left angle brackets, the tag, then three right angle brackets; then the",
+  "content on its own lines; then a closing line of three left angle brackets,",
+  "the word END, and three right angle brackets. Exactly like this:",
+  "",
+  "<<<PROFILE_FACTS>>>",
+  '{"facts":[{"field":"professional.title","value":"VP Operations",',
+  '"source_id":"src_1","evidence":"VP Operations, Orlando FL.","explicit":true}]}',
+  "<<<END>>>",
+  "",
+  "Emit that one block and nothing else. No preamble, no explanation, no",
+  "markdown fence. Copy every evidence string verbatim from the source: it is",
+  "verified against the source text and unverifiable facts are thrown away, so",
+  "a paraphrase costs you the fact. Prefer fewer facts you can quote over more",
+  "you cannot.",
+].join("\n");
+
 export async function extractProfileFacts({ client, sourceId, text, vocabulary, signal }) {
   const basePrompt = createExtractionPrompt({ sourceId, text, vocabulary });
   const sources = new Map([[sourceId, text]]);
@@ -73,7 +119,7 @@ export async function extractProfileFacts({ client, sourceId, text, vocabulary, 
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     let completion;
     try {
-      completion = await client.complete({ prompt, signal });
+      completion = await client.complete({ prompt, system: EXTRACTION_SYSTEM, signal });
     } catch (error) {
       failures.push({ attempt, code: error.code ?? "MODEL_ERROR", message: error.message });
       if (attempt === 2) break;
