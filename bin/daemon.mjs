@@ -51,6 +51,7 @@ import {
   createRuntime,
   createMailTransport,
   assertTransport,
+  registerDocumentParsers,
 } from "../src/index.js";
 
 const POLL_RUNS = "poll_runs";
@@ -106,6 +107,14 @@ try {
   log("error", "store_open_failed", { error: String(error?.message ?? error) });
   process.exit(1);
 }
+
+// WITHOUT THIS, EVERY ATTACHMENT IS UNREADABLE. The extractor registry starts
+// empty and parsers register themselves; until now only the test suite called
+// this, so production had no parsers at all and every file — including the DOCX
+// mammoth has always handled — came back UNSUPPORTED_TYPE:
+//   "Yente cannot read application/vnd.openxmlformats-...wordprocessingml.document yet"
+// The support existed the whole time; nothing wired it up.
+const parserTypes = registerDocumentParsers();
 
 const repositories = createRepositories(store);
 
@@ -176,6 +185,10 @@ async function tick() {
 async function loop() {
   log("info", "started", {
     interval_ms: INTERVAL_MS,
+    // Printed on purpose: a silently empty parser registry is what made every
+    // resume unreadable, and one line in the journal makes that impossible to
+    // miss next time.
+    parsers: parserTypes.join(","),
     mailbox: process.env.YENTE_MAILBOX || "INBOX",
     data: process.env.YENTE_DATA_PATH || "./data/yente",
     pid: process.pid,
