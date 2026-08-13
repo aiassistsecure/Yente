@@ -31,18 +31,12 @@ function job(overrides = {}) {
 /** Deterministic jitter: full jitter with random() pinned to 1 gives the ceiling. */
 const maxJitter = () => 1;
 
-test("only the seven outbound purposes of §5.1 can be enqueued", () => {
-  assert.deepEqual(Object.values(OUTBOUND_PURPOSES), [
-    "profile_request",
-    "interview_question",
-    "clarification",
-    "private_match_preview",
-    "joint_introduction",
-    "stop_confirmation",
-    "deletion_confirmation",
-  ]);
+test("the outbound purpose list of §5.1 is closed", () => {
+  // The canonical contents are asserted in enrollment-invitation.test.js, in
+  // one place. What matters here is that anything outside the list is refused.
   assert.throws(() => job({ purpose: "newsletter" }), /Unsupported outbound purpose/);
   assert.throws(() => job({ purpose: "checking_in" }), /Unsupported outbound purpose/);
+  assert.throws(() => job({ purpose: "cold_introduction" }), /Unsupported outbound purpose/);
 });
 
 test("a job requires an idempotency key and at least one recipient", () => {

@@ -116,13 +116,28 @@ export function createMember({ memberId, address, inboundEstablishedAt, createdA
 
 /**
  * Addresses are compared normalized, because `Bob@Example.COM` and
- * `bob@example.com` are one person and one suppression record. §12.1 makes the
- * normalized address unique, so normalizing at the edge is what makes that
- * constraint mean what it says.
+ * `bob@example.com` are one person, one member, and one suppression record.
+ * §12.1 makes the normalized address unique, so normalizing at the edge is what
+ * makes that constraint mean what it says.
  *
- * Deliberately conservative: case-fold only. Stripping dots or +tags is
- * provider-specific folklore, and folding two real mailboxes into one member
- * would be worse than missing a duplicate.
+ * THE WHOLE ADDRESS IS LOWERCASED, including the local part.
+ *
+ * This reverses an earlier, more cautious version that folded only the domain
+ * on the theory that RFC 5321 leaves the local part case-sensitive. That is
+ * true on paper and wrong here. Running it surfaced the consequence: with a
+ * case-preserving local part, `Stranger@Example.com` and `stranger@example.com`
+ * are two members with two suppression records — so a person who stopped can be
+ * mailed again by typing their own address differently, and §5.4's "exactly
+ * once per address, ever" silently becomes once per capitalisation.
+ *
+ * The theoretical cost is two genuinely distinct mailboxes differing only by
+ * case being merged. No major provider does that. The practical cost of the
+ * alternative is an INV-9 violation, which is not a tradeoff worth making for
+ * an edge case nobody has.
+ *
+ * Dots and +tags are still preserved. Stripping those is provider-specific
+ * folklore, and unlike case it really does merge mailboxes that different
+ * people read.
  */
 export function normalizeAddress(address) {
   const trimmed = String(address).trim();
@@ -130,7 +145,7 @@ export function normalizeAddress(address) {
   if (at <= 0 || at === trimmed.length - 1) {
     throw new TypeError(`Not an email address: ${address}`);
   }
-  return `${trimmed.slice(0, at)}@${trimmed.slice(at + 1).toLowerCase()}`;
+  return trimmed.toLowerCase();
 }
 
 /** First inbound with no usable evidence yet: ask for professional material. */

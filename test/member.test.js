@@ -162,12 +162,21 @@ test("only an ACTIVE member is matchable — §7.2 gate 2", () => {
   assert.equal(isMatchable(qualified), false);
 });
 
-test("addresses are case-folded on the domain and left alone otherwise", () => {
-  assert.equal(normalizeAddress("Bob@Example.COM"), "Bob@example.com");
-  assert.equal(newMember({ address: "  Bob@EXAMPLE.com " }).address, "Bob@example.com");
-  // Deliberately conservative: folding dots or +tags is provider-specific
-  // folklore, and merging two real mailboxes is worse than missing a duplicate.
+test("the whole address is lowercased, so one human is one member and one suppression record", () => {
+  // RFC 5321 leaves the local part case-sensitive. Honouring that here would
+  // make Stranger@Example.com and stranger@example.com two members with two
+  // suppression records — a stopped person could be mailed again by typing
+  // their own address differently, and §5.4's "once per address, ever" would
+  // become once per capitalisation. INV-9 wins over the paper reading.
+  assert.equal(normalizeAddress("Bob@Example.COM"), "bob@example.com");
+  assert.equal(normalizeAddress("STRANGER@example.com"), normalizeAddress("stranger@Example.com"));
+  assert.equal(newMember({ address: "  Bob@EXAMPLE.com " }).address, "bob@example.com");
+
+  // Dots and +tags are preserved. Unlike case, stripping those merges mailboxes
+  // that genuinely different people read.
   assert.equal(normalizeAddress("bob.smith+jobs@example.com"), "bob.smith+jobs@example.com");
+  assert.notEqual(normalizeAddress("bobsmith@example.com"), normalizeAddress("bob.smith@example.com"));
+
   assert.throws(() => normalizeAddress("not-an-address"), /Not an email address/);
   assert.throws(() => normalizeAddress("@example.com"), /Not an email address/);
 });
