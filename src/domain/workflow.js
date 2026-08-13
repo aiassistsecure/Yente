@@ -1,4 +1,5 @@
 export const MATCH_STATES = Object.freeze({
+  PROPOSED: "PROPOSED",
   PREVIEWS_QUEUED: "PREVIEWS_QUEUED",
   VETO_WINDOW: "VETO_WINDOW",
   READY_TO_INTRODUCE: "READY_TO_INTRODUCE",
@@ -55,7 +56,19 @@ function appendHistory(workflow, event, at, details = {}) {
   workflow.history.push({ event, at, ...details });
 }
 
-export function createMatchWorkflow({
+/**
+ * SPEC v2 §10.2 opens the match machine at PROPOSED, one step before
+ * PREVIEWS_QUEUED. The distinction is not ceremony: a proposal is the engine's
+ * deterministic conclusion, while queueing previews is the decision to spend
+ * outbound on it. Keeping them separate leaves a state in which a match exists,
+ * its score breakdown is frozen and reviewable, and nothing has been sent —
+ * which is where a halted outbox (D7) or a member who stopped between scoring
+ * and sending leaves the record.
+ *
+ * §8.1 still holds: queueing creates both previews atomically, so there is no
+ * state in which one side has been told and the other has not.
+ */
+export function proposeMatch({
   matchId,
   matchResult,
   memberIds,
@@ -74,7 +87,7 @@ export function createMatchWorkflow({
   return {
     matchId,
     matchIdempotencyKey: matchResult.idempotencyKey,
-    state: MATCH_STATES.PREVIEWS_QUEUED,
+    state: MATCH_STATES.PROPOSED,
     vetoWindowMs,
     deadlineAt: null,
     previews: Object.fromEntries(
@@ -94,8 +107,35 @@ export function createMatchWorkflow({
       messageId: null,
       sentAt: null,
     },
-    history: [{ event: "MATCH_CREATED", at }],
+    history: [{ event: "MATCH_PROPOSED", at }],
   };
+}
+
+/**
+ * Authorise outbound for a proposed match. Idempotent, so a worker that crashed
+ * between queueing and its own bookkeeping cannot double-queue.
+ */
+export function queuePreviews(workflow, queuedAt) {
+  if (workflow.state === MATCH_STATES.PREVIEWS_QUEUED) return workflow;
+  requireMutable(workflow);
+  if (workflow.state !== MATCH_STATES.PROPOSED) {
+    throw new Error(`Cannot queue previews while match is ${workflow.state}`);
+  }
+  const next = clone(workflow);
+  const at = timestamp(queuedAt);
+  next.state = MATCH_STATES.PREVIEWS_QUEUED;
+  appendHistory(next, "PREVIEWS_QUEUED", at);
+  return next;
+}
+
+/**
+ * Propose and immediately queue — the ordinary path, kept as one call because
+ * every current caller wants both. The two steps remain separately available
+ * for the case where outbound is halted or a member's state changed between
+ * scoring and sending.
+ */
+export function createMatchWorkflow(input) {
+  return queuePreviews(proposeMatch(input), input.createdAt);
 }
 
 export function markPreviewSent(workflow, memberId, { messageId, sentAt }) {
