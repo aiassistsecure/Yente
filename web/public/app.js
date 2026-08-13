@@ -1,170 +1,103 @@
-const CAPACITY_URL = "/api/founding-network/capacity";
-const SUBSCRIBE_URL = "/api/founding-network/subscribers";
-const POLL_BASE_MS = 10_000;
-const POLL_MAX_MS = 120_000;
-const NUMBER = new Intl.NumberFormat("en-US");
+/* Progressive enhancement, and nothing else.
+ *
+ * There is no form on this site, so there is no submit handler here. The calls
+ * to action are prefilled mailto links: they work with JavaScript blocked, with
+ * this file 404ing, and on a browser that has never heard of fetch. All this
+ * does is replace the placeholder seat counts with the live ones.
+ *
+ * Reads the server's own capacity shape — cohorts.foundersDevelopers.{limit,
+ * joined,remaining,full} — rather than inventing a second one.
+ */
+(function () {
+  "use strict";
 
-const cohortKeys = {
-  founder_developer: "foundersDevelopers",
-  investor_employer: "investorsEmployers",
-};
+  var CAPACITY_URL = "/api/founding-network/capacity";
+  var BASE_MS = 30000;
+  var MAX_MS = 240000;
+  var NUMBER = new Intl.NumberFormat("en-US");
+  var delay = BASE_MS;
+  var timer = null;
 
-const form = document.querySelector("[data-waitlist-form]");
-const submitButton = document.querySelector("[data-submit-button]");
-const formMessage = document.querySelector("[data-form-message]");
-const capacityStatus = document.querySelector("[data-capacity-status]");
-let capacity = null;
-let pollDelay = POLL_BASE_MS;
-let pollTimer = null;
-
-function cohortSnapshot(cohort) {
-  const key = cohortKeys[cohort];
-  return key && capacity?.cohorts?.[key];
-}
-
-function updateSelectedCohort() {
-  const selected = form?.elements.cohort.value;
-  document.querySelectorAll("[data-cohort-option]").forEach((option) => {
-    option.classList.toggle("selected", option.dataset.cohortOption === selected);
-  });
-
-  const snapshot = cohortSnapshot(selected);
-  const label = submitButton?.querySelector("span");
-  if (submitButton && label) {
-    submitButton.disabled = Boolean(snapshot?.full);
-    label.textContent = snapshot?.full
-      ? "This founding cohort is full"
-      : "Claim my free founding spot";
-  }
-}
-
-function applyCapacity(nextCapacity) {
-  capacity = nextCapacity;
-  for (const cohort of Object.keys(cohortKeys)) {
-    const snapshot = cohortSnapshot(cohort);
-    if (!snapshot) continue;
-
-    const remaining = document.querySelector(`[data-capacity-remaining="${cohort}"]`);
-    const joined = document.querySelector(`[data-capacity-joined="${cohort}"]`);
-    const bar = document.querySelector(`[data-capacity-bar="${cohort}"]`);
-    const track = bar?.parentElement;
-    const option = document.querySelector(`[data-cohort-option="${cohort}"] input`);
-    const percentage = Math.min(100, (snapshot.joined / snapshot.limit) * 100);
-
-    if (remaining) remaining.textContent = NUMBER.format(snapshot.remaining);
-    if (joined) joined.textContent = `${NUMBER.format(snapshot.joined)} claimed · updated live`;
-    if (bar) bar.style.width = `${percentage}%`;
-    if (track) track.setAttribute("aria-valuenow", String(snapshot.joined));
-    if (option) option.disabled = snapshot.full;
-    document
-      .querySelector(`[data-cohort-card="${cohort}"]`)
-      ?.classList.toggle("cohort-full", snapshot.full);
+  function setText(sel, value) {
+    var el = document.querySelector(sel);
+    if (el && el.textContent !== value) el.textContent = value;
   }
 
-  if (capacityStatus) {
-    const updated = nextCapacity.updatedAt
-      ? new Date(nextCapacity.updatedAt).toLocaleTimeString([], {
-          hour: "numeric",
-          minute: "2-digit",
-        })
-      : "now";
-    capacityStatus.textContent = `Live · ${updated}`;
-    capacityStatus.classList.remove("offline");
+  function paint(snap) {
+    if (!snap || !snap.cohorts) return;
+
+    Object.keys(snap.cohorts).forEach(function (key) {
+      var c = snap.cohorts[key];
+      if (!c) return;
+      setText('[data-capacity-remaining="' + key + '"]', NUMBER.format(c.remaining));
+
+      var fill = document.querySelector('[data-capacity-fill="' + key + '"]');
+      if (fill && c.limit) {
+        fill.style.width = Math.min(100, (c.joined / c.limit) * 100).toFixed(3) + "%";
+      }
+      var card = document.querySelector('[data-cohort="' + key + '"]');
+      if (card) card.classList.toggle("cohort-full", Boolean(c.full));
+    });
+
+    if (snap.total) {
+      setText("[data-capacity-total-remaining]", NUMBER.format(snap.total.remaining));
+    }
+
+    // The dot goes amber when the number on screen is not one the server stood
+    // behind. Honest uncertainty beats confident scarcity — it is the same
+    // promise the rest of the page makes.
+    document.querySelectorAll(".badge-dot").forEach(function (dot) {
+      dot.classList.remove("is-provisional");
+    });
   }
-  updateSelectedCohort();
-}
 
-function schedulePoll(delay) {
-  window.clearTimeout(pollTimer);
-  pollTimer = window.setTimeout(pollCapacity, delay);
-}
+  function stale() {
+    document.querySelectorAll(".badge-dot").forEach(function (dot) {
+      dot.classList.add("is-provisional");
+    });
+  }
 
-async function pollCapacity() {
-  if (document.hidden) return schedulePoll(POLL_BASE_MS);
-  const controller = new AbortController();
-  const timeout = window.setTimeout(() => controller.abort(), 5_000);
+  function schedule(ms) {
+    window.clearTimeout(timer);
+    timer = window.setTimeout(poll, ms);
+  }
 
-  try {
-    const response = await fetch(CAPACITY_URL, {
+  function poll() {
+    if (document.hidden) return schedule(BASE_MS);
+    var ctl = new AbortController();
+    var t = window.setTimeout(function () { ctl.abort(); }, 5000);
+
+    fetch(CAPACITY_URL, {
       cache: "no-store",
       headers: { Accept: "application/json" },
-      signal: controller.signal,
+      signal: ctl.signal,
+    })
+      .then(function (r) {
+        if (!r.ok) throw new Error("capacity " + r.status);
+        return r.json();
+      })
+      .then(function (snap) { paint(snap); delay = BASE_MS; })
+      .catch(function () { stale(); delay = Math.min(MAX_MS, delay * 2); })
+      .then(function () { window.clearTimeout(t); schedule(delay); });
+  }
+
+  if ("fetch" in window && "AbortController" in window) {
+    poll();
+    document.addEventListener("visibilitychange", function () {
+      if (!document.hidden) { delay = BASE_MS; poll(); }
     });
-    if (!response.ok) throw new Error(`capacity request returned ${response.status}`);
-    applyCapacity(await response.json());
-    pollDelay = POLL_BASE_MS;
-  } catch {
-    pollDelay = Math.min(POLL_MAX_MS, pollDelay * 2);
-    if (capacityStatus) {
-      capacityStatus.textContent = "Live count reconnecting…";
-      capacityStatus.classList.add("offline");
-    }
-  } finally {
-    window.clearTimeout(timeout);
-    schedulePoll(pollDelay);
+  } else {
+    stale();
   }
-}
 
-function showMessage(message, state) {
-  formMessage.textContent = message;
-  formMessage.dataset.state = state;
-}
-
-form?.addEventListener("change", (event) => {
-  if (event.target.name === "cohort") updateSelectedCohort();
-});
-
-form?.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  if (!form.reportValidity()) return;
-
-  const data = new FormData(form);
-  const payload = {
-    name: data.get("name"),
-    email: data.get("email"),
-    cohort: data.get("cohort"),
-    intent: data.get("intent"),
-    companyWebsite: data.get("companyWebsite"),
-    consent: data.get("consent") === "on",
-  };
-
-  submitButton.disabled = true;
-  submitButton.setAttribute("aria-busy", "true");
-  submitButton.querySelector("span").textContent = "Claiming your spot…";
-  showMessage("", "idle");
-
-  try {
-    const response = await fetch(SUBSCRIBE_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Accept: "application/json" },
-      body: JSON.stringify(payload),
-    });
-    const result = await response.json();
-    if (!response.ok) throw new Error(result.message || "Yente could not save your spot.");
-
-    if (result.capacity) applyCapacity(result.capacity);
-    showMessage(
-      `${result.message} Watch ${payload.email} for Yente’s intake.`,
-      "success",
-    );
-    form.elements.name.value = "";
-    form.elements.email.value = "";
-    form.elements.intent.value = "";
-    form.elements.consent.checked = false;
-  } catch (error) {
-    showMessage(error.message || "Yente could not save your spot. Please try again.", "error");
-  } finally {
-    submitButton.removeAttribute("aria-busy");
-    updateSelectedCohort();
-  }
-});
-
-document.addEventListener("visibilitychange", () => {
-  if (!document.hidden) {
-    pollDelay = POLL_BASE_MS;
-    pollCapacity();
-  }
-});
-
-updateSelectedCohort();
-pollCapacity();
+  document.addEventListener("click", function (ev) {
+    var a = ev.target.closest && ev.target.closest('a[href^="#"]');
+    if (!a) return;
+    var id = a.getAttribute("href").slice(1);
+    var target = id && document.getElementById(id);
+    if (!target) return;
+    ev.preventDefault();
+    target.scrollIntoView({ behavior: "smooth", block: "start" });
+    history.replaceState(null, "", "#" + id);
+  });
+})();

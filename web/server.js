@@ -26,6 +26,12 @@ const MIME_TYPES = Object.freeze({
 const STATIC_ROUTES = Object.freeze({
   "/": "index.html",
   "/index.html": "index.html",
+  "/join": "join.html",
+  "/join.html": "join.html",
+  "/how-it-works": "how-it-works.html",
+  "/how-it-works.html": "how-it-works.html",
+  "/privacy": "privacy.html",
+  "/privacy.html": "privacy.html",
   "/styles.css": "styles.css",
   "/app.js": "app.js",
   "/favicon.svg": "favicon.svg",
