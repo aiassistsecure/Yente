@@ -164,11 +164,20 @@ test("silence is a no — there is no follow-up, by construction", () => {
   assert.equal(invitationFollowUp(), null);
 });
 
-test("the eighth purpose is now in the closed list, and nothing else is", () => {
+test("the purpose list stays closed, and every member of it is deliberate", () => {
+  // A closed list is the point: "she never sends promotional sequences" is a
+  // property of this array, so adding to it is a decision that has to be made
+  // here, in a test, rather than incidentally at a call site.
+  //
+  // profile_confirmation is the ninth. It exists because qualifying was silent:
+  // qualify() queues a letter only when something is MISSING, so the better a
+  // member's résumé, the less they heard back — and from the outside that is
+  // indistinguishable from the extraction having failed.
   assert.deepEqual(Object.values(OUTBOUND_PURPOSES), [
     "profile_request",
     "interview_question",
     "clarification",
+    "profile_confirmation",
     "private_match_preview",
     "joint_introduction",
     "stop_confirmation",

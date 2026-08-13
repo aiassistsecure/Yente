@@ -26,9 +26,25 @@
 
 import { COLLECTIONS } from "./db.js";
 import { quote } from "./db.js";
+import { FIELDS, resolveField } from "../domain/profile-schema.js";
 
-/** Fields the view carries, in §6.1's shape. */
-const SCALAR_FIELDS = new Set(["professional.seniority", "professional.years_experience"]);
+/**
+ * The empty view, DERIVED from the field schema rather than written out here.
+ *
+ * It used to be a literal, which is how the view came to disagree with both the
+ * extraction prompt and the qualification policy about what a field is called.
+ * Sixteen span-verified facts from a real résumé were silently dropped because
+ * of it. Building the shape from `FIELDS` means a field cannot exist for the
+ * model and not for the view.
+ */
+function emptyView() {
+  const profile = { evidenceByField: {} };
+  for (const spec of Object.values(FIELDS)) {
+    profile[spec.group] ??= {};
+    profile[spec.group][spec.key] = spec.kind === "list" ? [] : null;
+  }
+  return profile;
+}
 
 /**
  * Materialise one member's profile from stored facts.
@@ -45,37 +61,45 @@ export function buildProfileView(store, memberId, { includeConfirmed = true } = 
     `FROM ${COLLECTIONS.PROFILE_FACTS} WHERE memberId = ${quote(memberId)}`,
   );
 
-  const profile = {
-    professional: { roles: [], industries: [], capabilities: [], seniority: null, years_experience: null, geographies: [] },
-    intent: { offers: [], seeks: [], introductionTypes: [], constraints: [] },
-    evidenceByField: {},
-  };
+  const profile = emptyView();
 
   for (const fact of facts) {
     const usable = fact.explicit === true || (includeConfirmed && fact.confirmed === true);
     if (!usable) continue;
 
-    const path = String(fact.field);
-    const target = pathTarget(profile, path);
-    if (!target) continue;
+    // Resolve through the schema, so a fact stored under a name the model chose
+    // still lands in the field it is about. `via: "ignored"` is a deliberate
+    // drop (contact details); `via: "unknown"` is a name nobody anticipated,
+    // and dropping it is what this whole module exists to make visible rather
+    // than silent — see `unmappedFields` below.
+    const { field: path, spec } = resolveField(fact.field);
+    if (!path || !spec) continue;
 
-    if (SCALAR_FIELDS.has(path)) {
-      target.object[target.key] = fact.value;
-    } else if (Array.isArray(target.object[target.key])) {
-      if (!target.object[target.key].includes(fact.value)) target.object[target.key].push(fact.value);
-    } else {
-      target.object[target.key] = fact.value;
+    const group = profile[spec.group];
+    if (!group) continue;
+
+    if (spec.kind === "scalar") {
+      // First writer wins. Facts arrive in content-hash order, not document
+      // order, so "last wins" would make the view depend on hashing — and §7.1
+      // requires the same facts to produce the same breakdown on a rebuild.
+      if (group[spec.key] === null || group[spec.key] === undefined) {
+        group[spec.key] = fact.value;
+      }
+    } else if (!group[spec.key].includes(fact.value)) {
+      group[spec.key].push(fact.value);
     }
 
     // The evidence id is the fact's own hash. Content-addressed, so a field's
     // evidence list is a set of pointers into the DAG rather than a name that
-    // has to stay in sync with something.
+    // has to stay in sync with something. Recorded under the CANONICAL path,
+    // because that is the name the qualification policy will look for.
     (profile.evidenceByField[path] ??= []).push(fact._hash ?? fact._id);
   }
 
   // Deterministic order, so two runs of the same facts produce the same view —
   // which is what lets §7.1's "same inputs, same breakdown" survive a rebuild.
-  for (const group of [profile.professional, profile.intent]) {
+  for (const [name, group] of Object.entries(profile)) {
+    if (name === "evidenceByField") continue;
     for (const [key, value] of Object.entries(group)) {
       if (Array.isArray(value)) group[key] = [...value].sort();
     }
@@ -103,11 +127,27 @@ export function saveProfileView(store, memberId, { causedBy = [] } = {}) {
   );
 }
 
-function pathTarget(profile, path) {
-  const parts = path.split(".");
-  if (parts.length !== 2) return null;
-  const [group, key] = parts;
-  if (!Object.hasOwn(profile, group)) return null;
-  if (!Object.hasOwn(profile[group], key)) return null;
-  return { object: profile[group], key };
+/**
+ * Stored facts whose field name the schema cannot place.
+ *
+ * This exists because the failure it reports is invisible by construction: the
+ * fact is in the store, its evidence is real, and the view simply does not
+ * contain it. No error, no log line, no missing row — just a member who is
+ * asked to supply something they already supplied.
+ *
+ * Anything here is either a field worth adding to `FIELDS` or an alias worth
+ * adding to `ALIASES`. It should normally be empty.
+ */
+export function unmappedFields(store, memberId) {
+  const facts = store.query(
+    `FROM ${COLLECTIONS.PROFILE_FACTS} WHERE memberId = ${quote(memberId)}`,
+  );
+  const counts = new Map();
+  for (const fact of facts) {
+    if (resolveField(fact.field).via !== "unknown") continue;
+    counts.set(fact.field, (counts.get(fact.field) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .map(([field, count]) => ({ field, count }))
+    .sort((a, b) => b.count - a.count || a.field.localeCompare(b.field));
 }
