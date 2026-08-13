@@ -8,3 +8,5 @@ export * from "./domain/email-artifacts.js";
 export * from "./store/db.js";
 export * from "./store/keys.js";
 export * from "./store/repositories.js";
+export * from "./llm/client.js";
+export * from "./llm/generate.js";

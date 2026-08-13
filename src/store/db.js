@@ -51,17 +51,27 @@ export const COLLECTIONS = Object.freeze({
 let openHandle = null;
 
 /**
- * Open the durable database. One per process, by construction.
+ * Open the durable database. One engine per process, by construction.
+ *
+ * Opening the same path twice returns the SAME store rather than a second
+ * handle. That is not a convenience — the addon exposes no `close`, so the
+ * exclusive directory lock is held until the process exits, and any API that
+ * implied otherwise would be lying. Idempotence is the honest shape: a caller
+ * that asks for the database it already has, gets it.
+ *
+ * A different path while one is open is a real error, because that genuinely
+ * cannot be satisfied.
  *
  * @param {string} path
  * @returns {Store}
  */
 export function openDatabase(path) {
   if (openHandle) {
+    if (openHandle.path === path) return openHandle;
     throw new Error(
-      `A database is already open in this process (${openHandle.path}). ` +
-        "The engine takes an exclusive lock on its data directory; a second " +
-        "handle would be a split-brain, not a second connection.",
+      `A database is already open in this process (${openHandle.path}); cannot also open ${path}. ` +
+        "The engine takes an exclusive lock on its data directory and the addon exposes no close, " +
+        "so a second directory would need a second process.",
     );
   }
   const store = new Store(NedbCore.open(path), path);
@@ -77,15 +87,22 @@ export function openInMemory() {
   return new Store(new NedbCore(), ":memory:");
 }
 
-/** Release the process-wide handle. Tests and shutdown only. */
+/**
+ * Flush everything to disk. Call before exit.
+ *
+ * Deliberately NOT named or shaped like a release. An earlier version cleared
+ * the module handle here, which made `openDatabase` willing to try again — and
+ * the retry failed inside the engine with a lock error naming the caller's own
+ * pid, because the addon has no `close` and the flock outlives any bookkeeping
+ * we keep on this side.
+ *
+ * Clearing a handle you cannot actually release is worse than not clearing it:
+ * the guard that would have said "already open, here it is" is gone, and what
+ * replaces it is a lower-level error that reads like an external process is at
+ * fault.
+ */
 export function closeDatabase(store) {
-  if (store?.path !== ":memory:") {
-    try {
-      store?.flush();
-    } finally {
-      if (openHandle === store) openHandle = null;
-    }
-  }
+  if (store?.path !== ":memory:") store?.flush();
 }
 
 export class Store {
