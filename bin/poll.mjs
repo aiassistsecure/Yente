@@ -55,6 +55,7 @@ import {
   createRuntime,
   createMailTransport,
   assertTransport,
+  registerDocumentParsers,
 } from "../src/index.js";
 
 const ARGS = new Set(process.argv.slice(2));
@@ -140,6 +141,14 @@ try {
   report({ status: "error", started_at: startedAt,
            error: String(error?.message ?? error) }, 1);
 }
+
+// WITHOUT THIS, EVERY ATTACHMENT IS UNREADABLE. The extractor registry starts
+// empty and parsers register themselves; until now only the test suite called
+// this, so production had no parsers at all and every file — including the DOCX
+// mammoth has always handled — came back UNSUPPORTED_TYPE:
+//   "Yente cannot read application/vnd.openxmlformats-...wordprocessingml.document yet"
+// The support existed the whole time; nothing wired it up.
+const parserTypes = registerDocumentParsers();
 
 const repositories = createRepositories(store);
 let runId = null;
