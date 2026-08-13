@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex, nofollow" />
+    <meta name="theme-color" content="#17333a" />
+    <title>Yente — Subscriber Desk</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/admin/admin.css" />
+    <script src="/admin/admin.js" defer></script>
+  </head>
+  <body>
+    <header class="admin-header">
+      <a class="wordmark" href="/">YENTE<span>.</span></a>
+      <div>
+        <p>Private operations</p>
+        <h1>Subscriber desk</h1>
+      </div>
+      <button type="button" data-export>Export CSV <span aria-hidden="true">↓</span></button>
+    </header>
+
+    <main>
+      <section class="metrics" aria-label="Founding network totals">
+        <article><span>All subscribers</span><strong data-total>—</strong><small>active waitlist records</small></article>
+        <article><span>Founders &amp; developers</span><strong data-founders>—</strong><small data-founders-left>— seats remaining</small></article>
+        <article><span>Investors &amp; employers</span><strong data-investors>—</strong><small data-investors-left>— seats remaining</small></article>
+        <article><span>NEDB sequence</span><strong data-sequence>—</strong><small data-updated>Waiting for data</small></article>
+      </section>
+
+      <section class="records" aria-labelledby="records-title">
+        <div class="records-heading">
+          <div><p>Founding network</p><h2 id="records-title">Subscriber records</h2></div>
+          <p class="sync-state" data-sync-state aria-live="polite">Connecting…</p>
+        </div>
+
+        <form class="filters" data-filters>
+          <label>Search<input type="search" name="search" placeholder="Name, email, or intent" /></label>
+          <label>Cohort
+            <select name="cohort">
+              <option value="">All cohorts</option>
+              <option value="founder_developer">Founders / developers</option>
+              <option value="investor_employer">Investors / employers</option>
+            </select>
+          </label>
+          <label>Status
+            <select name="status">
+              <option value="">All statuses</option>
+              <option value="waiting">Waiting</option>
+              <option value="qualified">Qualified</option>
+              <option value="active">Active</option>
+              <option value="stopped">Stopped</option>
+              <option value="deleted">Deleted</option>
+            </select>
+          </label>
+          <button type="submit">Apply filters</button>
+        </form>
+
+        <div class="table-shell">
+          <table>
+            <thead><tr><th>Subscriber</th><th>Cohort</th><th>Looking for</th><th>Status</th><th>Joined</th><th>Revision</th></tr></thead>
+            <tbody data-records-body><tr><td colspan="6" class="empty">Loading subscriber records…</td></tr></tbody>
+          </table>
+        </div>
+
+        <div class="pagination">
+          <p data-page-summary>—</p>
+          <div><button type="button" data-previous disabled>← Previous</button><button type="button" data-next disabled>Next →</button></div>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <p>Credentials come from the server’s <code>.env</code>. Subscriber data never enters the page source.</p>
+      <a href="/">View public landing page ↗</a>
+    </footer>
+  </body>
+</html>

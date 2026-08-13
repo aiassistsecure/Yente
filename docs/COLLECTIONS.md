@@ -65,10 +65,46 @@ be a founder in one relationship and an investor in another.
 | `org_name` | string | |
 | `stopped_at` | date | INV-5; blocks all outbound when set |
 | `deleted_at` | date | INV-9 |
-| `founding_seat_no` | number | 1–500 **within a side**; free for life; **badge only, never read during matching (INV-7)** |
+| `founding_seat_no` | number | 1–5,000 **within a cohort**; founding membership entitlement; **never read during matching** |
 | `contribution_state` | enum | `none` \| `contributing`; **never read during matching (INV-7)** |
 
 `caused_by`: the message that first surfaced them.
+
+---
+
+## `subscribers`
+
+The public Founding Network waitlist. A subscriber is an explicit inbound
+request, but does not become matchable until the ordinary evidence, interview,
+qualification, and activation gates are complete.
+
+| field | type | notes |
+|---|---|---|
+| `_id` | string | `sub_` + SHA-256 of normalized email; retries are idempotent without exposing the address in the key |
+| `email` / `name` | string | normalized contact and display name |
+| `cohort` | enum | `founder_developer` \| `investor_employer` |
+| `intent` | string | optional user-stated introduction goal |
+| `status` | enum | `waiting` \| `qualified` \| `active` \| `stopped` \| `deleted` |
+| `consent` / `consent_version` | bool/string | exact consent contract accepted at submission |
+| `inbound_established_at` | date | establishes INV-1 for this address |
+| `created_at` / `updated_at` | date | first request and latest revision |
+| `revision` | number | increments when the same address updates its request |
+| `caused_by_event_id` / `caused_by_event_hash` | string | receipt for the inbound event stored in the same Merkle DAG |
+
+Only `waiting`, `qualified`, and `active` records consume one of the 5,000
+places in their cohort. Matching never reads founding order, seat count, or
+pricing entitlement.
+
+---
+
+## `subscription_events`
+
+Inbound receipts for the public form. Each event records the event type,
+subscriber id, cohort, source, consent version, and occurrence time. Every
+subscriber version stores the event hash in NEDB's native `caused_by` field, so
+`TRACE caused_by` walks from the current subscriber projection to the inbound
+request that produced it. Document versions and events are persisted in the
+same embedded NEDB v2 content-addressed DAG.
 
 ---
 

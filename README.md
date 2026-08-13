@@ -55,9 +55,41 @@ cannot be hidden in prose.
 - executable tests covering policy, protocol, and workflow invariants.
 
 It does **not** yet contain the production mailbox adapter, attachment parsers,
-LLM adapter, durable NEDB repositories/outbox, or a running worker. The earlier
+LLM adapter, durable mailbox workflow repositories/outbox, or a running worker. The earlier
 founder/investor design remains in [`SPEC.md`](SPEC.md) as historical context; v2
 is the active contract.
+
+## Public Founding Network
+
+Yente includes a VPS-ready public landing page and waitlist slice:
+
+- free founding membership for 5,000 founders/developers and 5,000
+  investors/employers;
+- a consented subscriber form persisted in an embedded, filesystem-backed NEDB
+  v2 DAG;
+- live public capacity counters polled every 10 seconds;
+- idempotent subscription updates keyed by normalized email;
+- a `.env`-protected subscriber desk at `/admin/`; and
+- spreadsheet-safe CSV export.
+
+The waitlist is an inbound request, not automatic qualification. A subscriber
+still needs professional evidence, interview completion, deterministic
+qualification, and activation before entering the match engine.
+
+Configure from [`.env.example`](.env.example), then run:
+
+```sh
+set -a
+source .env
+set +a
+npm start
+```
+
+`YENTE_WAITLIST_DATA_PATH` names the waitlist's dedicated embedded NEDB
+directory. It must not reuse Yente's core database path.
+
+See [`docs/VPS_DEPLOY.md`](docs/VPS_DEPLOY.md) for systemd, nginx, TLS, storage,
+and operations.
 
 ## Run the core
 

@@ -8,6 +8,8 @@
     "node": ">=24"
   },
   "scripts": {
+    "start": "node web/server.js",
+    "web:dev": "node --watch web/server.js",
     "test": "node --test",
     "check": "node --test"
   },

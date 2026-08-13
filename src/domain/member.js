@@ -89,10 +89,11 @@ function advance(member, to, at, event, details = {}) {
 }
 
 /**
- * A member exists because an address wrote in. INV-1 is enforced at
- * construction rather than at send time — an address with no inbound
- * relationship cannot become a member at all, so there is no later code path
- * that has to remember to check.
+ * A member exists because an address made an explicit inbound request by email,
+ * reply, or a Yente-owned consent form. INV-1 is enforced at construction
+ * rather than at send time — an address with no inbound relationship cannot
+ * become a member at all, so there is no later code path that has to remember
+ * to check.
  */
 export function createMember({ memberId, address, inboundEstablishedAt, createdAt }) {
   if (!memberId) throw new TypeError("A member requires an id");
