@@ -228,3 +228,30 @@ test("STOP still wins over everything, résumé attached or not", async () => {
     "a STOP message is never mined for facts");
   assert.deepEqual(purposes(store), []);
 });
+
+test("a follow-up with no attachment is not asked for a résumé again", async () => {
+  // Mark's exact case. Sixteen verified facts on file, he emails to ask why he
+  // has not heard back, the message carries no attachment and under 80
+  // characters of substance — and the old code replied "please send a resume",
+  // which is the most insulting possible answer from a desk that had already
+  // read it.
+  const { store, transport, runtime } = harness([
+    { field: "professional.role", value: "Founder & Systems Architect", evidence: "Founder & Systems Architect  |  Interchained LLC" },
+    { field: "professional.location", value: "Winter Park, FL", evidence: "Interchained LLC   ·   Winter Park, FL" },
+    { field: "professional.skills.languages", value: "Rust", evidence: "Languages: Rust, Python, TypeScript" },
+  ]);
+
+  sendResume(transport, "<r1@sender.test>");
+  await runtime.ingest(T(1));
+
+  transport.deliver({
+    rfcMessageId: "<followup@sender.test>",
+    from: WHO, to: ["yente@ccme.network"], subject: "any news?", text: "any news?",
+  });
+  const [result] = await runtime.ingest(T(2));
+
+  assert.notEqual(result.outcome, "profile_requested",
+    "she already has his résumé — asking again is the bug");
+  assert.equal(result.facts, 3, "answered from what is already on file");
+  assert.ok(!purposes(store).includes("profile_request"));
+});

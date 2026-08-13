@@ -226,6 +226,29 @@ export function createRuntime({
     }
 
     if (stored.length === 0) {
+      // A member who has already sent a résumé must never be asked for one
+      // again. Their facts are on file; a short follow-up ("any news?", or an
+      // answer to an interview question) carries no attachment and no 80
+      // characters of substance, and this branch used to reply with the same
+      // "please send a resume" letter — while she was holding sixteen verified
+      // facts about them. Continue the conversation from what she already knows.
+      const known = store.query(
+        `FROM ${COLLECTIONS.PROFILE_FACTS} WHERE memberId = ${quote(address)}`,
+      );
+      if (known.length > 0) {
+        let outcome = "interviewing";
+        const failures = [];
+        try {
+          const result = qualify(address, null, now);
+          outcome = result.qualified ? "qualified" : "interviewing";
+          if (result.qualified) acknowledge(address, now, [message]);
+        } catch (error) {
+          failures.push({ code: "QUALIFY_FAILED", message: String(error?.message ?? error) });
+          outcome = "intake";
+        }
+        return { outcome, address, sources: 0, facts: known.length, rejected: 0, failures };
+      }
+
       queue(
         OUTBOUND_PURPOSES.PROFILE_REQUEST,
         `profile:${address}`,
