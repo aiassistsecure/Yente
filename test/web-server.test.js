@@ -29,12 +29,27 @@ after(async () => {
   await new Promise((resolve) => server.close(resolve));
 });
 
-test("public landing page ships the click-through offer", async () => {
+test("public landing page ships the mailto offer, and no form", async () => {
   const response = await fetch(`${origin}/`);
   const html = await response.text();
   assert.equal(response.status, 200);
-  assert.match(html, /Stop networking\. Start getting introduced\./);
-  assert.match(html, /Claim my free founding spot/);
+  assert.match(html, /Stop networking\./);
+  assert.match(html, /Start getting introduced\./);
+
+  // The offer is a prefilled mailto, not a submit button. Intake is a
+  // conversation: a form makes someone answer the questions we guessed they
+  // could answer, and throws away the first evidence about them.
+  assert.match(html, /href="mailto:[^"]*\?subject=Founding%20seat/);
+  assert.match(html, /Claim a seat by email/);
+
+  // Graded in the other direction too, because the whole point is the absence.
+  // Asserting only that the mailto is present would pass on a page that ALSO
+  // shipped the old form.
+  assert.doesNotMatch(html, /<form/,
+    "the landing page must not ship a form");
+  assert.doesNotMatch(html, /Claim my free founding spot/,
+    "the old form CTA must be gone, not merely hidden");
+
   assert.match(response.headers.get("content-security-policy"), /frame-ancestors 'none'/);
 });
 
