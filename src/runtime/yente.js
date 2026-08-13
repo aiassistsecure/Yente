@@ -64,6 +64,7 @@ import { extractText } from "../extract/sources.js";
 import { extractProfileFacts } from "../extract/profile.js";
 import { outboxKeyFor } from "../store/keys.js";
 import { COLLECTIONS } from "../store/db.js";
+import { buildProfileView, saveProfileView } from "../store/profile-view.js";
 
 /* --- triage ------------------------------------------------------------ */
 
@@ -283,9 +284,18 @@ export function createRuntime({
    * is not built yet, and inventing one here would put a policy decision in the
    * orchestrator.
    */
-  function qualify(address, profile, now) {
+  function qualify(address, profile = null, now = new Date().toISOString()) {
     const member = repositories.members.findByAddress(address);
     if (!member || !canReceiveOutbound(member)) return { qualified: false, reason: "suppressed" };
+
+    // The profile is MATERIALISED from stored, span-verified facts unless a
+    // caller supplies one. Taking it from the caller was a policy question
+    // answered by a test fixture; §6.1 says the normalized profile is a view
+    // over evidence, so it is built from evidence.
+    if (!profile) {
+      profile = buildProfileView(store, address);
+      saveProfileView(store, address);
+    }
 
     const qualification = evaluateQualification(
       { ...profile, id: address, state: member.state, inboundEstablishedAt: member.inboundEstablishedAt },

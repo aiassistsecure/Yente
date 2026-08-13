@@ -21,6 +21,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { openInMemory, COLLECTIONS } from "../src/store/db.js";
+import { buildProfileView } from "../src/store/profile-view.js";
 import { createRepositories } from "../src/store/repositories.js";
 import { createMemoryTransport } from "../src/mail/transport.js";
 import { createRuntime } from "../src/runtime/yente.js";
@@ -381,4 +382,53 @@ test("a duplicate inbound changes state exactly once — D1, end to end", async 
   const second = await runtime.ingest(T(2));
   assert.equal(second[0].outcome, "duplicate");
   assert.equal(store.seq(), seq, "a redelivery writes nothing");
+});
+
+test("qualification can run entirely off extracted facts, with no profile handed in", async (t) => {
+  // The last place a policy decision was living in a test fixture. `qualify()`
+  // used to take the profile from its caller — so D8 was supplying by hand the
+  // very thing the runtime is supposed to derive from span-verified evidence.
+  const { store, repositories, transport, runtime, close } = await harness();
+  t.after(close);
+
+  transport.deliver({
+    rfcMessageId: "<bob.view@sender.test>",
+    from: "bob.ferrand@example.com",
+    to: ["yente@ccme.network"],
+    text: "Hi — resume attached.",
+    attachments: [{ filename: "bob.txt", mimeType: "text/plain", content: BOB_RESUME }],
+  });
+  await runtime.ingest(T(5));
+  const bob = "bob.ferrand@example.com";
+
+  // The view is materialised from the facts extraction actually stored.
+  const view = buildProfileView(store, bob);
+  assert.deepEqual(view.professional.capabilities, ["infrastructure_operations"]);
+  assert.deepEqual(view.intent.seeks, ["operating_role"]);
+  assert.ok(!JSON.stringify(view).includes("fundraising"), "the ungrounded fact never reaches the view");
+
+  // Two required fields have no evidence in the resume, so the deterministic
+  // policy says not yet — and says which. That is §6.3's interview, driven by
+  // the evidence rather than by a fixture.
+  const attempt = runtime.qualify(bob, null, T(6));
+  assert.equal(attempt.qualified, false);
+  assert.ok(attempt.qualification.missingFields.includes("intent.introductionTypes"));
+  assert.equal(repositories.members.findByAddress(bob).state, "INTERVIEWING");
+
+  // The member answers the interview; the answer is stored as an explicit fact
+  // exactly like any other, and now the same call qualifies with no help.
+  for (const [field, value] of [["intent.introductionTypes", "employer"], ["professional.industries", "b2b_saas"]]) {
+    store.put(COLLECTIONS.PROFILE_FACTS, `${bob}:${field}`, {
+      memberId: bob, field, value, explicit: true, sourceId: "interview", evidence: "member confirmed in reply",
+    });
+  }
+
+  const qualified = runtime.qualify(bob, null, T(7));
+  assert.equal(qualified.qualified, true, JSON.stringify(qualified.qualification));
+  assert.equal(repositories.members.findByAddress(bob).state, "ACTIVE");
+
+  // And the persisted view carries provenance back to the facts.
+  const saved = store.get(COLLECTIONS.PROFILE_VIEWS, bob);
+  assert.ok(saved, "the view was materialised and stored");
+  assert.ok(saved.caused_by.length >= 5);
 });
