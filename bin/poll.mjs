@@ -57,6 +57,7 @@ import {
   assertTransport,
   registerDocumentParsers,
 } from "../src/index.js";
+import { createLlmClients } from "../src/llm/providers.js";
 
 const ARGS = new Set(process.argv.slice(2));
 const DRY_RUN = ARGS.has("--dry-run");
@@ -203,7 +204,26 @@ try {
     });
   }
 
-  const runtime = createRuntime({ repositories, transport, store });
+  // WITHOUT THE MODEL CLIENTS, SHE INGESTS AND SAYS NOTHING. createRuntime
+// defaults extractionClient and emailClient to null, and runtime/yente.js gates
+// the whole extraction block on `if (extractionClient)` — so with neither, a
+// resume is stored verbatim, no facts come out, nothing is queued, and every
+// tick reports ingested=1 sent=0 with no error anywhere. That is exactly what
+// the box showed: outcomes={"intake":1} three ticks running, silence to the
+// sender. I wrote this call and passed `store`, which createRuntime does not
+// even take, while omitting the two arguments that make her able to reply.
+const llm = createLlmClients({
+  log: (level, event, fields) =>
+    console.error(`[yente] ${event} ${JSON.stringify(fields || {})}`),
+});
+
+
+const runtime = createRuntime({
+  repositories,
+  transport,
+  extractionClient: llm.extractionClient,
+  emailClient: llm.emailClient,
+});
   const now = new Date();
 
   const ingested = await runtime.ingest(now);
