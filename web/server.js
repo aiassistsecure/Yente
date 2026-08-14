@@ -332,11 +332,26 @@ export function createYenteServer({
   });
 }
 
+/**
+ * Standalone web process — DEVELOPMENT ONLY.
+ *
+ * Production runs `bin/daemon.mjs`, which serves this same server from inside the
+ * process that owns the data directory. Not a preference: the engine takes an
+ * exclusive lock per directory and exposes no close, so a second process cannot
+ * share the desk's store. Running this standalone against its own directory is
+ * precisely what split subscribers from members — two datasets, nothing joining
+ * them, and a signup funnel that never reached the desk.
+ *
+ * Defaults to YENTE_DATA_PATH now. Use it to iterate on the pages, not to serve
+ * them; if the daemon is up it holds the lock and this will refuse to open.
+ */
 export function startFromEnvironment(environment = process.env) {
-  const dataPath = environment.YENTE_WAITLIST_DATA_PATH;
+  const dataPath = environment.YENTE_WAITLIST_DATA_PATH || environment.YENTE_DATA_PATH;
   if (!dataPath) {
     throw new Error(
-      "YENTE_WAITLIST_DATA_PATH must point to the waitlist’s dedicated local NEDB directory",
+      "YENTE_DATA_PATH must point at the desk's local NEDB directory. In "
+      + "production you do not run this file: bin/daemon.mjs serves the web "
+      + "surface from the process that owns the store.",
     );
   }
 
