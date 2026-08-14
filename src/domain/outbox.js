@@ -29,6 +29,11 @@ export const OUTBOUND_PURPOSES = Object.freeze({
   PROFILE_REQUEST: "profile_request",
   INTERVIEW_QUESTION: "interview_question",
   CLARIFICATION: "clarification",
+  // What she understood, sent back for correction once a member qualifies.
+  // Transactional, not promotional: it is a reply to a document they sent, it
+  // states only span-verified facts, and it exists because the alternative was
+  // silence — a member sent a résumé, she read it correctly, and said nothing.
+  PROFILE_CONFIRMATION: "profile_confirmation",
   PRIVATE_MATCH_PREVIEW: "private_match_preview",
   JOINT_INTRODUCTION: "joint_introduction",
   STOP_CONFIRMATION: "stop_confirmation",

@@ -179,10 +179,36 @@ async function tick() {
   const now = new Date();
   const ingested = await runtime.ingest(now);
   const outcomes = {};
+  // Extraction totals, and the reasons it produced nothing. `ingested=1 sent=0`
+  // was true of at least four different states and distinguished none of them:
+  // no source stored, a source with no facts, facts with an empty outbox, or a
+  // queued letter that failed to send. Recovering the difference took a separate
+  // tool re-running extraction by hand. The counts belong in the tick.
+  let facts = 0;
+  let rejected = 0;
+  const failures = [];
   for (const r of ingested) {
     const key = r?.outcome ?? "unknown";
     outcomes[key] = (outcomes[key] || 0) + 1;
+    facts += r?.facts ?? 0;
+    rejected += r?.rejected ?? 0;
+    for (const f of r?.failures ?? []) failures.push(f);
   }
+
+  // A failure here is not a failed tick — the message is durably recorded and
+  // she may simply have had nothing to say — so it is logged at its own level
+  // rather than thrown. Silent is the one thing it must not be.
+  for (const f of failures) {
+    log("error", "extraction_failed", { code: f.code, error: String(f.message).slice(0, 300) });
+  }
+  if (rejected > 0) {
+    log("warn", "facts_rejected", {
+      rejected,
+      note: "the model quoted evidence that is not in the document — grounding "
+        + "refused it (INV-5). Not an error; a fact she declined to believe.",
+    });
+  }
+
   const drained = await runtime.drainOutbox(now);
   const sent = Array.isArray(drained)
     ? drained.filter((d) => d?.status === "sent" || d?.sent).length
@@ -193,10 +219,14 @@ async function tick() {
       started_at: startedAt, finished_at: new Date().toISOString(),
       pid: process.pid, mode: "daemon", status: "ok",
       ingested: ingested.length, sent, outcomes,
+      facts, rejected, failures: failures.length,
     });
   } catch { /* ignore */ }
 
-  return { ingested: ingested.length, sent, outcomes, ms: Date.now() - t0 };
+  return {
+    ingested: ingested.length, sent, outcomes,
+    facts, rejected, failures: failures.length, ms: Date.now() - t0,
+  };
 }
 
 async function loop() {
@@ -222,8 +252,15 @@ async function loop() {
       backoff = 0;
       // Quiet ticks are the normal case; do not narrate them.
       if (r.ingested || r.sent) {
-        log("info", "tick", { ingested: r.ingested, sent: r.sent,
-                              outcomes: r.outcomes, ms: r.ms });
+        log("info", "tick", {
+          ingested: r.ingested, sent: r.sent, outcomes: r.outcomes,
+          // Printed even when zero: `facts=0` after a resume arrived is the
+          // single most useful thing the line can say, and its absence is what
+          // made the silence unreadable.
+          facts: r.facts, rejected: r.rejected || undefined,
+          failures: r.failures || undefined,
+          ms: r.ms,
+        });
       }
     } catch (error) {
       // A failed tick must never end the loop. That is the whole difference
