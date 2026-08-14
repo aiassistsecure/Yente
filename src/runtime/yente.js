@@ -119,6 +119,11 @@ export function createRuntime({
     // about. See domain/profile-schema.js.
     vocabulary = extractionVocabulary(),
     cycle = "c1",
+    // Backoff between extraction attempts. Real seconds in production, because a
+    // busy peer operator needs time rather than an immediate identical retry;
+    // 0 in tests, which must not sit through it.
+    extractionRetryDelayMs = 5_000,
+    extractionAttempts = 3,
   } = config;
 
   /* --- opportunities are stored, not modelled elsewhere yet ------------- */
@@ -292,6 +297,8 @@ export function createRuntime({
           sourceId: alias,
           text,
           vocabulary,
+          attempts: extractionAttempts,
+          retryDelayMs: extractionRetryDelayMs,
         });
         for (const fact of extraction.verified) {
           facts.push(

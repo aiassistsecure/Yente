@@ -17,6 +17,7 @@ import {
   textBlock,
 } from "../protocol/blocks.js";
 import { verifyFacts, qualifyingFacts, factsNeedingConfirmation } from "./spans.js";
+import { isTransient } from "../llm/client.js";
 
 /**
  * @param {object} input
@@ -60,8 +61,8 @@ export function createExtractionPrompt({ sourceId, text, vocabulary }) {
 }
 
 /**
- * Run extraction against one source: at most two model calls, then give up
- * honestly.
+ * Run extraction against one source: a bounded number of model calls, then give
+ * up honestly.
  *
  * §11.6 allows a single retry carrying the validation error. Note what counts
  * as a validation error here: a malformed block, yes — but ALSO an extraction
@@ -110,20 +111,43 @@ const EXTRACTION_SYSTEM = [
   "you cannot.",
 ].join("\n");
 
-export async function extractProfileFacts({ client, sourceId, text, vocabulary, signal }) {
+export async function extractProfileFacts({
+  client, sourceId, text, vocabulary, signal,
+  attempts: maxAttempts = 3,
+  // Injectable so the suite need not sit through real backoff. Production waits.
+  sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  retryDelayMs = 5_000,
+}) {
   const basePrompt = createExtractionPrompt({ sourceId, text, vocabulary });
   const sources = new Map([[sourceId, text]]);
   const failures = [];
   let prompt = basePrompt;
 
-  for (let attempt = 1; attempt <= 2; attempt += 1) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     let completion;
     try {
       completion = await client.complete({ prompt, system: EXTRACTION_SYSTEM, signal });
     } catch (error) {
-      failures.push({ attempt, code: error.code ?? "MODEL_ERROR", message: error.message });
-      if (attempt === 2) break;
-      continue;
+      const code = error.code ?? "MODEL_ERROR";
+      const transient = isTransient(error);
+      failures.push({ attempt, code, message: error.message, transient });
+      if (attempt === maxAttempts) break;
+
+      // A TRANSIENT FAILURE NEEDS TIME, NOT A DIFFERENT PROMPT.
+      //
+      // Retrying a busy operator in the same millisecond just fails again: the
+      // box burned both of its old attempts on EMPTY_COMPLETION inside 6.8
+      // seconds and reported silence to the sender. Waiting is the whole
+      // remedy, and the prompt is left untouched because it was never at fault.
+      //
+      // A DETERMINISTIC failure — a 400, a refused request — will fail
+      // identically however long we wait, so stop instead of padding the
+      // failures array with copies of the same error.
+      if (transient) {
+        await sleep(retryDelayMs * attempt);   // 5s, then 10s
+        continue;
+      }
+      break;
     }
 
     let payload;
@@ -132,7 +156,7 @@ export async function extractProfileFacts({ client, sourceId, text, vocabulary, 
     } catch (error) {
       if (!(error instanceof ProtocolError)) throw error;
       failures.push({ attempt, code: error.code, message: error.message });
-      if (attempt === 2) break;
+      if (attempt === maxAttempts) break;
       prompt = withFeedback(basePrompt, `${error.code}: ${error.message}`);
       continue;
     }
@@ -145,7 +169,7 @@ export async function extractProfileFacts({ client, sourceId, text, vocabulary, 
         .map((row) => `${row.code} on "${String(row.fact.evidence ?? "").slice(0, 60)}"`)
         .join("; ");
       failures.push({ attempt, code: "ALL_FACTS_UNGROUNDED", message: detail });
-      if (attempt === 2) break;
+      if (attempt === maxAttempts) break;
       prompt = withFeedback(
         basePrompt,
         `None of your excerpts were found in the source (${detail}). ` +
@@ -166,7 +190,7 @@ export async function extractProfileFacts({ client, sourceId, text, vocabulary, 
 
   // §11.6: never fabricate. An extraction that could not be grounded twice
   // yields nothing, and the member is asked rather than guessed at.
-  return { verified: [], rejected: [], qualifying: [], questions: [], attempts: 2, failures };
+  return { verified: [], rejected: [], qualifying: [], questions: [], attempts: maxAttempts, failures };
 }
 
 function withFeedback(prompt, message) {

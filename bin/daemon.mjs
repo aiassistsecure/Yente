@@ -54,6 +54,10 @@ import {
   registerDocumentParsers,
 } from "../src/index.js";
 import { createLlmClients } from "../src/llm/providers.js";
+import { openWaitlistRepository } from "../src/waitlist/repository.js";
+import { createYenteServer } from "../web/server.js";
+import { buildProfileView } from "../src/store/profile-view.js";
+import { COLLECTIONS } from "../src/store/db.js";
 
 const POLL_RUNS = "poll_runs";
 
@@ -101,6 +105,34 @@ function mailConfig() {
 
 /* ------------------------------------------------------------------ startup */
 
+// ONE DATA DIRECTORY. ONE PROCESS. THE LOCK WAS TELLING US THIS ALL ALONG.
+//
+// There used to be two: YENTE_DATA_PATH for the member ledger (this daemon) and
+// YENTE_WAITLIST_DATA_PATH for subscribers (a separate web process). Two
+// databases because the engine takes an exclusive lock per directory and exposes
+// no close — so a second process physically cannot share one.
+//
+// The cost was not operational tidiness, it was product: somebody who joined on
+// the website was a `subscriber` in one database, somebody who emailed was a
+// `member` in the other, and NOTHING connected them. The landing page's funnel
+// did not reach the desk. It is also why src/sequence/founding.mjs sat orphaned
+// — a weekly letter has to read subscribers AND write to the outbox, which lived
+// in different databases owned by different processes.
+//
+// The lock does not want two processes; it wants ONE OWNER. So this process owns
+// the directory and serves the BFF from inside the same lock.
+if (process.env.YENTE_WAITLIST_DATA_PATH
+    && process.env.YENTE_WAITLIST_DATA_PATH !== process.env.YENTE_DATA_PATH) {
+  log("error", "split_data_path", {
+    waitlist: process.env.YENTE_WAITLIST_DATA_PATH,
+    ledger: process.env.YENTE_DATA_PATH,
+    note: "there is one database now. Unset YENTE_WAITLIST_DATA_PATH, and if the "
+      + "old directory holds real subscribers migrate them first: "
+      + "node bin/migrate-waitlist.mjs <old-waitlist-dir>",
+  });
+  process.exit(1);
+}
+
 let store;
 try {
   store = openDatabase(env("YENTE_DATA_PATH", "./data/yente"));
@@ -145,6 +177,39 @@ const runtime = createRuntime({
   extractionClient: llm.extractionClient,
   emailClient: llm.emailClient,
 });
+
+/* ------------------------------------------------------------------- the BFF */
+
+// The web server on the SAME store, in the SAME process. `openWaitlistRepository`
+// already took an injected store and `createYenteServer` already took an injected
+// repository — the seam existed; nothing had used it. Subscribers and members are
+// now one dataset, which is what lets the sequence reach the outbox at all.
+const waitlist = openWaitlistRepository({ store });
+
+let httpServer = null;
+if (String(process.env.YENTE_HTTP ?? "1") === "1") {
+  httpServer = createYenteServer({
+    repository: waitlist,
+    adminUsername: process.env.YENTE_ADMIN_USERNAME,
+    adminPassword: process.env.YENTE_ADMIN_PASSWORD,
+    trustProxy: process.env.YENTE_TRUST_PROXY === "1",
+  });
+  const host = process.env.YENTE_HOST || "127.0.0.1";
+  const port = Number.parseInt(process.env.YENTE_PORT || "3000", 10);
+  httpServer.listen(port, host, () => {
+    log("info", "http", { host, port, admin: Boolean(process.env.YENTE_ADMIN_PASSWORD) });
+  });
+  // A port already in use must not kill the desk. Mail and matching do not
+  // depend on the BFF, and losing them because a stale process holds 3000 would
+  // be a worse outage than losing the landing page.
+  httpServer.on("error", (error) => {
+    log("error", "http_failed", {
+      error: String(error?.message ?? error),
+      note: "the desk keeps running without the web surface",
+    });
+    httpServer = null;
+  });
+}
 
 /* ------------------------------------------------------------------ the loop */
 
@@ -209,6 +274,40 @@ async function tick() {
     });
   }
 
+  // MATCHING, WHICH NOTHING IN PRODUCTION USED TO CALL.
+  //
+  // `proposeMatches` and `advanceDeadlines` were exported by the runtime and
+  // invoked by nothing outside the test suite. D8 drives the whole chain — match,
+  // two private previews, veto window, one joint introduction — and proves it
+  // works. No live process drove any of it, so the desk could take somebody in
+  // and then never do the thing it exists to do.
+  //
+  // Ordering matters. Propose first so a new match opens its window in this same
+  // tick; advance deadlines second so a window that expired while we were asleep
+  // closes before the outbox drains, and the introduction it authorises goes out
+  // now rather than a tick later.
+  let proposed = 0;
+  let advanced = 0;
+  try {
+    // The profile view is the materialisation of §6.1 — built from span-verified
+    // facts, not handed in. Only ACTIVE members are offered: matchability is a
+    // separate gate from qualification (§7.2), and it is enforced here by whose
+    // profile is even built.
+    const profiles = {};
+    for (const member of store.query(`FROM ${COLLECTIONS.MEMBERS}`)) {
+      if (member.state !== "ACTIVE") continue;
+      const address = member.address ?? member._id;
+      profiles[address] = buildProfileView(store, address);
+    }
+    proposed = (runtime.proposeMatches({ profiles, now }) ?? []).length;
+    advanced = (runtime.advanceDeadlines(now) ?? []).length;
+  } catch (error) {
+    // Matching must not cost us the inbox. A message is already durably recorded
+    // by this point and the outbox still has to drain; a bad policy or one
+    // malformed opportunity should not strand either.
+    log("error", "matching_failed", { error: String(error?.message ?? error).slice(0, 300) });
+  }
+
   const drained = await runtime.drainOutbox(now);
   const sent = Array.isArray(drained)
     ? drained.filter((d) => d?.status === "sent" || d?.sent).length
@@ -219,13 +318,14 @@ async function tick() {
       started_at: startedAt, finished_at: new Date().toISOString(),
       pid: process.pid, mode: "daemon", status: "ok",
       ingested: ingested.length, sent, outcomes,
-      facts, rejected, failures: failures.length,
+      facts, rejected, failures: failures.length, proposed, advanced,
     });
   } catch { /* ignore */ }
 
   return {
     ingested: ingested.length, sent, outcomes,
-    facts, rejected, failures: failures.length, ms: Date.now() - t0,
+    facts, rejected, failures: failures.length, proposed, advanced,
+    ms: Date.now() - t0,
   };
 }
 
@@ -251,7 +351,7 @@ async function loop() {
       consecutiveFailures = 0;
       backoff = 0;
       // Quiet ticks are the normal case; do not narrate them.
-      if (r.ingested || r.sent) {
+      if (r.ingested || r.sent || r.proposed || r.advanced) {
         log("info", "tick", {
           ingested: r.ingested, sent: r.sent, outcomes: r.outcomes,
           // Printed even when zero: `facts=0` after a resume arrived is the
@@ -259,6 +359,7 @@ async function loop() {
           // made the silence unreadable.
           facts: r.facts, rejected: r.rejected || undefined,
           failures: r.failures || undefined,
+          proposed: r.proposed || undefined, advanced: r.advanced || undefined,
           ms: r.ms,
         });
       }
@@ -294,6 +395,15 @@ async function shutdown(signal) {
   stopping = true;
   log("info", "shutting_down", { signal, mid_tick: ticking });
   if (wake) wake();          // cut the sleep short; the tick itself finishes
+
+  // Stop accepting HTTP first. A subscriber POST arriving mid-shutdown would
+  // otherwise write to a store that is about to close, and the signup would be
+  // acknowledged to somebody's browser without being durable. Closing the
+  // listener refuses new connections while in-flight requests finish.
+  if (httpServer) {
+    await new Promise((resolve) => httpServer.close(resolve));
+    log("info", "http_closed", {});
+  }
 
   // Give the in-flight tick a bounded chance to complete. Killing it between
   // recording a message and marking it \Seen, or between reserving an outbox

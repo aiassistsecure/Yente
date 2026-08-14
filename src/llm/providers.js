@@ -25,10 +25,18 @@
  *
  * The public /privacy page states that extraction runs on our own hardware and
  * not a third-party inference provider — a promise about somebody's unannounced
- * raise or quiet job search. `local` therefore stays the DEFAULT, and any
- * provider that leaves our infrastructure is marked `thirdParty: true` and
- * warns loudly at startup. Nothing here stops you choosing one; it stops the
- * choice being silent while the page still claims otherwise.
+ * raise or quiet job search. Any provider that leaves our infrastructure is
+ * therefore marked `thirdParty: true` and warns loudly at startup. Nothing here
+ * stops you choosing one; it stops the choice being silent while the page still
+ * claims otherwise.
+ *
+ * THE DEFAULT IS `pin`, WHICH KEEPS THAT PROMISE
+ *
+ * It used to be `local`, on the reasoning that our own llama.cpp is the most
+ * private option. True, and useless in production, where nothing is listening on
+ * 127.0.0.1:8080 — so the "safe" default guaranteed a NETWORK_ERROR on the first
+ * résumé. `pin` is also thirdParty:false (it is our own peer network), and it is
+ * the path that actually exists. A default that points at nothing is not safe.
  */
 
 import { createModelClient } from "./client.js";
@@ -75,12 +83,16 @@ export const PROVIDERS = Object.freeze({
     thirdParty: (process.env.YENTE_LLM_UPSTREAM || "") !== "pin",
     baseUrl: () => process.env.YENTE_LLM_BASE_URL || "https://api.aiassist.net/v1",
     model: () => process.env.YENTE_LLM_MODEL
-      || (process.env.YENTE_LLM_UPSTREAM === "pin" ? "pin:auto" : "llama-3.3-70b-versatile"),
+      // Same default as the `pin` provider when routed there: "auto" hands the
+      // choice of weights to somebody else on every call, and extraction is the
+      // one place we want to know exactly which model read the document.
+      || (process.env.YENTE_LLM_UPSTREAM === "pin" ? "muse-local:latest" : "llama-3.3-70b-versatile"),
     apiKey: () => process.env.YENTE_LLM_API_KEY || "",
     headers: () => ({
       "x-aiassist-provider": process.env.YENTE_LLM_UPSTREAM || "groq",
       "user-agent": BROWSER_UA,
     }),
+    get settings() { return AIAS_SETTINGS; },
   },
 
   /**
@@ -95,9 +107,14 @@ export const PROVIDERS = Object.freeze({
     label: "PIN network (via AiAS)",
     thirdParty: false,
     baseUrl: () => process.env.YENTE_LLM_BASE_URL || "https://api.aiassist.net/v1",
-    model: () => process.env.YENTE_LLM_MODEL || "pin:auto",
+    // muse-local rather than pin:auto, because "auto" is a routing decision made
+    // by somebody else on every single call, and extraction is the one place we
+    // want to know exactly which weights read the document.
+    model: () => process.env.YENTE_LLM_MODEL || "muse-local:latest",
     apiKey: () => process.env.YENTE_LLM_API_KEY || "",
     headers: () => ({ "x-aiassist-provider": "pin", "user-agent": BROWSER_UA }),
+
+    get settings() { return AIAS_SETTINGS; },
   },
 
   /**
@@ -126,6 +143,28 @@ export const PROVIDERS = Object.freeze({
   },
 });
 
+/**
+ * Deadlines for anything fronted by the AiAS gateway.
+ *
+ * The 90s limit is the GATEWAY's, not one upstream's, so every route through it
+ * shares this — `aias` and `pin` alike. It counts SILENCE BETWEEN CHUNKS, not
+ * total duration, and it announces itself in the stream:
+ *
+ *   data: {"error":{"message":"operator produced nothing for 90s
+ *          (timeout between chunks, not total duration)"}}
+ *
+ * A reasoning model emits nothing at all while it thinks — measured on
+ * muse-local: 101 completion_tokens to answer "OK", 82 SECONDS of pin_latency on
+ * a real extraction prompt. At the default 60s WE gave up first and turned that
+ * specific sentence into our own generic FIRST_TOKEN_TIMEOUT. Sitting just past
+ * the gateway's limit lets the upstream explain itself, so a diagnosis arrives
+ * instead of a shrug.
+ */
+const AIAS_SETTINGS = Object.freeze({
+  firstTokenTimeoutMs: 100_000,
+  streamTimeoutMs: 300_000,
+});
+
 const BROWSER_UA =
   "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
   + "Chrome/126.0 Safari/537.36";
@@ -152,7 +191,15 @@ function withHeaders(extra, base = fetch) {
  * @param {(level: string, event: string, fields?: object) => void} [opts.log]
  */
 export function createLlmClients({ provider, log } = {}) {
-  const name = String(provider || process.env.YENTE_LLM_PROVIDER || "local").toLowerCase();
+  // DEFAULT IS `pin`, NOT `local`.
+  //
+  // It was `local` to keep the /privacy promise — documents are read on our own
+  // hardware, not a third-party inference provider. `pin` keeps that promise
+  // (thirdParty: false — it is our own network) AND is the path that actually
+  // exists in production, where no llama.cpp server is running on 127.0.0.1.
+  // A default that points at nothing is not a safe default; it is a guaranteed
+  // NETWORK_ERROR on the first résumé.
+  const name = String(provider || process.env.YENTE_LLM_PROVIDER || "pin").toLowerCase();
   const spec = PROVIDERS[name];
   if (!spec) {
     throw new Error(
@@ -201,14 +248,30 @@ export function createLlmClients({ provider, log } = {}) {
     });
   }
 
+  // Per-provider deadlines. A provider knows how slow its own upstream is; the
+  // client should not have to carry one number that suits every host.
+  // Overridable by env, because the operator on the box is the one who can see
+  // what it is actually doing.
+  const settings = {
+    ...(spec.settings ?? {}),
+    ...(process.env.YENTE_LLM_FIRST_TOKEN_MS
+      ? { firstTokenTimeoutMs: Number(process.env.YENTE_LLM_FIRST_TOKEN_MS) } : {}),
+    ...(process.env.YENTE_LLM_STREAM_MS
+      ? { streamTimeoutMs: Number(process.env.YENTE_LLM_STREAM_MS) } : {}),
+  };
+
   const client = createModelClient({
     baseUrl, model, apiKey,
     fetchImpl: withHeaders(spec.headers()),
+    ...settings,
   });
 
   return {
     extractionClient: client,
     emailClient: client,
-    describe: { provider: name, label: spec.label, model, baseUrl, thirdParty },
+    describe: {
+      provider: name, label: spec.label, model, baseUrl, thirdParty,
+      first_token_ms: client.settings.firstTokenTimeoutMs,
+    },
   };
 }
