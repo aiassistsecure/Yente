@@ -45,6 +45,20 @@ try {
 }
 
 const q = (nql) => { try { return store.query(nql); } catch { return []; } };
+
+/**
+ * The failure reason, whatever it is spelled.
+ *
+ * `markFailed` in domain/outbox.js writes `lastError` — camelCase. This tool
+ * read `last_error`, so every send failure printed as blank and the store's own
+ * explanation was invisible. A job sat in RETRY_WAIT with attempts=1 and the
+ * reason was RIGHT THERE, unread, because a diagnostic tool guessed at a field
+ * name instead of checking one.
+ *
+ * That is the same defect this file exists to catch, committed by this file. Both
+ * spellings are read now so it cannot recur through a rename either.
+ */
+const errorOf = (job) => job?.lastError ?? job?.last_error ?? null;
 const one = (v) => (Array.isArray(v) ? v[0] : v);
 
 function section(title) {
@@ -75,11 +89,12 @@ for (const j of outbox) byState[j.state ?? "?"] = (byState[j.state ?? "?"] || 0)
 if (outbox.length) {
   section("outbox by state");
   for (const [state, n] of Object.entries(byState)) console.log(`  ${state.padEnd(14)} ${n}`);
-  const broken = outbox.filter((j) => j.last_error || /FAIL|DEAD/i.test(String(j.state)));
+  const broken = outbox.filter((j) => errorOf(j) || /FAIL|DEAD|RETRY/i.test(String(j.state)));
   for (const j of broken.slice(0, 8)) {
     console.log(`  ! ${j.purpose ?? "?"} -> ${(j.recipients || []).join(",")}`);
     console.log(`      state=${j.state} attempts=${j.attempts ?? 0}`);
-    console.log(`      error=${String(j.last_error ?? "").slice(0, 200)}`);
+    console.log(`      error=${String(errorOf(j) ?? "(none recorded)").slice(0, 300)}`);
+    console.log(`      next attempt at ${j.availableAt ?? "?"}`);
   }
 }
 
@@ -143,7 +158,8 @@ if (WHO) {
     console.log(`  ${String(j.purpose ?? "?").padEnd(26)} ${j.state}`
       + `  attempts=${j.attempts ?? 0}${j.sent_at ? "  sent " + j.sent_at : ""}`);
     if (j.email?.subject) console.log(`      "${j.email.subject}"`);
-    if (j.last_error) console.log(`      error=${String(j.last_error).slice(0, 160)}`);
+    if (errorOf(j)) console.log(`      error=${String(errorOf(j)).slice(0, 300)}`);
+    if (j.availableAt) console.log(`      next attempt at ${j.availableAt}`);
   }
   if (!myJobs.length) {
     console.log("  NONE QUEUED. She has decided there is nothing to say — which for a");
