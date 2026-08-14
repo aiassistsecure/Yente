@@ -38,8 +38,46 @@ export const ModelErrorCode = Object.freeze({
   STREAM_TIMEOUT: "STREAM_TIMEOUT",
   TOKEN_BUDGET_EXCEEDED: "TOKEN_BUDGET_EXCEEDED",
   EMPTY_COMPLETION: "EMPTY_COMPLETION",
+  // The upstream explained itself INSIDE the stream, and we threw it away.
+  //
+  // A gateway can answer 200, open a text/event-stream, and then send:
+  //   data: {"error":{"message":"operator produced nothing for 90s
+  //          (timeout between chunks, not total duration)"}}
+  //
+  // An error event carries no `choices`, so the read loop below skipped it as an
+  // unreadable keep-alive and the request fell through to EMPTY_COMPLETION —
+  // "the model returned no content", which is true and useless. A whole session
+  // went into rediscovering by experiment a sentence the gateway had already
+  // written down.
+  UPSTREAM_ERROR: "UPSTREAM_ERROR",
   ABORTED: "ABORTED",
 });
+
+/**
+ * Worth trying again, or will it fail identically forever?
+ *
+ * Not cosmetic. A caller that treats these alike spends every attempt it has on
+ * a transient condition, immediately, and then reports the very failure the
+ * retry existed to survive — observed on the box as two EMPTY_COMPLETIONs inside
+ * a single 6803ms tick.
+ *
+ * TRANSIENT: the same request might succeed later — a busy peer operator, a
+ * stalled stream, a network blip, 429, 5xx.
+ * DETERMINISTIC: the request itself is wrong — 400, an oversized prompt, a
+ * malformed artifact — and repeating it unchanged is just a slower way to fail.
+ */
+export function isTransient(error) {
+  const code = error?.code;
+  if (code === ModelErrorCode.HTTP_ERROR) {
+    const status = Number(error?.meta?.status ?? 0);
+    return status === 408 || status === 409 || status === 429 || status >= 500;
+  }
+  return code === ModelErrorCode.NETWORK_ERROR
+    || code === ModelErrorCode.FIRST_TOKEN_TIMEOUT
+    || code === ModelErrorCode.STREAM_TIMEOUT
+    || code === ModelErrorCode.EMPTY_COMPLETION
+    || code === ModelErrorCode.UPSTREAM_ERROR;
+}
 
 const DEFAULTS = Object.freeze({
   temperature: 0,
@@ -175,6 +213,20 @@ async function streamCompletion({
           // A server that interleaves a keep-alive or a comment has not failed.
           // Skip what we cannot read; fail only on no content at all.
           continue;
+        }
+
+        // BEFORE looking for content. The gateway's own account of what went
+        // wrong is worth more than anything we could infer from its absence,
+        // and it arrives as a data: event with no `choices` at all.
+        if (parsed.error) {
+          const upstream = typeof parsed.error === "string"
+            ? parsed.error
+            : parsed.error.message ?? JSON.stringify(parsed.error);
+          throw new ModelError(
+            ModelErrorCode.UPSTREAM_ERROR,
+            `Upstream: ${upstream}`,
+            { upstream: parsed.error, partial: text.slice(0, 500) },
+          );
         }
 
         const choice = parsed.choices?.[0];

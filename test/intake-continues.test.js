@@ -69,6 +69,9 @@ function harness(facts) {
   // runtime, so this is the shape the daemon actually runs in.
   const runtime = createRuntime({
     repositories, transport, extractionClient: scriptedModel(facts),
+    // No real backoff in the suite. Production waits 5s then 10s between
+    // transient retries; a test asserting the failure path must not.
+    config: { extractionRetryDelayMs: 0 },
   });
   return { store, repositories, transport, runtime };
 }
@@ -183,6 +186,7 @@ test("an extraction that fails is reported, not swallowed", async () => {
   };
   const r2 = createRuntime({
     repositories: createRepositories(store), transport, extractionClient: broken,
+    config: { extractionRetryDelayMs: 0 },
   });
   sendResume(transport);
 

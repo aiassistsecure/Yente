@@ -25,6 +25,12 @@ import { createServer } from "node:http";
  * @param {boolean}  [script.keepAlive]   emit an SSE comment and a junk event
  * @param {boolean}  [script.splitEvents] flush each event in two writes
  * @param {string}   [script.finishReason]
+ * @param {string|object} [script.errorEvent] emit `data: {"error":{...}}` and stop.
+ *   Not hypothetical: api.aiassist.net answers 200, opens a text/event-stream,
+ *   and sends exactly this when a PIN operator goes quiet —
+ *     {"error":{"message":"operator produced nothing for 90s
+ *      (timeout between chunks, not total duration)"}}
+ *   The client used to skip it (no `choices`) and report EMPTY_COMPLETION.
  */
 export async function startSseServer(script = {}) {
   const {
@@ -38,6 +44,7 @@ export async function startSseServer(script = {}) {
     keepAlive = false,
     splitEvents = false,
     finishReason = "stop",
+    errorEvent = null,
   } = script;
 
   const requests = [];
@@ -66,6 +73,14 @@ export async function startSseServer(script = {}) {
     if (stallForever) {
       if (flushHeaders) res.flushHeaders();
       return; // never a token
+    }
+
+    if (errorEvent) {
+      const payload = typeof errorEvent === "string"
+        ? { error: { message: errorEvent } } : { error: errorEvent };
+      res.write(`data: ${JSON.stringify(payload)}\n\n`);
+      res.end();
+      return;
     }
 
     if (keepAlive) {
