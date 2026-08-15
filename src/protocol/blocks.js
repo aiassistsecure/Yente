@@ -11,6 +11,13 @@ export const BLOCK_TAGS = Object.freeze({
   CONTROLLED_VOCABULARY: "CONTROLLED_VOCABULARY",
   PROFILE: "PROFILE",
   PROFILE_FACTS: "PROFILE_FACTS",
+  /**
+   * The observation envelope of the graph redesign — the observer's only
+   * output. Registered here because KNOWN_TAGS is closed: an unregistered tag
+   * throws UNKNOWN_TAG, which is what stops a model inventing a block we would
+   * then have to decide how to interpret.
+   */
+  OBSERVATIONS: "OBSERVATIONS",
   MISSING_FIELDS: "MISSING_FIELDS",
   INTERVIEW_PLAN: "INTERVIEW_PLAN",
   MATCH: "MATCH",
