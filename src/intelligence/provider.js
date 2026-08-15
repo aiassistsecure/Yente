@@ -1,0 +1,310 @@
+/**
+ * IntelligenceProvider — the seam between Yente's graph and whatever interprets
+ * evidence for it.
+ *
+ * WHY THIS EXISTS WHEN src/llm/ ALREADY DOES
+ *
+ * `src/llm/client.js` is a TRANSPORT abstraction: it hides SSE framing, two
+ * deadlines, abort handling and upstream error events behind `complete()`, and
+ * it returns text. Text is the wrong currency for the graph pipeline. Every
+ * caller that wants observations would otherwise repeat: build the prompt,
+ * parse the block, validate the shape, verify the spans, decide what a transient
+ * failure means. That repetition is where the last set of bugs came from — the
+ * qualification call that existed and was never made, the vocabulary that
+ * drifted between three files.
+ *
+ * So this is a BELIEF abstraction. In: bounded evidence. Out: a validated,
+ * span-verified envelope with provenance attached. The graph pipeline depends on
+ * this interface and never on Muse, PIN, or an HTTP shape.
+ *
+ *   IntelligenceProvider
+ *       observe({ sources, context, signal }) -> ObservationResult
+ *       describe()                            -> { provider, model, schemaVersion }
+ *
+ *   ObservationResult
+ *       { envelope, verified, rejected, discrepancies, provenance, failures,
+ *         cached, attempts }
+ *
+ * WHAT THE PROVIDER DELIBERATELY DOES NOT DO
+ *
+ * It does not touch the store, resolve identities, or mutate the graph. It
+ * cannot: nothing is injected into it that could. `observe` is a function from
+ * evidence to proposed beliefs, and the deterministic runtime decides what to do
+ * with them. That is the brief's boundary, enforced by what this module can
+ * reach rather than by what it promises.
+ *
+ * THE CACHE IS PART OF THE CONTRACT, NOT AN OPTIMISATION
+ *
+ * The cache key is (content hash, provider, model, schema version, prompt
+ * version). Two consequences, both intended:
+ *
+ *   - Identical evidence is never re-interpreted, so a mailbox resync or a
+ *     restart mid-batch costs nothing. Combined with idempotent ingestion, the
+ *     whole pipeline becomes safely replayable.
+ *   - Bumping the schema or the prompt invalidates cached inferences BY
+ *     CONSTRUCTION. "Re-analyse everything from obs_v1 under obs_v2 without
+ *     re-ingesting the mailbox" is then a query over provenance, not a
+ *     migration, and nobody has to remember to clear anything.
+ */
+
+import { digest } from "../store/keys.js";
+import { isTransient } from "../llm/client.js";
+import { ProtocolError, parseJsonBlock, BLOCK_TAGS } from "../protocol/blocks.js";
+import { verifyFact } from "../extract/spans.js";
+import { createObservationPrompt, OBSERVER_SYSTEM } from "./prompt.js";
+import {
+  OBSERVATION_SCHEMA_VERSION,
+  SchemaError,
+  validateEnvelope,
+  claimsForVerification,
+  CLAIM_GROUPS,
+} from "./schema.js";
+
+/**
+ * Bump when the prompt's WORDING changes materially. Separate from the schema
+ * version because the two move independently: a reworded task with the same
+ * envelope shape still produces different beliefs, and a cache that ignored
+ * that would serve stale interpretations forever.
+ */
+export const PROMPT_VERSION = "obs_prompt_v1";
+
+/** Default attempts. Transient failures are retried; deterministic ones are not. */
+const DEFAULT_ATTEMPTS = 3;
+const DEFAULT_RETRY_DELAY_MS = 5_000;
+
+export class IntelligenceError extends Error {
+  constructor(code, message, meta = {}) {
+    super(message);
+    this.name = "IntelligenceError";
+    this.code = code;
+    this.meta = meta;
+  }
+}
+
+/**
+ * The cache key. Pure, and exported because a reprocessing tool needs to
+ * compute it without constructing a provider.
+ *
+ * Sources are hashed in a canonical order with an explicit separator, so
+ * `[{id:"a",text:"xy"}]` and `[{id:"ax",text:"y"}]` cannot collide.
+ */
+export function inferenceKey({ sources, provider, model, schemaVersion, promptVersion, context = null }) {
+  const canonical = [...sources]
+    .map((source) => `${source.id}${source.text}`)
+    .sort()
+    .join("");
+  return digest([
+    provider, model, schemaVersion, promptVersion,
+    context ? JSON.stringify(context, Object.keys(context).sort()) : "",
+    canonical,
+  ].join(""));
+}
+
+/**
+ * The one field per claim group that carries its substance, used to satisfy
+ * verifyFact's `value` requirement with something meaningful. A claim group with
+ * no substantive value would be a claim group worth deleting.
+ */
+function claimValue(group, claim) {
+  switch (group) {
+    case "entities": return claim.name;
+    case "intents": return claim.object;
+    case "relationships": return claim.predicate;
+    case "opportunities": return claim.summary;
+    default: return claim.text;
+  }
+}
+
+/**
+ * Stage two: does each claim's quote actually appear in the source it cites?
+ *
+ * Reuses `verifyFact` unchanged. That function was written for profile facts and
+ * makes exactly one decision — is this excerpt present in this source text after
+ * whitespace and unicode-punctuation normalisation — which is the same decision
+ * an observation needs. Reusing it means there is ONE grounding rule in the
+ * codebase, so it cannot be strict in one place and lax in another.
+ */
+function verifyEnvelope(envelope, sourceTextById) {
+  const verified = {};
+  for (const group of CLAIM_GROUPS) verified[group] = [];
+  const rejected = [];
+
+  for (const { group, index, claim } of claimsForVerification(envelope)) {
+    try {
+      // verifyFact's contract is snake_case `source_id` and a non-empty
+      // `value`, and it takes the whole source map so it can name UNKNOWN_SOURCE
+      // itself. Adapting to it here — rather than widening it to a second
+      // shape — keeps one grounding rule in the codebase.
+      verifyFact(
+        {
+          field: `${group}[${index}]`,
+          value: claimValue(group, claim),
+          source_id: claim.sourceId,
+          evidence: claim.evidence,
+        },
+        sourceTextById,
+      );
+      verified[group].push(claim);
+    } catch (error) {
+      rejected.push({
+        group, index,
+        code: error?.code ?? "UNGROUNDED",
+        message: String(error?.message ?? error),
+      });
+    }
+  }
+
+  for (const group of CLAIM_GROUPS) verified[group] = Object.freeze(verified[group]);
+  verified.schemaVersion = envelope.schemaVersion;
+  return { verified: Object.freeze(verified), rejected };
+}
+
+/**
+ * Build a provider over an existing model client.
+ *
+ * @param {object} input
+ * @param {{complete: Function}} input.client   from createModelClient
+ * @param {string} input.provider               e.g. "pin"
+ * @param {string} input.model                  e.g. "muse-local:latest"
+ * @param {{get: Function, put: Function}} [input.cache]  content-hash cache
+ * @param {Function} [input.now]                injectable clock
+ * @param {Function} [input.sleep]              injectable delay, for tests
+ */
+export function createIntelligenceProvider({
+  client,
+  provider,
+  model,
+  cache = null,
+  attempts: maxAttempts = DEFAULT_ATTEMPTS,
+  retryDelayMs = DEFAULT_RETRY_DELAY_MS,
+  now = () => new Date().toISOString(),
+  sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+}) {
+  if (!client || typeof client.complete !== "function") {
+    throw new TypeError("createIntelligenceProvider requires a model client");
+  }
+  if (!provider || !model) {
+    throw new TypeError("createIntelligenceProvider requires provider and model names");
+  }
+
+  function describe() {
+    return Object.freeze({
+      provider,
+      model,
+      schemaVersion: OBSERVATION_SCHEMA_VERSION,
+      promptVersion: PROMPT_VERSION,
+    });
+  }
+
+  async function observe({ sources, context = null, signal } = {}) {
+    if (!Array.isArray(sources) || sources.length === 0) {
+      throw new TypeError("observe requires at least one source");
+    }
+
+    const contentHash = inferenceKey({
+      sources, provider, model, context,
+      schemaVersion: OBSERVATION_SCHEMA_VERSION,
+      promptVersion: PROMPT_VERSION,
+    });
+
+    if (cache) {
+      const hit = await cache.get(contentHash);
+      if (hit) return Object.freeze({ ...hit, cached: true });
+    }
+
+    const sourceTextById = new Map(sources.map((source) => [source.id, source.text]));
+    const knownSourceIds = new Set(sourceTextById.keys());
+    const prompt = createObservationPrompt({ sources, context });
+
+    const failures = [];
+    let attempt = 0;
+
+    while (attempt < maxAttempts) {
+      attempt += 1;
+      try {
+        const completion = await client.complete({
+          prompt, system: OBSERVER_SYSTEM, signal,
+        });
+
+        // Shape, then meaning. A parse or schema failure is the model answering
+        // in the wrong form, which is worth another attempt; an ungrounded claim
+        // is the model inventing, which is not.
+        const raw = parseJsonBlock(completion.text, BLOCK_TAGS.OBSERVATIONS);
+        const { envelope, rejected: schemaRejected, discrepancies } =
+          validateEnvelope(raw, { knownSourceIds });
+        const { verified, rejected: groundingRejected } =
+          verifyEnvelope(envelope, sourceTextById);
+
+        const result = {
+          envelope,
+          verified,
+          rejected: Object.freeze([...schemaRejected, ...groundingRejected]),
+          discrepancies,
+          failures: Object.freeze(failures),
+          attempts: attempt,
+          cached: false,
+          provenance: Object.freeze({
+            contentHash,
+            provider,
+            model,
+            schemaVersion: OBSERVATION_SCHEMA_VERSION,
+            promptVersion: PROMPT_VERSION,
+            inferenceTimestamp: now(),
+            elapsedMs: completion.elapsedMs ?? null,
+          }),
+        };
+
+        // Cache the OUTCOME, including an empty one. "This evidence supports no
+        // claims" is a real and expensive answer, and re-deriving it on every
+        // replay is exactly the waste the cache exists to prevent.
+        if (cache) await cache.put(contentHash, result);
+        return Object.freeze(result);
+      } catch (error) {
+        const retryable =
+          isTransient(error) ||
+          error instanceof ProtocolError ||
+          error instanceof SchemaError;
+
+        failures.push({
+          code: error?.code ?? "OBSERVE_FAILED",
+          message: String(error?.message ?? error),
+          transient: retryable,
+          attempt,
+        });
+
+        if (!retryable || attempt >= maxAttempts) {
+          throw new IntelligenceError(
+            error?.code ?? "OBSERVE_FAILED",
+            `Observation failed after ${attempt} attempt(s): ${error?.message ?? error}`,
+            { failures, contentHash, provider, model },
+          );
+        }
+
+        // Linear backoff. The failure that motivated this was a 90-second
+        // operator silence: retrying instantly burned every attempt inside 7
+        // seconds and reported silence, when waiting was the entire remedy.
+        await sleep(retryDelayMs * attempt);
+      }
+    }
+
+    /* c8 ignore next */
+    throw new IntelligenceError("OBSERVE_FAILED", "exhausted attempts", { failures });
+  }
+
+  return Object.freeze({ observe, describe });
+}
+
+/**
+ * The configured provider, from the environment.
+ *
+ * `YENTE_INTELLIGENCE_PROVIDER` / `YENTE_MODEL` are the names the brief asks
+ * for. The older `YENTE_LLM_*` pair is still honoured as a fallback so a box
+ * configured for the current daemon keeps working across the cutover — and the
+ * precedence is stated here rather than discovered later.
+ */
+export function resolveIntelligenceConfig(env = process.env) {
+  return Object.freeze({
+    provider: env.YENTE_INTELLIGENCE_PROVIDER || env.YENTE_LLM_PROVIDER || "pin",
+    model: env.YENTE_MODEL || env.YENTE_LLM_MODEL || "muse-local:latest",
+  });
+}
