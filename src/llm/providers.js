@@ -47,6 +47,22 @@ import { createModelClient } from "./client.js";
  * `thirdParty` means the document leaves our infrastructure. That flag exists
  * so a routing choice cannot quietly contradict the privacy page.
  */
+/**
+ * The model name, from the environment.
+ *
+ * `YENTE_MODEL` is the name the intelligence-runtime brief specifies;
+ * `YENTE_LLM_MODEL` is what the existing daemon and every deployed box already
+ * set. Both are honoured, new name first, so the cutover does not require
+ * editing a live box's environment in the same change that ships the code.
+ *
+ * One helper rather than four call sites, because the last time a name existed
+ * in more than one place with slightly different resolution, all sixteen of a
+ * member's verified facts were silently dropped.
+ */
+function envModel(fallback) {
+  return process.env.YENTE_MODEL || process.env.YENTE_LLM_MODEL || fallback;
+}
+
 export const PROVIDERS = Object.freeze({
   /**
    * llama.cpp / llama-server on our own box. The benchmarked path: Qwen3.5-35B-
@@ -58,7 +74,7 @@ export const PROVIDERS = Object.freeze({
     label: "local llama.cpp",
     thirdParty: false,
     baseUrl: () => process.env.YENTE_LLM_BASE_URL || "http://127.0.0.1:8080/v1",
-    model: () => process.env.YENTE_LLM_MODEL || "local",
+    model: () => envModel("local"),
     apiKey: () => process.env.YENTE_LLM_API_KEY || "",
     headers: () => ({}),
   },
@@ -82,11 +98,12 @@ export const PROVIDERS = Object.freeze({
     label: "AiAssist Secure",
     thirdParty: (process.env.YENTE_LLM_UPSTREAM || "") !== "pin",
     baseUrl: () => process.env.YENTE_LLM_BASE_URL || "https://api.aiassist.net/v1",
-    model: () => process.env.YENTE_LLM_MODEL
-      // Same default as the `pin` provider when routed there: "auto" hands the
-      // choice of weights to somebody else on every call, and extraction is the
-      // one place we want to know exactly which model read the document.
-      || (process.env.YENTE_LLM_UPSTREAM === "pin" ? "muse-local:latest" : "llama-3.3-70b-versatile"),
+    // Same default as the `pin` provider when routed there: "auto" hands the
+    // choice of weights to somebody else on every call, and extraction is the
+    // one place we want to know exactly which model read the document.
+    model: () => envModel(
+      process.env.YENTE_LLM_UPSTREAM === "pin" ? "muse-local:latest" : "llama-3.3-70b-versatile",
+    ),
     apiKey: () => process.env.YENTE_LLM_API_KEY || "",
     headers: () => ({
       "x-aiassist-provider": process.env.YENTE_LLM_UPSTREAM || "groq",
@@ -110,7 +127,7 @@ export const PROVIDERS = Object.freeze({
     // muse-local rather than pin:auto, because "auto" is a routing decision made
     // by somebody else on every single call, and extraction is the one place we
     // want to know exactly which weights read the document.
-    model: () => process.env.YENTE_LLM_MODEL || "muse-local:latest",
+    model: () => envModel("muse-local:latest"),
     apiKey: () => process.env.YENTE_LLM_API_KEY || "",
     headers: () => ({ "x-aiassist-provider": "pin", "user-agent": BROWSER_UA }),
 
@@ -137,7 +154,7 @@ export const PROVIDERS = Object.freeze({
       }
       return url;
     },
-    model: () => process.env.YENTE_LLM_MODEL || "default",
+    model: () => envModel("default"),
     apiKey: () => process.env.YENTE_LLM_API_KEY || "",
     headers: () => ({}),
   },

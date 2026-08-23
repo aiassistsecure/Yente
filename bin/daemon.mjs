@@ -408,7 +408,16 @@ async function shutdown(signal) {
   // Give the in-flight tick a bounded chance to complete. Killing it between
   // recording a message and marking it \Seen, or between reserving an outbox
   // row and sending it, is the failure this wait exists to avoid.
-  const deadline = Date.now() + 30_000;
+  //
+  // 30s WAS TOO SHORT ONCE EXTRACTION GOT SLOW. muse-local takes 82 seconds of
+  // measured pin_latency on a real résumé, and the client's first-token deadline
+  // is 100s — so a tick that happens to be extracting when SIGTERM arrives had
+  // no chance of finishing, and we abandoned it every time. Sized to clear one
+  // full extraction; systemd's TimeoutStopSec must sit above this or it SIGKILLs
+  // the very tick we are waiting for. Tunable because the right number is a
+  // property of whichever model is serving.
+  const graceMs = Number(process.env.YENTE_SHUTDOWN_GRACE_MS || 120_000);
+  const deadline = Date.now() + graceMs;
   while (ticking && Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, 100));
   }
