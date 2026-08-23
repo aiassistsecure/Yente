@@ -247,7 +247,22 @@ async function streamCompletion({
             );
           }
         }
-        if (choice?.finish_reason) finishReason = choice.finish_reason;
+        // STOP READING WHEN THE MODEL IS DONE.
+        //
+        // This used to only RECORD finish_reason and keep looping until `[DONE]`
+        // or the socket closed. `[DONE]` is an OpenAI convention, not a
+        // guarantee, and the AiAS gateway does not always send it — so a
+        // completion that had finished generating sat here until the server got
+        // around to closing the connection. Measured against the same gateway:
+        // a plain non-streaming curl returned instantly while this client took
+        // ~60s for the identical request. The model was never slow. We were.
+        //
+        // Per the OpenAI streaming contract a non-null finish_reason means that
+        // choice is complete, so there is nothing further to wait for.
+        if (choice?.finish_reason) {
+          finishReason = choice.finish_reason;
+          break;
+        }
       }
     } catch (error) {
       if (error instanceof ModelError) throw error;

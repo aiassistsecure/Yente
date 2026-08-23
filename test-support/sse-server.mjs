@@ -41,6 +41,7 @@ export async function startSseServer(script = {}) {
     stallForever = false,
     flushHeaders = false,
     omitDone = false,
+    holdOpenMs = 0,
     keepAlive = false,
     splitEvents = false,
     finishReason = "stop",
@@ -108,6 +109,13 @@ export async function startSseServer(script = {}) {
       }
       if (delayMs > 0) await pause(delayMs);
     }
+
+    // A gateway that finishes the completion and then just sits there. Not
+    // hypothetical: AiAS does not reliably send `[DONE]`, so a client waiting
+    // for it blocks until the server closes the socket. Measured against the
+    // real gateway — a plain non-streaming curl returned instantly while our
+    // client took ~60s on the identical request.
+    if (holdOpenMs > 0) await pause(holdOpenMs);
 
     if (!omitDone) res.write("data: [DONE]\n\n");
     res.end();

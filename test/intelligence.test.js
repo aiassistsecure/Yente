@@ -211,6 +211,85 @@ test("untrusted source text cannot forge a block boundary", () => {
   );
 });
 
+/* --- reading what the model actually sent -------------------------------- */
+
+test("a bare JSON envelope is accepted, and the recovery is reported", async () => {
+  // Measured on gemma4:26b through the PIN gateway: three attempts, 190s, two
+  // discarded as MALFORMED_ARTIFACT — for envelopes that were perfectly good and
+  // simply not wrapped in our markers. Same six claims, three times the cost.
+  const result = await provider(clientReturning(JSON.stringify(goodEnvelope())))
+    .observe({ sources: SOURCES });
+
+  assert.equal(result.attempts, 1, "no retry burned on a reply that was fine");
+  assert.equal(result.recovered, "bare_json", "and the drift is visible, not silent");
+  assert.equal(result.verified.entities.length, 2);
+  assert.equal(result.verified.intents.length, 1);
+});
+
+test("a markdown-fenced envelope is accepted", async () => {
+  const text = "Here are the observations:\n\n```json\n"
+    + JSON.stringify(goodEnvelope()) + "\n```\n";
+  const result = await provider(clientReturning(text)).observe({ sources: SOURCES });
+
+  assert.equal(result.attempts, 1);
+  assert.equal(result.recovered, "markdown_fence");
+  assert.equal(result.verified.entities.length, 2);
+});
+
+test("prose around a bare object does not defeat it", async () => {
+  const text = "Sure! I found the following.\n"
+    + JSON.stringify(goodEnvelope())
+    + "\nLet me know if you need anything else.";
+  const result = await provider(clientReturning(text)).observe({ sources: SOURCES });
+  assert.equal(result.recovered, "bare_json");
+  assert.equal(result.verified.entities.length, 2);
+});
+
+test("the strict block path is still preferred and reports no recovery", async () => {
+  const result = await provider(clientReturning(goodEnvelope())).observe({ sources: SOURCES });
+  assert.equal(result.recovered, null,
+    "a well-behaved model must be parsed by the strict reader, or drift is invisible");
+});
+
+test("tolerance does not weaken the gate — a recovered envelope is verified identically", async () => {
+  // The security property is the schema having no verb and every claim needing a
+  // quote, NOT the delimiters. Prove the same invention is dropped either way.
+  const envelope = goodEnvelope();
+  envelope.intents.push({
+    actor_ref: "p1", type: "FUNDRAISING", object: "Series A", source_id: "msg-1",
+    evidence: "we are raising a Series A of twelve million dollars",
+    explicit: true, confidence: 0.9,
+  });
+  envelope.action = "send_email";
+
+  const result = await provider(clientReturning(JSON.stringify(envelope)))
+    .observe({ sources: SOURCES });
+
+  assert.equal(result.recovered, "bare_json");
+  assert.equal(result.verified.intents.length, 1, "the invention is still dropped");
+  assert.equal(result.rejected[0].code, "SPAN_NOT_FOUND");
+  assert.equal(result.envelope.action, undefined, "and there is still no verb");
+});
+
+test("genuinely unparseable output still fails — and carries what was sent", async () => {
+  const client = {
+    async complete() {
+      return { text: "I'm sorry, I can't help with that.", finishReason: "stop" };
+    },
+  };
+  await assert.rejects(
+    () => provider(client).observe({ sources: SOURCES }),
+    (error) => {
+      assert.ok(error instanceof IntelligenceError);
+      // Reporting "malformed" while discarding the malformed thing is the same
+      // mistake as logging EMPTY_COMPLETION with the gateway's explanation
+      // sitting unread in the stream.
+      assert.match(error.meta.failures[0].sample, /I'm sorry, I can't help/);
+      return true;
+    },
+  );
+});
+
 /* --- schema-level integrity --------------------------------------------- */
 
 test("an intent referring to an entity that was never declared is dropped", () => {

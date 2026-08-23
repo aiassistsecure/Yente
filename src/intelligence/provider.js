@@ -101,6 +101,65 @@ export function inferenceKey({ sources, provider, model, schemaVersion, promptVe
 }
 
 /**
+ * Read the envelope out of whatever the model actually sent.
+ *
+ * WHY THIS IS TOLERANT WHEN THE PROTOCOL IS STRICT
+ *
+ * The sentinel block exists to stop UNTRUSTED INPUT from forging a boundary:
+ * blocks.js refuses to build a prompt whose content carries a delimiter, so a
+ * document cannot close its own SOURCE block and open a fake one. That property
+ * is about what we SEND, and it is untouched by anything here.
+ *
+ * Requiring the delimiters on the way BACK bought nothing and cost a great deal.
+ * Measured on gemma4:26b through the PIN gateway: three attempts, 190 seconds,
+ * two of them thrown away as MALFORMED_ARTIFACT — for a model that had produced
+ * a perfectly good envelope and simply hadn't wrapped it in our markers. The
+ * same evidence, the same six grounded claims, at three times the cost.
+ *
+ * And the gateway rewrites the stream. It strips a reasoning channel before we
+ * see it (~99 tokens on a request whose visible answer was the word "OK"), so
+ * insisting the reply arrive byte-exact in our frame makes us brittle to a
+ * transformation happening outside our process.
+ *
+ * The security argument for strictness does not survive contact either. Nothing
+ * downstream trusts this text: validateEnvelope drops any claim it does not
+ * recognise, the schema has no verb to smuggle, and every surviving claim must
+ * still quote its source. A bare JSON object gets exactly the same treatment as
+ * one that arrived in a block. So we read what was sent, and let the gate do the
+ * gating.
+ *
+ * Strict first, so a well-behaved model's output is parsed by the strict path
+ * and any drift shows up in `recovered`.
+ */
+export function readEnvelope(text) {
+  try {
+    return { raw: parseJsonBlock(text, BLOCK_TAGS.OBSERVATIONS), recovered: null };
+  } catch (blockError) {
+    // A fenced code block — the single most common deviation, and the one the
+    // output contract explicitly asks against, which models still do.
+    const fenced = /```(?:json)?\s*([\s\S]*?)```/i.exec(text);
+    if (fenced) {
+      try {
+        return { raw: JSON.parse(fenced[1]), recovered: "markdown_fence" };
+      } catch { /* fall through */ }
+    }
+
+    // A bare object, possibly with prose around it. Scan from the first brace to
+    // the last and let JSON.parse arbitrate — a substring that parses as JSON
+    // and validates as an envelope is an envelope.
+    const first = text.indexOf("{");
+    const last = text.lastIndexOf("}");
+    if (first !== -1 && last > first) {
+      try {
+        return { raw: JSON.parse(text.slice(first, last + 1)), recovered: "bare_json" };
+      } catch { /* fall through */ }
+    }
+
+    throw blockError;
+  }
+}
+
+/**
  * The one field per claim group that carries its substance, used to satisfy
  * verifyFact's `value` requirement with something meaningful. A claim group with
  * no substantive value would be a claim group worth deleting.
@@ -218,6 +277,7 @@ export function createIntelligenceProvider({
 
     const failures = [];
     let attempt = 0;
+    let lastText = null;
 
     while (attempt < maxAttempts) {
       attempt += 1;
@@ -225,11 +285,12 @@ export function createIntelligenceProvider({
         const completion = await client.complete({
           prompt, system: OBSERVER_SYSTEM, signal,
         });
+        lastText = completion.text;
 
         // Shape, then meaning. A parse or schema failure is the model answering
         // in the wrong form, which is worth another attempt; an ungrounded claim
         // is the model inventing, which is not.
-        const raw = parseJsonBlock(completion.text, BLOCK_TAGS.OBSERVATIONS);
+        const { raw, recovered } = readEnvelope(completion.text);
         const { envelope, rejected: schemaRejected, discrepancies } =
           validateEnvelope(raw, { knownSourceIds });
         const { verified, rejected: groundingRejected } =
@@ -243,6 +304,10 @@ export function createIntelligenceProvider({
           failures: Object.freeze(failures),
           attempts: attempt,
           cached: false,
+          // Which reader got it. Null means the strict block path; anything else
+          // is drift worth watching, because a model that stops using the frame
+          // may be drifting in other ways too.
+          recovered,
           provenance: Object.freeze({
             contentHash,
             provider,
@@ -270,6 +335,11 @@ export function createIntelligenceProvider({
           message: String(error?.message ?? error),
           transient: retryable,
           attempt,
+          // WHAT THE MODEL ACTUALLY SENT. Reporting "malformed" while discarding
+          // the malformed thing is the same mistake as logging EMPTY_COMPLETION
+          // while the gateway's own explanation sat unread in the stream. If a
+          // reply cannot be parsed, the reply is the evidence.
+          sample: typeof lastText === "string" ? lastText.slice(0, 1_200) : null,
         });
 
         if (!retryable || attempt >= maxAttempts) {
