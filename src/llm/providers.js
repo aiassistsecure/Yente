@@ -252,7 +252,7 @@ export function createLlmClients({ provider, log } = {}) {
   const FAMILIES = [
     [/^claude/i, "anthropic"],
     [/^gpt-|^o[0-9]/i, "openai"],
-    [/^llama|^mixtral|^gemma/i, "groq"],
+    [/^llama-|^mixtral|^gemma-?[0-9]*b/i, "groq"],
     [/^pin:/i, "pin"],
   ];
   const family = (FAMILIES.find(([re]) => re.test(model)) || [])[1];

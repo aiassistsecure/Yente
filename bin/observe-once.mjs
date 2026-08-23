@@ -139,7 +139,8 @@ async function main(argv) {
   }
 
   console.log(`\nelapsed    ${Date.now() - started}ms  attempts ${result.attempts}`
-    + `${result.cached ? "  (CACHED)" : ""}`);
+    + `${result.cached ? "  (CACHED)" : ""}`
+    + `${result.recovered ? `  (recovered via ${result.recovered} — model did not use the block frame)` : ""}`);
 
   printClaims("VERIFIED — quoted evidence found in the source", result.verified);
 
@@ -157,6 +158,13 @@ async function main(argv) {
 
   for (const failure of result.failures) {
     console.log(`\nretried after  ${failure.code}: ${failure.message}`);
+    // The reply is the evidence. Print it, or the next person debugging this
+    // guesses at what the model sent — which is how today went.
+    if (failure.sample) {
+      console.log(`  ---- what the model sent (first 1200 chars) ----`);
+      console.log(failure.sample.split("\n").map((line) => `  | ${line}`).join("\n"));
+      console.log(`  ------------------------------------------------`);
+    }
   }
 
   const kept = claimCount(result.verified);

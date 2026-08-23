@@ -100,6 +100,48 @@ test("content still arrives normally — the error check is not in the way", asy
   assert.equal(out.finishReason, "stop");
 });
 
+/* --- a finished completion must return when it finishes ------------------ */
+
+test("the client stops reading at finish_reason instead of waiting for [DONE]", async (t) => {
+  // THE BUG, as Mark found it: "pure CURL works instantly, and your script is
+  // taking FOREVER to return responses from completions that are DONE."
+  //
+  // The read loop RECORDED finish_reason and kept looping until `[DONE]` or the
+  // socket closed. `[DONE]` is an OpenAI convention, not a guarantee, and the
+  // AiAS gateway does not reliably send it — so a completion that had finished
+  // generating sat here until the server hung up. Every observation paid it, and
+  // across three retry attempts it became minutes. The model was never slow.
+  const server = await startSseServer({
+    deltas: ["<<<OBSERVATIONS>>>", "{}", "<<<END>>>"],
+    omitDone: true,
+    holdOpenMs: 5_000,   // the gateway, sitting there
+  });
+  t.after(() => server.close());
+
+  const client = createModelClient({ baseUrl: server.baseUrl, model: "m" });
+
+  const started = Date.now();
+  const out = await client.complete({ prompt: "<<<TASK>>>x<<<END>>>" });
+  const elapsed = Date.now() - started;
+
+  assert.match(out.text, /OBSERVATIONS/);
+  assert.equal(out.finishReason, "stop");
+  assert.ok(elapsed < 2_000,
+    `returned in ${elapsed}ms — must not wait out a server holding the socket open`);
+});
+
+test("content in the same chunk as finish_reason is not lost to the early break", async (t) => {
+  // The break must happen AFTER the delta is appended. Servers routinely put the
+  // last token and the finish_reason in one chunk, and an early break that
+  // skipped it would silently truncate every completion.
+  const server = await startSseServer({ deltas: ["alpha", "beta", "GAMMA"] });
+  t.after(() => server.close());
+
+  const client = createModelClient({ baseUrl: server.baseUrl, model: "m" });
+  const out = await client.complete({ prompt: "<<<TASK>>>x<<<END>>>" });
+  assert.equal(out.text, "alphabetaGAMMA", "the final chunk's content survives");
+});
+
 /* --- transient vs deterministic ----------------------------------------- */
 
 test("the codes that mean try again are separated from the ones that do not", () => {
