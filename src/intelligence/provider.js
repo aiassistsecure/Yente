@@ -234,6 +234,12 @@ export function createIntelligenceProvider({
   provider,
   model,
   cache = null,
+  // Model-specific string that opens AND closes an empty reasoning channel, so
+  // the model continues into its answer instead of deliberating. See the note in
+  // llm/client.js — it is a string rather than a flag because the tokens differ
+  // per model family, and we would rather try variants from the shell than ship
+  // a table of guesses.
+  prefill = process.env.YENTE_LLM_PREFILL || null,
   attempts: maxAttempts = DEFAULT_ATTEMPTS,
   retryDelayMs = DEFAULT_RETRY_DELAY_MS,
   now = () => new Date().toISOString(),
@@ -283,7 +289,7 @@ export function createIntelligenceProvider({
       attempt += 1;
       try {
         const completion = await client.complete({
-          prompt, system: OBSERVER_SYSTEM, signal,
+          prompt, system: OBSERVER_SYSTEM, prefill, signal,
         });
         lastText = completion.text;
 
