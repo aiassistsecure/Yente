@@ -124,6 +124,9 @@ async function main(argv) {
   console.log(`endpoint   ${baseUrl}   first token budget ${firstTokenMs}ms`);
   const described = observer.describe();
   console.log(`schema     ${described.schemaVersion} / ${described.promptVersion}`);
+  if (process.env.YENTE_LLM_PREFILL) {
+    console.log(`prefill    ${JSON.stringify(process.env.YENTE_LLM_PREFILL)}`);
+  }
   console.log(`sources    ${sources.map((s) => `${s.id} (${s.text.length}c)`).join(", ")}`);
 
   const started = Date.now();

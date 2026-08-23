@@ -129,6 +129,7 @@ async function streamCompletion({
   settings,
   prompt,
   system,
+  prefill,
   onToken,
   signal,
   temperature = settings.temperature,
@@ -177,6 +178,30 @@ async function streamCompletion({
     const messages = [];
     if (system) messages.push({ role: "system", content: system });
     messages.push({ role: "user", content: prompt });
+
+    // ASSISTANT PREFILL — putting words in the model's mouth to skip a phase it
+    // would otherwise spend tokens on.
+    //
+    // A trailing `assistant` message is treated by most chat templates as the
+    // beginning of the reply, which the model then CONTINUES rather than
+    // restarts. That makes it the one lever a client has over a phase that the
+    // OpenAI-compatible surface does not expose.
+    //
+    // WHY WE NEED IT. Measured through the PIN gateway on gemma4:26b: a request
+    // whose visible answer was ~800 tokens reported `completion_tokens: 3231`.
+    // Roughly 2,400 tokens — three quarters of the generation, about 29 of 39
+    // seconds — went to a reasoning channel that is stripped before delivery.
+    // `max_tokens: 600` did not cap it either, so the budget is not reaching the
+    // model. `think:false` works on Ollama's /api/chat and NOT on
+    // /v1/chat/completions, and `chat_template_kwargs.enable_thinking` is
+    // routinely dropped by OpenAI-compat translation layers. Prefilling an
+    // already-closed empty thought channel is the workaround that survives all
+    // of that, because it travels as ordinary message content.
+    //
+    // The exact opener is model-specific, so it is a STRING, not a boolean —
+    // set YENTE_LLM_PREFILL and try variants without a code change. Empty or
+    // unset means the model behaves normally, which is the safe default.
+    if (prefill) messages.push({ role: "assistant", content: prefill });
 
     let response;
     try {

@@ -142,6 +142,37 @@ test("content in the same chunk as finish_reason is not lost to the early break"
   assert.equal(out.text, "alphabetaGAMMA", "the final chunk's content survives");
 });
 
+/* --- assistant prefill --------------------------------------------------- */
+
+test("a prefill is sent as a trailing assistant turn, after the user message", async (t) => {
+  // Order is the whole mechanism: the model CONTINUES a reply that has already
+  // begun. A prefill anywhere but last is just a stray turn in the history.
+  const server = await startSseServer({ deltas: ["{}"] });
+  t.after(() => server.close());
+
+  const client = createModelClient({ baseUrl: server.baseUrl, model: "m" });
+  await client.complete({
+    prompt: "<<<TASK>>>x<<<END>>>",
+    system: "sys",
+    prefill: "<|channel>thought\n<channel|>",
+  });
+
+  const { messages } = server.requests[0].body;
+  assert.deepEqual(messages.map((m) => m.role), ["system", "user", "assistant"]);
+  assert.equal(messages[2].content, "<|channel>thought\n<channel|>");
+});
+
+test("no prefill means no assistant turn — normal behaviour is the default", async (t) => {
+  const server = await startSseServer({ deltas: ["{}"] });
+  t.after(() => server.close());
+
+  const client = createModelClient({ baseUrl: server.baseUrl, model: "m" });
+  await client.complete({ prompt: "<<<TASK>>>x<<<END>>>", system: "sys" });
+
+  const { messages } = server.requests[0].body;
+  assert.deepEqual(messages.map((m) => m.role), ["system", "user"]);
+});
+
 /* --- transient vs deterministic ----------------------------------------- */
 
 test("the codes that mean try again are separated from the ones that do not", () => {
