@@ -316,7 +316,9 @@ export function createLogger({ pid = process.pid, quiet = false } = {}) {
    * death. It prints what is in flight and for how long, so "stuck" and "busy"
    * look different.
    */
-  function heartbeat({ graph, health, mailSilenceMinutes, mailConfigured = true }) {
+  function heartbeat({
+    graph, health, mailSilenceMinutes, mailConfigured = true, concurrency = null,
+  }) {
     if (quiet) return;
 
     const jobs = graph.jobs.counts();
@@ -343,7 +345,11 @@ export function createLogger({ pid = process.pid, quiet = false } = {}) {
       `${stamp()} ${c.dim("┈┈")} ${mailState}`,
       `${c.blue("in")} ${stats.ingested}${stats.documents ? `+${stats.documents}doc` : ""}`,
       `${c.magenta("understood")} ${stats.observed}${c.grey("/")}${c.bold(stats.claims)}cl`,
+      // RUNNING against its ceiling. Three-in-flight when you asked for one is
+      // the difference between a setting you made and a setting that took, and
+      // it cost most of an hour to notice from the in-flight list alone.
       `${c.grey("queue")} ${jobs.READY ?? 0}${c.grey("\u2192")}${jobs.RUNNING ?? 0}`
+        + `${concurrency ? c.grey(`/${concurrency}`) : ""}`
         + `${(jobs.FAILED ?? 0) > 0 ? c.red(` dead ${jobs.FAILED}`) : ""}`
         + `${stats.retries ? c.yellow(` retries ${stats.retries}`) : ""}`,
       `${c.green("matches")} ${stats.matches}`,

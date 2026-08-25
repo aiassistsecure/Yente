@@ -146,6 +146,9 @@ export function observationsFrom({ verified, evidenceId, provenance, observedAt,
 export async function drainIntelligence({
   graph,
   observer,
+  // The env fallback stays for the one-shot tools, but a caller that owns the
+  // number should pass it. `= default` covers an explicit `undefined`, which is
+  // what a caller that hasn't decided actually sends.
   concurrency = Number(process.env.YENTE_INTELLIGENCE_CONCURRENCY || 3),
   limit = 24,
   now = () => new Date().toISOString(),

@@ -27,11 +27,21 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { openDatabase, openDatabases, openInMemory } from "../src/store/db.js";
+import { createLogger } from "../src/log.js";
 import { createGraphLoops } from "../src/graph/loops.js";
 import { createGraphRepositories } from "../src/store/graph.js";
 import { createGraphManager } from "../src/graph/manager.js";
 
 const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), "utf8");
+
+/** Capture stdout for one synchronous block. */
+function capture(fn) {
+  const written = [];
+  const original = process.stdout.write;
+  process.stdout.write = (chunk) => { written.push(String(chunk)); return true; };
+  try { fn(); } finally { process.stdout.write = original; }
+  return written.join("");
+}
 
 /* --- the constraint that was not real ----------------------------------- */
 
@@ -116,6 +126,49 @@ test("the entry points share one implementation of the loops", () => {
     assert.ok(!/async function listenLoop/.test(src),
       `${entry} still carries its own copy of LISTEN`);
   }
+});
+
+test("concurrency is read once and passed down, not re-read where it is used", () => {
+  // The bug: the boot line printed `concurrency=` from the environment, and
+  // drainIntelligence read the SAME env var again independently. They agreed by
+  // luck. A setting that failed to reach the process looked identical to one
+  // that worked — three jobs in flight while the log said what you asked for.
+  // One read, one owner, handed down.
+  for (const entry of ["bin/yente.mjs", "bin/graph.mjs"]) {
+    const src = read(entry);
+    const reads = src.match(/process\.env\.YENTE_INTELLIGENCE_CONCURRENCY/g) ?? [];
+    assert.equal(reads.length, 1, `${entry} must read the concurrency env var exactly once`);
+    assert.match(src, /createGraphLoops\([\s\S]{0,400}concurrency/,
+      `${entry} must pass concurrency into the loops`);
+  }
+  assert.match(read("src/graph/loops.js"), /drainIntelligence\([\s\S]{0,200}concurrency/,
+    "the loops must hand it to the drain rather than letting it re-read the env");
+});
+
+test("the boot line reports the model the client chose, not the env default", () => {
+  // `process.env.YENTE_MODEL || "muse-local:latest"` prints the default when the
+  // var is unset — a guess about what the provider picked, printed as a fact. If
+  // the provider's own default ever differs, the log names a model that is not
+  // running.
+  for (const entry of ["bin/yente.mjs", "bin/graph.mjs"]) {
+    const src = read(entry);
+    const block = src.slice(src.indexOf('log("info", "intelligence"'), src.indexOf('const manager ='));
+    assert.match(block, /model: clients\.describe\.model/,
+      `${entry} must report the client's model`);
+    assert.ok(!/model:\s*process\.env\.YENTE_MODEL/.test(block),
+      `${entry} must not print the env var as if it were the resolved model`);
+  }
+});
+
+test("the heartbeat shows RUNNING against its ceiling", () => {
+  // Three in flight when you asked for one is the difference between a setting
+  // you made and a setting that took. Printing RUNNING alone hides it.
+  const logger = createLogger();
+  const graph = { jobs: { counts: () => ({ READY: 15, RUNNING: 3 }) } };
+  const out = capture(() => logger.heartbeat({
+    graph, health: { consecutiveMailFailures: 0 }, mailSilenceMinutes: 0, concurrency: 1,
+  }));
+  assert.match(out, /15.*3\/1/, "the queue field must carry the limit");
 });
 
 /* --- behaviour: the loops are constructible outside a process ----------- */

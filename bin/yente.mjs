@@ -180,10 +180,19 @@ const observer = createIntelligenceProvider({
   model: clients.describe.model,
 });
 
+// Read ONCE, here, and passed down. The previous version read this env var in
+// the log line and again inside drainIntelligence — so the boot line reported
+// intent while the drain used its own copy, and a setting that failed to take
+// looked exactly like a setting that worked.
+const concurrency = Number(process.env.YENTE_INTELLIGENCE_CONCURRENCY || 3);
+
 log("info", "intelligence", {
   provider: providerName,
-  model: process.env.YENTE_MODEL || "muse-local:latest",
-  concurrency: Number(process.env.YENTE_INTELLIGENCE_CONCURRENCY || 3),
+  // From the CLIENT, not from the environment. `process.env.YENTE_MODEL || "..."`
+  // prints the default when the var is unset, which is a guess about what the
+  // provider chose rather than a report of it.
+  model: clients.describe.model,
+  concurrency,
   third_party: clients.describe.thirdParty,
 });
 
@@ -200,6 +209,7 @@ const loops = createGraphLoops({
   graph, source, observer, manager, log, begin, end,
   signal: abort.signal,
   isStopping: () => stopping,
+  concurrency,
 });
 const { health } = loops;
 
@@ -330,7 +340,8 @@ log("info", "started", {
 const heartbeatMs = Number(process.env.YENTE_HEARTBEAT_MS || 30_000);
 const pulse = setInterval(() => {
   logger.heartbeat({
-    graph, health, mailConfigured, mailSilenceMinutes: loops.mailSilenceMinutes(),
+    graph, health, mailConfigured, concurrency,
+    mailSilenceMinutes: loops.mailSilenceMinutes(),
   });
 }, heartbeatMs);
 pulse.unref();
