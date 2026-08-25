@@ -52,6 +52,8 @@ test("evidence is content-addressed, so re-ingesting writes no second row", () =
   assert.equal(first.duplicate, false);
   assert.equal(again.duplicate, true,
     "idempotency is a property of addressing, not of a guard we might forget");
+  assert.equal(graph.evidence.all().length, 1,
+    "startup reconciliation can enumerate durable inbox history");
 });
 
 test("observations append; the second thing you learn does not destroy the first", () => {
@@ -754,6 +756,32 @@ test("a redelivered message records no new evidence and enqueues no second job",
   assert.equal(again.duplicates, 1);
   assert.equal(again.enqueued, 0, "inference is the expensive part; never pay twice");
   assert.equal(graph.jobs.counts().READY, 1);
+});
+
+test("a new inbound message triggers seat accounting once, after durable evidence", async () => {
+  const { graph } = fresh();
+  const order = [];
+  const message = normalizeMessage({
+    uid: 9, raw: "resume mail", receivedAt: T0,
+    parsed: {
+      messageId: "<resume@b>", text: "attached", from: "founder@example.com",
+      subject: "Founding seat — developer / founder",
+    },
+  });
+  const source = {
+    async fetchNew() { return { messages: [message], uidValidity: 3, resynced: false }; },
+    commit: () => { order.push("commit"); },
+  };
+  const original = graph.evidence.record.bind(graph.evidence);
+  graph.evidence.record = (args) => { order.push("evidence"); return original(args); };
+
+  const { ingestMail } = await import("../src/graph/ingest.js");
+  const onMessage = async () => { order.push("seat"); };
+  await ingestMail({ source, graph, now: () => T1, onMessage });
+  await ingestMail({ source, graph, now: () => T1, onMessage });
+
+  assert.deepEqual(order, ["evidence", "seat", "commit", "evidence", "commit"],
+    "seat is claimed after evidence and not again for duplicate mail");
 });
 
 test("the source text a quote is checked against includes the headers", async () => {

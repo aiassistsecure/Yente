@@ -71,6 +71,7 @@ import { openDatabases } from "../src/store/db.js";
 import { createGraphRepositories } from "../src/store/graph.js";
 import { createLlmClients } from "../src/llm/providers.js";
 import { openWaitlistRepository } from "../src/waitlist/repository.js";
+import { claimSeatFromInbound } from "../src/waitlist/inbound.js";
 import { createSiteHandler } from "../web/server.js";
 import { renderManager, handleManagerRequest } from "../web/manager.js";
 import { createDesk } from "../src/runtime/desk.js";
@@ -143,6 +144,26 @@ if (deskStore) {
 
   const repositories = createRepositories(deskStore);
   waitlist = openWaitlistRepository({ store: deskStore });
+
+  // Reconcile the capacity ledger from durable inbound evidence on every boot.
+  // Idempotent subscriber ids make this cheap: old messages claim any missing
+  // seats once, already-counted senders are untouched, and a deploy does not
+  // require people to email again just to move the website counter.
+  let backfilledSeats = 0;
+  for (const evidence of graph.evidence.all()) {
+    if (evidence.kind !== "message") continue;
+    try {
+      const claimed = claimSeatFromInbound({ repository: waitlist, message: evidence.meta });
+      if (claimed?.created) backfilledSeats += 1;
+    } catch (error) {
+      log("warn", "seat_claim_failed", {
+        from: evidence.meta?.from,
+        subject: evidence.meta?.subject,
+        error: String(error?.message ?? error),
+      });
+    }
+  }
+  if (backfilledSeats > 0) log("info", "seats_backfilled", { count: backfilledSeats });
 
   let transport = null;
   try {
@@ -219,6 +240,21 @@ const loops = createGraphLoops({
   signal: abort.signal,
   isStopping: () => stopping,
   concurrency,
+  onMessage: waitlist
+    ? (message) => {
+        const claimed = claimSeatFromInbound({ repository: waitlist, message });
+        if (claimed?.created) {
+          log("info", "seat_claimed", {
+            email: claimed.subscriber.email,
+            cohort: claimed.subscriber.cohort,
+            remaining: claimed.capacity.cohorts[
+              claimed.subscriber.cohort === "founder_developer"
+                ? "foundersDevelopers" : "investorsEmployers"
+            ].remaining,
+          });
+        }
+      }
+    : null,
 });
 const { health } = loops;
 

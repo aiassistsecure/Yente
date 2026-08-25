@@ -168,6 +168,63 @@ export function openWaitlistRepository({ store = null, dataPath = null, clock = 
     });
   }
 
+  /**
+   * Claim a founding seat through the inbox. Email is the signup (§ landing page),
+   * so this is not a shadow copy of the public form: it records the same durable
+   * subscriber identity with an inbound-email provenance event. Existing rows are
+   * returned unchanged — a later message must not move cohorts or resurrect STOP.
+   */
+  function claimInbound({ email: rawEmail, cohort: rawCohort }) {
+    const email = normalizeEmail(rawEmail);
+    const cohort = assertCohort(rawCohort);
+    const id = subscriberId(email);
+    const existing = getSubscriberById(id);
+    if (existing) {
+      return Object.freeze({ created: false, subscriber: cleanRecord(existing), capacity: capacity() });
+    }
+
+    if (activeInCohort(allSubscribers(), cohort) >= COHORT_LIMIT) {
+      throw new CapacityFullError(cohort);
+    }
+
+    const now = clock().toISOString();
+    const eventId = `evt_${randomUUID()}`;
+    const event = sharedStore.put(SUBSCRIPTION_EVENTS, eventId, {
+      schema_version: 1,
+      event_type: "FOUNDING_SEAT_CLAIMED_BY_EMAIL",
+      subscriber_id: id,
+      cohort,
+      source: "inbound_email",
+      consent_version: "inbound-email-v1",
+      occurred_at: now,
+    });
+    const record = sharedStore.put(SUBSCRIBERS, id, {
+      schema_version: 1,
+      email,
+      name: email,
+      cohort,
+      intent: "",
+      status: "waiting",
+      source: "inbound_email",
+      consent: true,
+      consent_version: "inbound-email-v1",
+      inbound_established_at: now,
+      created_at: now,
+      updated_at: now,
+      revision: 1,
+      caused_by_event_id: eventId,
+      caused_by_event_hash: event._hash,
+    }, { causedBy: [event] });
+
+    sharedStore.flush();
+    return Object.freeze({
+      created: true,
+      subscriber: cleanRecord(record),
+      event: cleanRecord(event),
+      capacity: capacity(),
+    });
+  }
+
   function capacity() {
     const records = allSubscribers();
     const tip = sharedStore.tipCollection(SUBSCRIBERS);
@@ -231,6 +288,7 @@ export function openWaitlistRepository({ store = null, dataPath = null, clock = 
 
   return Object.freeze({
     subscribe,
+    claimInbound,
     capacity,
     list,
     exportAll,
