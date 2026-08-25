@@ -183,9 +183,16 @@ export function createLogger({ pid = process.pid, quiet = false } = {}) {
       }
 
       case "observe_started":
-        begin("understand", meta.evidence, String(meta.evidence).slice(0, 24));
+        begin("understand", meta.evidence,
+          `${String(meta.evidence).slice(0, 24)}${meta.est_tokens ? ` ~${meta.est_tokens}tok` : ""}`);
         line("info", "understand", c.dim("thinking about"), {
           evidence: String(meta.evidence).slice(0, 24),
+          // Prompt size, on the line. A prompt too long to prefill inside the
+          // upstream's silence window can never succeed, and for an hour that
+          // was indistinguishable from a slow model.
+          chars: meta.chars,
+          est_tokens: meta.est_tokens,
+          truncated: meta.truncated ? c.yellow(`from ${meta.truncated}`) : undefined,
           attempt: meta.attempt > 1 ? c.yellow(`#${meta.attempt}`) : undefined,
         });
         return;

@@ -34,6 +34,7 @@
  */
 
 import { AUTHORITY, JOB_STATES } from "../store/graph.js";
+import { boundSources } from "./bound.js";
 import { CLAIM_GROUPS } from "./schema.js";
 // ONE function turns an address into a subject id. This file used to build
 // `person:${emailAddress}` inline while identity.js normalised gmail dots and
@@ -175,14 +176,6 @@ export async function drainIntelligence({
       if (!claimed) { summary.skipped += 1; continue; }
       summary.claimed += 1;
 
-      // Announced BEFORE the await, because the whole point is the 40-75s in
-      // between. A job that is only reported on completion is invisible for
-      // exactly as long as it is interesting.
-      log("info", "observe_started", {
-        evidence: job.evidenceId,
-        attempt: Number(job.attempts ?? 0) + 1,
-      });
-
       const evidence = graph.evidence.get(job.evidenceId);
       if (!evidence?.text) {
         // DETERMINISTIC. Evidence with no extractable text will not acquire any
@@ -199,9 +192,30 @@ export async function drainIntelligence({
         continue;
       }
 
+      // BOUND THE PROMPT. An unbounded one does not fail gently: during prefill
+      // a model emits nothing, PIN's limit is "nothing for 90s", and a prompt
+      // whose prefill exceeds that is killed before it speaks — identically on
+      // every retry, because the input never changes. Permanent, disguised as
+      // transient. See bound.js.
+      const { sources, report } = boundSources([
+        { id: job.evidenceId, text: evidence.text },
+      ]);
+
+      // Announced BEFORE the await, because the whole point is the 40-75s in
+      // between. A job reported only on completion is invisible for exactly as
+      // long as it is interesting. The SIZE goes here too: "why is this slow"
+      // was unanswerable from outside the process.
+      log("info", "observe_started", {
+        evidence: job.evidenceId,
+        attempt: Number(job.attempts ?? 0) + 1,
+        chars: report.keptChars,
+        est_tokens: report.estimatedTokens,
+        truncated: report.truncated > 0 ? report.originalChars : 0,
+      });
+
       try {
         const result = await observer.observe({
-          sources: [{ id: job.evidenceId, text: evidence.text }],
+          sources,
           // Deterministic orientation, marked as such. The parser already knows
           // who sent this and when; making the model re-derive it from a
           // signature block would be slower and less reliable. Anything it
