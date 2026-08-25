@@ -172,6 +172,14 @@ export async function drainIntelligence({
       if (!claimed) { summary.skipped += 1; continue; }
       summary.claimed += 1;
 
+      // Announced BEFORE the await, because the whole point is the 40-75s in
+      // between. A job that is only reported on completion is invisible for
+      // exactly as long as it is interesting.
+      log("info", "observe_started", {
+        evidence: job.evidenceId,
+        attempt: Number(job.attempts ?? 0) + 1,
+      });
+
       const evidence = graph.evidence.get(job.evidenceId);
       if (!evidence?.text) {
         // DETERMINISTIC. Evidence with no extractable text will not acquire any
@@ -226,7 +234,7 @@ export async function drainIntelligence({
         summary.claims += written;
 
         log("info", "observed", {
-          evidence: job.evidenceId.slice(0, 16),
+          evidence: job.evidenceId,
           claims: written,
           rejected: result.rejected.length,
           cached: result.cached,

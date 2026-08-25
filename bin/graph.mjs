@@ -53,11 +53,19 @@ import { createGraphManager } from "../src/graph/manager.js";
 import { createIntelligenceProvider, resolveIntelligenceConfig } from "../src/intelligence/provider.js";
 import { createLlmClients } from "../src/llm/providers.js";
 import { renderManager, handleManagerRequest } from "../web/manager.js";
+import { createLogger } from "../src/log.js";
 
-const log = (level, event, meta = {}) => {
-  const bits = Object.entries(meta).map(([k, v]) => `${k}=${typeof v === "object" ? JSON.stringify(v) : v}`);
-  console.log(`[yente:${level}] ${event}${bits.length ? " " + bits.join(" ") : ""}`);
-};
+/**
+ * The narrator.
+ *
+ * Not decoration. Three loops interleave in one stream against a model that
+ * takes most of a minute, so the two questions you actually have — "is it
+ * alive" and "which loop is the slow one" — are unanswerable from uniform grey
+ * text. A colour per loop answers the second at a glance; the heartbeat below
+ * answers the first without you having to attach a debugger.
+ */
+const logger = createLogger({ quiet: process.env.YENTE_QUIET === "1" });
+const { log, begin, end } = logger;
 
 /* --- one database ------------------------------------------------------- */
 
@@ -207,7 +215,9 @@ async function listenLoop() {
     }
 
     // Nothing new: wait for the server to tell us, rather than asking again.
+    begin("listen", "imap:idle", "waiting on IDLE");
     const arrived = await source.waitForMail({ timeoutMs: 15 * 60_000, signal: abort.signal });
+    end("imap:idle");
     if (!arrived && !stopping) await sleep(30_000);
   }
 }
@@ -245,6 +255,7 @@ async function connectLoop() {
         // than filtered at write time so the exclusion stays reversible.
         .filter((row) => manager.isEligible(row.subject));
 
+      begin("connect", "match:scan", `scoring ${observations.length} observations`);
       const proposals = proposeIntroductions({ observations });
       let queued = 0;
       for (const proposal of proposals) {
@@ -255,9 +266,11 @@ async function connectLoop() {
         // review queue is a treadmill.
         if (!decided) queued += 1;
       }
+      end("match:scan");
       health.ticks.connect += 1;
       if (queued > 0) log("info", "proposed", { queued, pending: manager.pendingMatches().length });
     } catch (error) {
+      end("match:scan");
       log("error", "connect_failed", { error: String(error?.message ?? error) });
     }
     await sleep(60_000);
@@ -310,11 +323,25 @@ log("info", "started", {
   subjects: manager.subjects().length,
 });
 
+/**
+ * The heartbeat. Unconditional, on its own clock.
+ *
+ * Deliberately NOT driven by the loops: a heartbeat that only prints when work
+ * completes is silent in precisely the situation you need it — everything
+ * wedged. `unref()` so it can never be the reason the process refuses to exit.
+ */
+const heartbeatMs = Number(process.env.YENTE_HEARTBEAT_MS || 30_000);
+const pulse = setInterval(() => {
+  logger.heartbeat({ graph, health, mailSilenceMinutes: mailSilenceMinutes() });
+}, heartbeatMs);
+pulse.unref();
+
 const loops = Promise.all([listenLoop(), understandLoop(), connectLoop()]);
 
 async function shutdown(signal) {
   if (stopping) return;
   stopping = true;
+  clearInterval(pulse);
   log("info", "shutting_down", { signal });
   abort.abort();
 
