@@ -203,19 +203,30 @@ function serveStatic(response, publicDir, route) {
   return true;
 }
 
-export function createYenteServer({
+/**
+ * The site's request handler, separated from the server that carries it.
+ *
+ * Split out for one reason: the desk and the listener now run in ONE process,
+ * and one process should not bind two ports for two halves of the same product.
+ * A handler is composable — the merged entry point can try the manager's routes
+ * first and fall through to this — whereas an `http.Server` is not. Nothing
+ * about the site's behaviour changes; `createYenteServer` below is now a
+ * two-line wrapper around this, so the standalone dev path is unaffected.
+ */
+export function createSiteHandler({
   repository,
   publicDir = DEFAULT_PUBLIC_DIR,
   adminUsername = "",
   adminPassword = "",
   trustProxy = false,
   clock,
+  graphStats = null,
 } = {}) {
   if (!repository) throw new TypeError("A waitlist repository is required");
   const allowRequest = makeRateLimiter(clock);
   const credentials = { username: adminUsername, password: adminPassword };
 
-  return createServer(async (request, response) => {
+  return async (request, response) => {
     const url = new URL(request.url ?? "/", "http://localhost");
 
     try {
@@ -230,7 +241,16 @@ export function createYenteServer({
       }
 
       if (request.method === "GET" && url.pathname === "/api/founding-network/capacity") {
-        return sendJson(response, 200, repository.capacity());
+        // Seats claimed and people actually known are two different numbers,
+        // and the page was only ever able to show the first. A claimed seat is
+        // an intention; a subject in the graph is somebody whose own words
+        // Yente has read. Reporting only the flattering one is the kind of
+        // rounding-up this product is supposed to refuse — so both ship, and
+        // the front end can decide which to lead with.
+        const payload = repository.capacity();
+        return sendJson(response, 200, graphStats
+          ? { ...payload, known: graphStats() }
+          : payload);
       }
 
       if (request.method === "POST" && url.pathname === "/api/founding-network/subscribers") {
@@ -329,7 +349,12 @@ export function createYenteServer({
         message: "Yente could not complete that request.",
       });
     }
-  });
+  };
+}
+
+/** The site on its own server. Unchanged behaviour; now built from the handler. */
+export function createYenteServer(options = {}) {
+  return createServer(createSiteHandler(options));
 }
 
 /**

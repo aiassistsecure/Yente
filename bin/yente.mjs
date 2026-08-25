@@ -1,0 +1,375 @@
+#!/usr/bin/env node
+/**
+ * Yente. One process.
+ *
+ * Everything she is, in a single supervised unit:
+ *
+ *   DESK          ingest -> propose -> veto deadlines -> drain outbox   (the tick)
+ *   LISTEN        IMAP -> evidence -> job, then get out of the way
+ *   UNDERSTAND    drain the job queue through Muse, bounded concurrency
+ *   CONNECT       score the graph for complementary intent, queue for review
+ *   WEB           the landing page, the admin, and the graph manager, one port
+ *
+ * WHY THIS FILE EXISTS
+ *
+ * Because there were three ways to run her and none of them was "her". The desk
+ * ran the member state machine and served the site; the listener ran the graph
+ * and served a manager on another port; and the two could not see each other. The
+ * landing page counted subscribers in one database while the listener accumulated
+ * people in another, so the site could advertise a founding network the listener
+ * had never met — not a display bug, two populations.
+ *
+ * THE THING THAT MADE IT LOOK IMPOSSIBLE WAS MY OWN CODE
+ *
+ * `openDatabase` threw on a second directory, with a confident comment
+ * explaining that the engine's exclusive lock made one-process-two-stores
+ * impossible. It doesn't: the lock is per DIRECTORY, and `NedbCore.open("/a")`
+ * followed by `NedbCore.open("/b")` both succeed and both stay writable
+ * (measured, not assumed). One OWNER per directory is the real rule, and a
+ * single process is allowed to own several. So the store now holds a handle per
+ * path, and reads across the two directories happen in memory with no protocol
+ * between them.
+ *
+ * WHAT STILL RUNS SEPARATELY, AND WHY THAT IS FINE
+ *
+ * `bin/daemon.mjs` and `bin/graph.mjs` still work and now compose the same
+ * modules this file does — `createDesk`, `createGraphLoops`, `createMailFromEnv`.
+ * They are the halves, for when you want to run one without the other. They
+ * cannot drift from this file because none of them owns an implementation.
+ *
+ * THE SHUTDOWN ORDER IS THE CAREFUL PART
+ *
+ * Stop accepting HTTP first, then abort the graph loops, then let the desk's
+ * in-flight tick finish, then flush BOTH stores. A decision accepted through the
+ * manager must not be written to a store that is mid-flush, and a tick killed
+ * between recording a message and marking it \\Seen is how a message gets read
+ * twice or never.
+ *
+ *   YENTE_DATA_PATH=./data            the desk (members, outbox, subscribers)
+ *   YENTE_GRAPH_DATA_PATH=./data/graph the listener (evidence, observations)
+ *   YENTE_PORT=7688 YENTE_HOST=127.0.0.1
+ *   YENTE_MAIL_HOST / YENTE_MAIL_USER / YENTE_MAIL_PASS / YENTE_IMAP_PORT
+ *   YENTE_MODEL=muse-local:latest  YENTE_INTELLIGENCE_PROVIDER=pin
+ *   YENTE_OPERATOR=mark              whose name goes on a decision
+ *   YENTE_DESK=0                     listener only
+ *   YENTE_HTTP=0                     no web surface
+ */
+
+import process from "node:process";
+import { createServer } from "node:http";
+
+import {
+  openDatabase,
+  closeDatabase,
+  createRepositories,
+  createRuntime,
+  createMailTransport,
+  assertTransport,
+  registerDocumentParsers,
+} from "../src/index.js";
+import { openDatabases } from "../src/store/db.js";
+import { createGraphRepositories } from "../src/store/graph.js";
+import { createLlmClients } from "../src/llm/providers.js";
+import { openWaitlistRepository } from "../src/waitlist/repository.js";
+import { createSiteHandler } from "../web/server.js";
+import { renderManager, handleManagerRequest } from "../web/manager.js";
+import { createDesk } from "../src/runtime/desk.js";
+import { createGraphLoops } from "../src/graph/loops.js";
+import { createMailFromEnv, mailConfigFromEnv } from "../src/mail/from-env.js";
+import { createGraphManager } from "../src/graph/manager.js";
+import {
+  createIntelligenceProvider,
+  resolveIntelligenceConfig,
+} from "../src/intelligence/provider.js";
+import { createLogger } from "../src/log.js";
+
+const logger = createLogger({ quiet: process.env.YENTE_QUIET === "1" });
+const { log, begin, end } = logger;
+
+const on = (name, dflt = "1") => String(process.env[name] ?? dflt) === "1";
+
+/* --- two directories, one owner ---------------------------------------- */
+
+const deskPath = process.env.YENTE_DATA_PATH || "./data";
+const graphPath = process.env.YENTE_GRAPH_DATA_PATH || "./data/graph";
+
+if (deskPath === graphPath) {
+  // Not a style objection. The desk's collections and the graph's are different
+  // shapes with different invariants, and merging them by accident — because two
+  // env vars happened to agree — would interleave a mutable member ledger with
+  // append-only evidence in one namespace.
+  log("error", "same_data_path", {
+    path: deskPath,
+    note: "YENTE_DATA_PATH and YENTE_GRAPH_DATA_PATH must differ. The desk's "
+      + "ledger and the graph's evidence are separate datasets; one process can "
+      + "own both, but they do not share a namespace.",
+  });
+  process.exit(1);
+}
+
+// Checked BEFORE the desk is built. Without a mailbox the desk's very first act
+// is to dial IMAP on a default host and fail, once every interval, forever —
+// which is noise that looks like a fault. No mailbox, no desk; the graph loops
+// still run and can drain a backlog.
+const mailConfigured = Boolean(process.env.YENTE_MAIL_HOST && process.env.YENTE_MAIL_USER);
+
+let deskStore = null;
+let graphStore = null;
+try {
+  graphStore = openDatabase(graphPath);
+  if (on("YENTE_DESK") && mailConfigured) deskStore = openDatabase(deskPath);
+} catch (error) {
+  log("error", "store_open_failed", { error: String(error?.message ?? error) });
+  process.exit(1);
+}
+
+const graph = createGraphRepositories(graphStore);
+
+// A process that died mid-inference leaves jobs RUNNING and nothing else will
+// ever move them — mail ingested, meaning silently lost.
+const requeued = graph.jobs.requeueStranded(new Date().toISOString());
+if (requeued > 0) log("warn", "requeued_stranded_jobs", { count: requeued });
+
+/* --- the desk ---------------------------------------------------------- */
+
+let desk = null;
+let waitlist = null;
+
+if (deskStore) {
+  // WITHOUT THIS, EVERY ATTACHMENT IS UNREADABLE. The extractor registry starts
+  // empty and parsers register themselves; production once had none at all, so
+  // every file came back UNSUPPORTED_TYPE for support that already existed.
+  const parserTypes = registerDocumentParsers();
+
+  const repositories = createRepositories(deskStore);
+  waitlist = openWaitlistRepository({ store: deskStore });
+
+  let transport = null;
+  try {
+    transport = assertTransport(createMailTransport(mailConfigFromEnv()));
+  } catch (error) {
+    // The desk without a transport can still ingest, extract and match; it just
+    // cannot send. That is a degraded desk, not a dead one, and it must not take
+    // the listener down with it.
+    log("error", "transport_failed", {
+      error: String(error?.message ?? error),
+      note: "the desk will ingest and match but cannot send; the listener is unaffected",
+    });
+  }
+
+  if (transport) {
+    const llm = createLlmClients({ log });
+    const runtime = createRuntime({
+      repositories,
+      transport,
+      extractionClient: llm.extractionClient,
+      emailClient: llm.emailClient,
+    });
+    desk = createDesk({ store: deskStore, runtime, log, mode: "yente" });
+    log("info", "desk", { parsers: parserTypes.length, llm: llm.describe?.provider ?? "?" });
+  }
+}
+
+/* --- the interpreter --------------------------------------------------- */
+
+const { provider: providerName } = resolveIntelligenceConfig();
+const clients = createLlmClients({ provider: providerName, log });
+const observer = createIntelligenceProvider({
+  client: clients.extractionClient,
+  provider: providerName,
+  model: clients.describe.model,
+});
+
+log("info", "intelligence", {
+  provider: providerName,
+  model: process.env.YENTE_MODEL || "muse-local:latest",
+  concurrency: Number(process.env.YENTE_INTELLIGENCE_CONCURRENCY || 3),
+  third_party: clients.describe.thirdParty,
+});
+
+const manager = createGraphManager({ graph });
+
+/* --- the loops --------------------------------------------------------- */
+
+let stopping = false;
+const abort = new AbortController();
+
+const { source, imap, mailbox, configured } = createMailFromEnv({ graph, log });
+
+const loops = createGraphLoops({
+  graph, source, observer, manager, log, begin, end,
+  signal: abort.signal,
+  isStopping: () => stopping,
+});
+const { health } = loops;
+
+/**
+ * The desk's own loop. Separate from the graph's because it is a TICK, not a
+ * drain: it must never run two at once (a second ingest over the same unseen
+ * mail is how a message gets processed twice), so it waits for itself and then
+ * sleeps, rather than firing on an interval.
+ */
+const DESK_INTERVAL_MS = Number(process.env.YENTE_POLL_INTERVAL_MS || 30_000);
+let ticking = false;
+
+async function deskLoop() {
+  if (!desk) return;
+  while (!stopping) {
+    ticking = true;
+    begin("store", "desk:tick", "desk tick");
+    try {
+      const r = await desk.tick();
+      if (r.ingested > 0 || r.sent > 0 || r.proposed > 0 || r.advanced > 0) {
+        log("info", "tick", r);
+      }
+    } catch (error) {
+      // A failed tick must never end the loop. Mailbox down, TLS hiccup, one
+      // malformed message: recorded, and the next tick runs.
+      log("error", "tick_failed", { error: String(error?.message ?? error).slice(0, 300) });
+    } finally {
+      ticking = false;
+      end("desk:tick");
+    }
+    await loops.sleep(DESK_INTERVAL_MS);
+  }
+}
+
+/* --- one port, both surfaces ------------------------------------------- */
+
+/**
+ * TWO LISTENERS, ONE PROCESS — and the distinction matters.
+ *
+ * What was expensive about the split was never the ports; it was the two
+ * PROCESSES, the two locks, and the two populations neither could see. Those are
+ * gone. What remains is that the site and the manager each root their links,
+ * forms and redirects at "/", so they are two URL spaces and cannot share one.
+ * Mounting the manager under /manager would mean rewriting every href, every
+ * form action and every 303 in it — a change with real breakage risk, for
+ * nothing an operator would notice.
+ *
+ * So: the site answers on YENTE_PORT (nginx proxies this one), the manager on
+ * YENTE_GRAPH_PORT, loopback by default because it is the surface that can act
+ * on somebody's behalf. One thing to start, one thing to stop, one log.
+ */
+let siteServer = null;
+let managerServer = null;
+
+const bind = (server, port, host, onListen) => {
+  server.listen(port, host, onListen);
+  // A port already in use must not kill her. Mail and matching do not depend on
+  // any web surface, and losing them because a stale process holds a port would
+  // be a worse outage than losing a page.
+  server.on("error", (error) => {
+    log("error", "http_failed", {
+      port,
+      error: String(error?.message ?? error),
+      note: "she keeps running without this surface",
+    });
+  });
+};
+
+if (on("YENTE_HTTP")) {
+  const host = process.env.YENTE_HOST || "127.0.0.1";
+
+  if (waitlist) {
+    siteServer = createServer(createSiteHandler({
+      repository: waitlist,
+      adminUsername: process.env.YENTE_ADMIN_USERNAME,
+      adminPassword: process.env.YENTE_ADMIN_PASSWORD,
+      trustProxy: process.env.YENTE_TRUST_PROXY === "1",
+      // The number the page has never been able to show: people whose own words
+      // Yente has actually read, as opposed to seats somebody claimed. Both go
+      // out; the front end decides which to lead with. Reporting only the
+      // flattering one is the rounding-up this product refuses.
+      graphStats: () => ({
+        people: manager.subjects().length,
+        observations: graph.observations.all().length,
+        queued: graph.jobs.counts().READY ?? 0,
+      }),
+    }));
+    const port = Number(process.env.YENTE_PORT || 7688);
+    bind(siteServer, port, host, () => {
+      log("info", "http", { site: `http://${host}:${port}` });
+    });
+  }
+
+  managerServer = createServer(async (req, res) => {
+    try {
+      const handled = await handleManagerRequest({ req, res, manager, graph, health });
+      if (handled) return;
+      const html = renderManager({
+        manager, health, mailSilenceMinutes: loops.mailSilenceMinutes(),
+      });
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      res.end(html);
+    } catch (error) {
+      log("error", "http_failed", { error: String(error?.message ?? error) });
+      if (!res.headersSent) res.writeHead(500);
+      res.end("error\n");
+    }
+  });
+  const managerPort = Number(process.env.YENTE_GRAPH_PORT || 3767);
+  bind(managerServer, managerPort, process.env.YENTE_GRAPH_HOST || "127.0.0.1", () => {
+    log("info", "manager", {
+      url: `http://${process.env.YENTE_GRAPH_HOST || "127.0.0.1"}:${managerPort}`,
+      operator: manager.actor,
+    });
+  });
+}
+
+/* --- run --------------------------------------------------------------- */
+
+log("info", "started", {
+  data: `${deskStore ? deskPath + " + " : ""}${graphPath}`,
+  mailbox: configured ? mailbox : "(none)",
+  desk: Boolean(desk),
+  jobs: JSON.stringify(graph.jobs.counts()),
+  subjects: manager.subjects().length,
+});
+
+const heartbeatMs = Number(process.env.YENTE_HEARTBEAT_MS || 30_000);
+const pulse = setInterval(() => {
+  logger.heartbeat({
+    graph, health, mailConfigured, mailSilenceMinutes: loops.mailSilenceMinutes(),
+  });
+}, heartbeatMs);
+pulse.unref();
+
+const running = Promise.all([
+  loops.listen(), loops.understand(), loops.connect(), deskLoop(),
+]);
+
+async function shutdown(signal) {
+  if (stopping) return;
+  stopping = true;
+  clearInterval(pulse);
+  log("info", "shutting_down", { signal, mid_tick: ticking });
+
+  // Stop accepting first, then flush. An accepted decision must not be written
+  // to a closing store.
+  await Promise.all([siteServer, managerServer]
+    .filter(Boolean)
+    .map((server) => new Promise((resolve) => server.close(resolve))));
+  abort.abort();
+
+  // The desk's tick gets a bounded chance to finish. Killing it between
+  // recording a message and marking it \\Seen is how a message gets read twice.
+  await Promise.race([running, loops.sleep(Number(process.env.YENTE_SHUTDOWN_MS || 15_000))]);
+  if (ticking) log("error", "shutdown_timeout", { note: "desk tick still running" });
+
+  await imap?.close().catch(() => {});
+  for (const store of openDatabases()) closeDatabase(store);
+  log("info", "stopped", { ticks: JSON.stringify(health.ticks) });
+  process.exit(0);
+}
+
+process.on("SIGTERM", () => { shutdown("SIGTERM"); });
+process.on("SIGINT", () => { shutdown("SIGINT"); });
+process.on("unhandledRejection", (reason) => {
+  log("error", "unhandled_rejection", { error: String(reason).slice(0, 300) });
+});
+process.on("uncaughtException", (error) => {
+  log("error", "uncaught_exception", { error: String(error?.message ?? error).slice(0, 300) });
+});
+
+await running;
