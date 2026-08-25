@@ -50,6 +50,16 @@ export async function handleManagerRequest({ req, res, manager, graph, health })
     return true;
   }
 
+  // Profiles. §9/§10 — the person is the entity and the mail is evidence, so a
+  // subject gets a page and messages appear on it rather than the reverse.
+  if (url.pathname === "/subject" && req.method === "GET") {
+    const id = url.searchParams.get("id");
+    if (!id) { res.writeHead(400).end("missing id"); return true; }
+    res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    res.end(renderProfile({ profile: manager.subject(id) }));
+    return true;
+  }
+
   if (req.method !== "POST") return false;
 
   const body = await readBody(req);
@@ -203,9 +213,116 @@ function shortSubject(id) {
   return s.replace(/^person:/, "").replace(/^org:name:/, "").replace(/^person:name:/, "");
 }
 
+/**
+ * A profile page.
+ *
+ * §10 — and the ordering is the argument. Intents first, because that is what a
+ * matchmaker acts on. Then connections, then the evidence it was all built from.
+ * The activity feed at the bottom is real messages and real claims; nothing is
+ * invented to fill space, because §10 says do not fake social activity and an
+ * empty section is more honest than a generated one.
+ */
+export function renderProfile({ profile }) {
+  const row = (label, value) => value
+    ? `<tr><th>${esc(label)}</th><td>${value}</td></tr>` : "";
+
+  const claim = (c) => `
+  <div class="card">
+    <div><b>${esc(c.predicate.replace(/^intent:/, ""))}</b>
+      ${c.object ? `→ ${esc(shortSubject(c.object))}` : ""}
+      ${c.authority >= 400 ? '<span class="badge curated">you</span>' : ""}
+      ${c.originalSubject ? `<span class="badge">via ${esc(shortSubject(c.originalSubject))}</span>` : ""}
+    </div>
+    ${Object.keys(c.attributes ?? {}).length
+      ? `<div class="empty" style="padding:4px 0">${esc(JSON.stringify(c.attributes))}</div>` : ""}
+    ${c.quote ? `<blockquote>“${esc(c.quote)}”<cite>${
+      // The whole point of the graph: every claim can show the sentence it came
+      // from, and the evidence id it traces to.
+      c.evidenceId ? `<code>${esc(String(c.evidenceId).slice(0, 16))}</code>` : "asserted"
+    }${c.validFrom ? ` · valid from ${esc(String(c.validFrom).slice(0, 10))}` : ""}</cite></blockquote>` : ""}
+    <form class="row" method="post" action="/?back=${encodeURIComponent(`/subject?id=${profile.id}`)}">
+      <input type="hidden" name="observationId" value="${esc(c.id ?? c._id ?? "")}">
+      <input type="text" name="note" placeholder="what's wrong with it">
+      <button class="no" name="action" value="wrong_claim">Wrong</button>
+    </form>
+  </div>`;
+
+  return `<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${esc(profile.name ?? profile.id)} · Yente</title><style>${STYLE}</style>
+</head><body><div class="wrap">
+
+<header>
+  <h1>${esc(profile.name ?? shortSubject(profile.id))}
+    <span style="color:var(--dim);font-weight:400">· ${esc(profile.kind)}</span></h1>
+  <div class="stats"><a href="/">← manager</a></div>
+</header>
+
+<table>
+  ${row("subject", `<code>${esc(profile.id)}</code>`)}
+  ${row("title", profile.title ? esc(profile.title) : "")}
+  ${row("also", profile.aliases.length
+    ? profile.aliases.map((a) => `<code>${esc(a)}</code>`).join(" ") : "")}
+  ${row("signal", `${esc(profile.signal.strength)}
+    <span class="empty">${esc(JSON.stringify(profile.signal.inputs))}</span>`)}
+  ${row("matchmaking", profile.eligible ? "eligible" : "<b>excluded</b>")}
+</table>
+<p class="empty" style="padding-top:4px">${esc(profile.signal.label ?? "")}</p>
+
+<h2>Seeking / offering</h2>
+${profile.intents.length ? profile.intents.map(claim).join("")
+    : `<p class="empty">Nothing yet. Intent is what matchmaking runs on, so this is the section that matters.</p>`}
+
+<h2>Connections</h2>
+${profile.relationships.length ? profile.relationships.map(claim).join("")
+    : `<p class="empty">None recorded.</p>`}
+
+${profile.opportunities.length ? `<h2>Opportunities</h2>${profile.opportunities.map(claim).join("")}` : ""}
+${profile.notes.length ? `<h2>Other observations</h2>${profile.notes.map(claim).join("")}` : ""}
+
+<h2>Matches</h2>
+${profile.matches.length === 0 ? `<p class="empty">None proposed.</p>`
+    : `<table><tr><th>with</th><th>type</th><th>state</th><th>origin</th></tr>
+  ${profile.matches.map((m) => `<tr>
+    <td><a href="/subject?id=${encodeURIComponent(m.seeker === profile.id ? m.offerer : m.seeker)}">${
+      esc(shortSubject(m.seeker === profile.id ? m.offerer : m.seeker))}</a></td>
+    <td>${esc(m.matchType)}</td><td>${esc(m.state)}</td><td>${esc(m.origin)}</td>
+  </tr>`).join("")}</table>`}
+
+<h2>Evidence</h2>
+${profile.evidence.length === 0 ? `<p class="empty">None.</p>`
+    : `<table><tr><th>kind</th><th>what</th><th>received</th></tr>
+  ${profile.evidence.map((e) => `<tr>
+    <td>${esc(e.kind)}</td>
+    <td>${esc(e.meta?.subject ?? e.meta?.filename ?? "—")}
+      ${e.meta?.structure && Object.keys(e.meta.structure).length
+        ? `<span class="empty">${esc(JSON.stringify(e.meta.structure))}</span>` : ""}</td>
+    <td>${esc(String(e.receivedAt ?? "").slice(0, 16).replace("T", " "))}</td>
+  </tr>`).join("")}</table>`}
+
+<h2>Corrections</h2>
+<div class="card">
+  <form class="row" method="post" action="/?back=${encodeURIComponent(`/subject?id=${profile.id}`)}">
+    <input type="hidden" name="subject" value="${esc(profile.id)}">
+    <input type="text" name="note" placeholder="why">
+    <button class="no" name="action" value="exclude">Exclude from matchmaking</button>
+  </form>
+  <form class="row" method="post" action="/?back=${encodeURIComponent(`/subject?id=${profile.id}`)}">
+    <input type="hidden" name="subjectA" value="${esc(profile.id)}">
+    <input type="text" name="subjectB" placeholder="other subject id" required>
+    <button name="action" value="same_person">Same person</button>
+    <button name="action" value="different_people">Different people</button>
+  </form>
+</div>
+
+</div></body></html>`;
+}
+
 export function renderManager({ manager, health = {}, mailSilenceMinutes = null }) {
   const summary = manager.summary();
   const pending = manager.pendingMatches({ limit: 40 });
+  const identities = manager.pendingIdentities ? manager.pendingIdentities({ limit: 10 }) : [];
   const subjects = manager.subjects().slice(0, 60);
 
   // The alert that did not exist and cost two days. Surfaced at the top, in
@@ -247,6 +364,29 @@ ${pending.length === 0
     ? `<p class="empty">Nothing waiting. ${summary.jobs.READY ?? 0} messages still to interpret.</p>`
     : pending.map(matchCard).join("")}
 
+${identities.length === 0 ? "" : `
+<h2>Same person?</h2>
+${identities.map((c) => `
+<div class="card">
+  <div><span class="pair">${esc(shortSubject(c.subjectA))} ≟ ${esc(shortSubject(c.subjectB))}</span></div>
+  <ul class="why">
+    <li>${esc(c.reason)}</li>
+    <li>⚠ ${esc(c.caution)}</li>
+  </ul>
+  ${c.quote ? `<blockquote>“${esc(c.quote)}”<cite><code>${esc(String(c.evidenceId).slice(0, 16))}</code></cite></blockquote>` : ""}
+  <form class="row" method="post" action="/">
+    <input type="hidden" name="subjectA" value="${esc(c.subjectA)}">
+    <input type="hidden" name="subjectB" value="${esc(c.subjectB)}">
+    <button class="yes" name="action" value="same_person">Same person</button>
+    <button class="no" name="action" value="different_people">Different people</button>
+  </form>
+</div>`).join("")}
+<p class="empty" style="padding-top:0">
+  Never merged automatically. A missed merge costs you one click; a wrong one
+  conflates two people's intents and then proposes an introduction based on
+  something neither of them said.
+</p>`}
+
 <h2>Make a match yourself</h2>
 <div class="card">
   <form class="row" method="post" action="/">
@@ -268,7 +408,7 @@ ${subjects.length === 0
     : `<table>
   <tr><th>subject</th><th>name</th><th>kind</th><th>claims</th><th>last seen</th></tr>
   ${subjects.map((s) => `<tr>
-    <td><code>${esc(s.id)}</code></td>
+    <td><a href="/subject?id=${encodeURIComponent(s.id)}"><code>${esc(s.id)}</code></a></td>
     <td>${esc(s.name ?? "—")}</td>
     <td>${esc(s.kind)}</td>
     <td>${s.claims}</td>

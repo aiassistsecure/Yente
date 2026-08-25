@@ -35,6 +35,12 @@
 
 import { AUTHORITY, JOB_STATES } from "../store/graph.js";
 import { CLAIM_GROUPS } from "./schema.js";
+// ONE function turns an address into a subject id. This file used to build
+// `person:${emailAddress}` inline while identity.js normalised gmail dots and
+// plus-tags — so the graph stored `person:s.chen@gmail.com` and identity
+// resolution looked for `person:schen@gmail.com` and found nothing. Silent, and
+// exactly the drift that once dropped sixteen verified facts.
+import { subjectForAddress } from "../graph/identity.js";
 
 /**
  * Turn one verified envelope into graph observations.
@@ -56,7 +62,7 @@ export function observationsFrom({ verified, evidenceId, provenance, observedAt,
     // name is not. §7 — "Sarah Chen" is three different people in three
     // different mailboxes; sarah@acme.com is one.
     const subject = entity.emailAddress
-      ? `person:${entity.emailAddress}`
+      ? subjectForAddress(entity.emailAddress)
       : `${entity.kind === "ORGANIZATION" ? "org" : "person"}:name:${entity.name.toLowerCase()}`;
     subjectOf.set(entity.ref, subject);
 

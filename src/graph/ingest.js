@@ -27,6 +27,7 @@
  */
 
 import { normalizeMessage } from "../mail/source.js";
+import { ingestAttachments } from "./documents.js";
 
 /**
  * One pass of the listener.
@@ -40,6 +41,9 @@ export async function ingestMail({
   graph,
   now = () => new Date().toISOString(),
   log = () => {},
+  // Injected so the ordering test does not fork Python, and so a box without
+  // the worker's dependencies still ingests mail bodies.
+  attachments: extractAttachments = ingestAttachments,
 }) {
   const { messages, uidValidity, resynced } = await source.fetchNew();
 
@@ -48,6 +52,8 @@ export async function ingestMail({
     recorded: 0,
     duplicates: 0,
     enqueued: 0,
+    documents: 0,
+    documentsRefused: 0,
     resynced,
     highestUid: null,
   };
@@ -91,6 +97,26 @@ export async function ingestMail({
         at: now(),
       });
       if (!jobExisted) summary.enqueued += 1;
+
+      // §4: an attachment is its own graph object, with its own evidence and its
+      // own job — so a deck sent to two people is extracted once, and a claim
+      // quoting page 3 traces to the document rather than to the covering email.
+      //
+      // Only for NEW messages: re-extracting an attachment we already have would
+      // fork a parser for nothing.
+      if (message.attachments.length > 0) {
+        const docs = await extractAttachments({
+          attachments: message.attachments,
+          graph,
+          messageEvidenceId: evidence.id ?? `message:${message.contentHash}`,
+          receivedAt: message.receivedAt,
+          sentAt: message.sentAt,
+          now, log,
+        });
+        summary.documents += docs.extracted;
+        summary.documentsRefused += docs.refused;
+        summary.enqueued += docs.enqueued;
+      }
     }
 
     summary.highestUid = Math.max(summary.highestUid ?? 0, message.uid);
@@ -107,6 +133,10 @@ export async function ingestMail({
     duplicates: summary.duplicates,
     enqueued: summary.enqueued,
     uid: summary.highestUid,
+    ...(summary.documents ? { documents: summary.documents } : {}),
+    // Counted, because an attachment we could not read is a real gap in the
+    // graph and a silent one is indistinguishable from a message with none.
+    ...(summary.documentsRefused ? { documents_refused: summary.documentsRefused } : {}),
     ...(resynced ? { resynced: true } : {}),
   });
 

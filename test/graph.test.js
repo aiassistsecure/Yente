@@ -704,3 +704,276 @@ test("the source text a quote is checked against includes the headers", async ()
   assert.match(text, /We closed our seed round last month\./);
   assert.match(text, /Date: 2026-08-20/);
 });
+
+/* --- attachments: untrusted files, isolated ------------------------------ */
+
+test("the worker extracts text and refuses executables and macros by name", async () => {
+  // Refused BY NAME rather than falling through to "unsupported", so the log
+  // says something true about what arrived.
+  const { extractDocument } = await import("../src/graph/documents.js");
+
+  const ok = await extractDocument({
+    filename: "notes.txt", mimeType: "text/plain",
+    content: Buffer.from("Sarah Chen, Founder, Acme Systems."),
+  });
+  assert.equal(ok.ok, true);
+  assert.match(ok.text, /Sarah Chen/);
+
+  for (const filename of ["invoice.exe", "payroll.xlsm", "archive.zip", "run.sh"]) {
+    const refused = await extractDocument({
+      filename, mimeType: "application/octet-stream", content: Buffer.from("MZ"),
+    });
+    assert.equal(refused.ok, false, `${filename} must be refused`);
+    assert.match(refused.error, /executable, macro-enabled or archive/);
+  }
+});
+
+test("a csv keeps its rows, and structure is reported", async () => {
+  const { extractDocument } = await import("../src/graph/documents.js");
+  const out = await extractDocument({
+    filename: "leads.csv", mimeType: "text/csv",
+    content: Buffer.from("name,role\nAlice,CTO\nBob,CEO"),
+  });
+  assert.equal(out.ok, true);
+  assert.match(out.text, /Alice \| CTO/);
+  assert.equal(out.structure.rows, 3);
+});
+
+test("a worker that cannot run reports it as data rather than throwing", async () => {
+  // §22 again: the caller must have nothing to catch, or one poisoned file stops
+  // ingestion.
+  const { extractDocument } = await import("../src/graph/documents.js");
+  const out = await extractDocument({
+    filename: "x.txt", mimeType: "text/plain", content: Buffer.from("hi"),
+    python: "/nonexistent/python",
+  });
+  assert.equal(out.ok, false);
+  assert.match(out.error, /cannot start worker|failed to run/);
+});
+
+test("an attachment becomes its own evidence and its own job", async () => {
+  const { ingestAttachments } = await import("../src/graph/documents.js");
+  const { graph } = fresh();
+
+  const summary = await ingestAttachments({
+    attachments: [{ filename: "deck.pdf", mimeType: "application/pdf", content: Buffer.from("x") }],
+    graph,
+    messageEvidenceId: "message:abc",
+    receivedAt: T0,
+    sentAt: "2026-08-20T00:00:00.000Z",
+    now: () => T1,
+    // Injected, so the test does not fork Python.
+    extract: async () => ({
+      ok: true, filename: "deck.pdf", contentHash: "doc-hash", mime_type: "application/pdf",
+      text: "[[page 3]]\nWe are raising a seed round.", bytes: 1,
+      structure: { pages: 4 }, truncated: false,
+    }),
+  });
+
+  assert.equal(summary.extracted, 1);
+  assert.equal(summary.enqueued, 1, "its own job, so a claim can quote page 3");
+  const evidence = graph.evidence.get("attachment:doc-hash");
+  assert.equal(evidence.kind, "attachment");
+  assert.equal(evidence.meta.messageEvidenceId, "message:abc",
+    "EMAIL -has_attachment-> DOCUMENT is recorded");
+  assert.match(evidence.text, /\[\[page 3\]\]/,
+    "the page marker lives in the text a quote is checked against, so 'page 3' can ground");
+});
+
+test("a refused attachment is counted and named, never silently dropped", async () => {
+  const { ingestAttachments } = await import("../src/graph/documents.js");
+  const { graph } = fresh();
+  const logs = [];
+
+  const summary = await ingestAttachments({
+    attachments: [{ filename: "virus.exe", mimeType: "application/octet-stream", content: Buffer.from("MZ") }],
+    graph, messageEvidenceId: "message:abc", receivedAt: T0,
+    log: (level, event, meta) => logs.push({ event, meta }),
+    extract: async () => ({ ok: false, filename: "virus.exe", error: "refused by type (.exe)" }),
+  });
+
+  assert.equal(summary.refused, 1);
+  assert.equal(summary.extracted, 0);
+  assert.equal(logs[0].event, "attachment_refused");
+  assert.equal(logs[0].meta.filename, "virus.exe");
+  assert.equal(graph.jobs.counts().READY, 0, "nothing to interpret");
+});
+
+/* --- identity resolution: refusing to guess ------------------------------ */
+
+test("gmail dots and plus tags are the same address; other providers are not", async () => {
+  const { normalizeAddress } = await import("../src/graph/identity.js");
+  assert.equal(normalizeAddress("Alice.Smith+yente@Gmail.com"), "alicesmith@gmail.com");
+  // Documented provider behaviour, not a guess about humans — and it does NOT
+  // generalise, because dots are significant almost everywhere else.
+  assert.equal(normalizeAddress("alice.smith@acme.com"), "alice.smith@acme.com");
+});
+
+test("name similarity NEVER merges", async () => {
+  // The single most tempting signal, and worth nothing: "Sarah Chen" is three
+  // different people across three mailboxes and the graph cannot tell which.
+  const { buildIdentityIndex } = await import("../src/graph/identity.js");
+  const index = buildIdentityIndex([
+    { subject: "person:sarah@acme.com", predicate: "is_person", object: "Sarah Chen" },
+    { subject: "person:sarah@other.com", predicate: "is_person", object: "Sarah Chen" },
+  ]);
+  assert.notEqual(index.canonical("person:sarah@acme.com"),
+    index.canonical("person:sarah@other.com"));
+});
+
+test("same_as merges, and the canonical root is stable across runs", async () => {
+  const { buildIdentityIndex } = await import("../src/graph/identity.js");
+  const rows = [
+    { subject: "person:sarah@acme.com", predicate: "same_as", object: "person:s.chen@gmail.com" },
+  ];
+  const index = buildIdentityIndex(rows);
+  assert.equal(index.canonical("person:s.chen@gmail.com"), index.canonical("person:sarah@acme.com"));
+
+  // Stable, because the canonical id appears in URLs and in match records — a
+  // root that moved between restarts would break both.
+  const reversed = buildIdentityIndex([...rows].reverse());
+  assert.equal(index.canonical("person:sarah@acme.com"), reversed.canonical("person:sarah@acme.com"));
+});
+
+test("not_same_as blocks a merge whichever order the claims arrived in", async () => {
+  const { buildIdentityIndex } = await import("../src/graph/identity.js");
+  for (const rows of [
+    [
+      { subject: "person:a@x.com", predicate: "same_as", object: "person:b@y.com" },
+      { subject: "person:a@x.com", predicate: "not_same_as", object: "person:b@y.com" },
+    ],
+    [
+      { subject: "person:a@x.com", predicate: "not_same_as", object: "person:b@y.com" },
+      { subject: "person:a@x.com", predicate: "same_as", object: "person:b@y.com" },
+    ],
+  ]) {
+    const index = buildIdentityIndex(rows);
+    assert.notEqual(index.canonical("person:a@x.com"), index.canonical("person:b@y.com"),
+      "a person saying 'different people' told us something we cannot infer");
+  }
+});
+
+test("resolving rewrites the view, never the stored claim", async () => {
+  const { resolveObservations } = await import("../src/graph/identity.js");
+  const rows = [
+    { subject: "person:sarah@acme.com", predicate: "same_as", object: "person:s@gmail.com" },
+    { subject: "person:s@gmail.com", predicate: "intent:HIRING", object: "engineer" },
+  ];
+  const resolved = resolveObservations(rows);
+  const intent = resolved.find((r) => r.predicate === "intent:HIRING");
+
+  // The canonical id is the lexicographically smaller of the merged set —
+  // "person:s@gmail.com" sorts before "person:sarah@acme.com" because '@' (0x40)
+  // precedes 'a'. WHICH one wins does not matter; that it is STABLE does, since
+  // the canonical id appears in URLs and in match records.
+  assert.equal(intent.subject, "person:s@gmail.com");
+  assert.equal(intent.originalSubject, undefined,
+    "this row already carried the canonical id, so nothing was rewritten");
+
+  const merged = resolved.find((r) => r.predicate === "same_as");
+  assert.equal(merged.subject, "person:s@gmail.com");
+  assert.equal(merged.originalSubject, "person:sarah@acme.com",
+    "which alias it arrived under stays visible — a merge you cannot audit is one you must trust");
+  assert.equal(rows[0].subject, "person:sarah@acme.com", "the stored row is untouched");
+});
+
+test("a signature block is proposed, never applied", async () => {
+  const { proposeIdentityMerges } = await import("../src/graph/identity.js");
+  const candidates = proposeIdentityMerges({
+    observations: [],
+    evidenceById: {
+      "message:1": {
+        meta: { from: "sarah@acme.com" },
+        text: "Thanks!\n--\nSarah Chen\npersonal: s.chen@gmail.com",
+      },
+    },
+    existingSubjects: ["person:sarah@acme.com", "person:s.chen@gmail.com"],
+  });
+
+  assert.equal(candidates.length, 1);
+  assert.ok(candidates[0].quote && candidates[0].quote.includes("s.chen@gmail.com"),
+    `expected the signature line, got ${JSON.stringify(candidates[0].quote)}`);
+  // Named for what it is: this rule cannot tell a signature block from a
+  // forwarded introduction, which is exactly why it proposes.
+  assert.match(candidates[0].caution, /shared inbox|forwarded/);
+});
+
+test("a merge already ruled out is not proposed again", async () => {
+  const { proposeIdentityMerges } = await import("../src/graph/identity.js");
+  const candidates = proposeIdentityMerges({
+    observations: [{
+      subject: "person:sarah@acme.com", predicate: "not_same_as",
+      object: "person:s.chen@gmail.com",
+    }],
+    evidenceById: {
+      "message:1": {
+        meta: { from: "sarah@acme.com" },
+        text: "cc s.chen@gmail.com",
+      },
+    },
+    existingSubjects: ["person:sarah@acme.com", "person:s.chen@gmail.com"],
+  });
+  assert.equal(candidates.length, 0, "asking twice is the treadmill again");
+});
+
+/* --- profiles ------------------------------------------------------------ */
+
+test("a profile carries claims that arrived under an alias", () => {
+  const { graph } = fresh();
+  graph.evidence.record({ kind: "message", contentHash: "m1", text: "hi", receivedAt: T0 });
+  graph.observations.append({
+    subject: "person:sarah@acme.com", predicate: "is_person", object: "Sarah Chen",
+    attributes: { title: "Founder" }, evidenceId: "message:m1", quote: "Sarah Chen, Founder",
+    observedAt: T0,
+  });
+  graph.observations.append({
+    subject: "person:sarah@acme.com", predicate: "same_as", object: "person:s@gmail.com",
+    evidenceId: null, quote: "asserted", observedAt: T0, authority: AUTHORITY.USER_CORRECTION,
+  });
+  graph.observations.append({
+    subject: "person:s@gmail.com", predicate: "intent:HIRING", object: "backend engineer",
+    evidenceId: "message:m1", quote: "hiring a backend engineer", observedAt: T1,
+  });
+
+  const manager = createGraphManager({ graph, actor: "mark", now: () => T1 });
+  const profile = manager.subject("person:s@gmail.com");
+
+  // Canonical is the lexicographically smaller id, and both addresses resolve to
+  // the same profile whichever one you ask for — that is the property that
+  // matters, not which string wins.
+  assert.equal(profile.id, "person:s@gmail.com", "one profile, one canonical id");
+  assert.equal(manager.subject("person:sarah@acme.com").id, profile.id,
+    "asking by either address reaches the same profile");
+  assert.deepEqual(profile.aliases, ["person:sarah@acme.com"]);
+  assert.equal(profile.name, "Sarah Chen");
+  assert.equal(profile.title, "Founder");
+  assert.equal(profile.intents.length, 1, "the aliased claim appears on the profile that owns it");
+  assert.equal(profile.evidence.length, 1, "and the message it came from is listed");
+});
+
+test("the relationship signal is labelled as calculated, not asserted", () => {
+  // §14: "Do not pretend this is psychological truth."
+  const { graph } = fresh();
+  const manager = createGraphManager({ graph, actor: "mark" });
+  const signal = manager.relationshipSignal([
+    { evidenceId: "e1", observedAt: T0 }, { evidenceId: "e2", observedAt: T1 },
+  ]);
+  assert.equal(signal.inputs.distinctEvidence, 2);
+  assert.match(signal.label, /calculated signal, not a fact/);
+});
+
+test("a retracted claim disappears from the profile but not from history", () => {
+  const { graph } = fresh();
+  graph.observations.append({
+    subject: "person:a@b.c", predicate: "intent:HIRING", object: "engineer",
+    evidenceId: "e1", quote: "hiring an engineer", observedAt: T0,
+  });
+  const manager = createGraphManager({ graph, actor: "mark", now: () => T1 });
+  const stored = graph.observations.forSubject("person:a@b.c")[0];
+
+  manager.wrongClaim({ observationId: stored.id ?? stored._id, note: "that was a colleague" });
+
+  const profile = manager.subject("person:a@b.c");
+  assert.equal(profile.intents.length, 0, "gone from what Yente believes");
+  assert.ok(profile.history.length >= 2, "and still in the record of what it thought");
+});
