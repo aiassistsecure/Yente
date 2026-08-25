@@ -280,17 +280,82 @@ test("only one worker can claim a job", () => {
   assert.equal(graph.jobs.start("e1", T1), null, "the second claim finds it RUNNING");
 });
 
-test("a failure returns the job to READY until attempts are exhausted", () => {
+test("a transient failure NEVER gives up, and backs off exponentially", () => {
+  // Marking a gateway timeout FAILED after five tries throws away a real email's
+  // meaning because the network had a bad afternoon. Transient failures retry
+  // indefinitely; the delay grows and is STORED, so it survives a restart.
+  const { graph } = fresh();
+  graph.jobs.enqueue({ evidenceId: "e1", at: T0 });
+
+  const delays = [];
+  for (let i = 0; i < 8; i += 1) {
+    graph.jobs.start("e1", T0);
+    const after = graph.jobs.fail("e1", { at: T0, error: new Error("gateway 503") });
+    assert.equal(after.state, JOB_STATES.READY, `attempt ${i + 1} must stay retryable`);
+    delays.push(after.retryInMs);
+  }
+
+  assert.match(graph.jobs.ready(10, T0).length === 0 ? "deferred" : "due", /deferred/,
+    "and it is NOT due immediately — that is what stops a hot retry loop");
+  assert.deepEqual(delays.slice(0, 4), [30_000, 60_000, 120_000, 240_000],
+    "exponential");
+  assert.equal(delays.at(-1), 3_600_000, "capped at an hour, so recovery is picked up within one");
+});
+
+test("the retry reason is stored where the inspector reads it", () => {
   const { graph } = fresh();
   graph.jobs.enqueue({ evidenceId: "e1", at: T0 });
   graph.jobs.start("e1", T0);
-  const retried = graph.jobs.fail("e1", { at: T0, error: new Error("gateway 503"), maxAttempts: 3 });
-  assert.equal(retried.state, JOB_STATES.READY);
-  assert.match(retried.lastError, /gateway 503/,
-    "under lastError — the field the inspector reads, because a mismatch there hid an SMTP timeout for a day");
+  const after = graph.jobs.fail("e1", { at: T0, error: new Error("gateway 503") });
+  // `lastError`, not `last_error`. A diagnostic that reads a different name than
+  // the store writes is how an SMTP timeout stayed invisible for a day.
+  assert.match(after.lastError, /gateway 503/);
+  assert.equal(after.lastErrorAt, T0);
+});
 
-  graph.jobs.start("e1", T1); graph.jobs.fail("e1", { at: T1, error: "x", maxAttempts: 1 });
-  assert.equal(graph.jobs.read?.("e1")?.state ?? graph.jobs.counts().FAILED, 1);
+test("a deterministic failure stops immediately", () => {
+  // Evidence with no text will not acquire any by being asked again.
+  const { graph } = fresh();
+  graph.jobs.enqueue({ evidenceId: "e1", at: T0 });
+  graph.jobs.start("e1", T0);
+  const after = graph.jobs.fail("e1", {
+    at: T0, error: "no extractable text", transient: false,
+  });
+  assert.equal(after.state, JOB_STATES.FAILED);
+  assert.equal(after.availableAt, null);
+});
+
+test("a deferred job is invisible to ready() until it is due", () => {
+  const { graph } = fresh();
+  graph.jobs.enqueue({ evidenceId: "e1", at: T0 });
+  graph.jobs.start("e1", T0);
+  graph.jobs.fail("e1", { at: T0, error: "boom" });
+
+  assert.equal(graph.jobs.ready(10, T0).length, 0, "not due yet");
+  // 30s later.
+  const later = new Date(Date.parse(T0) + 31_000).toISOString();
+  assert.equal(graph.jobs.ready(10, later).length, 1, "due now, and picked up");
+});
+
+test("backoff survives a restart, because it is a stored timestamp", () => {
+  // A timer in a process that may not exist tomorrow is not a retry policy.
+  const { store, graph } = fresh();
+  graph.jobs.enqueue({ evidenceId: "e1", at: T0 });
+  graph.jobs.start("e1", T0);
+  graph.jobs.fail("e1", { at: T0, error: "boom" });
+
+  const reopened = createGraphRepositories(store);
+  assert.equal(reopened.jobs.ready(10, T0).length, 0, "still deferred after a reopen");
+  assert.ok(reopened.jobs.ready(10, new Date(Date.parse(T0) + 31_000).toISOString()).length === 1);
+});
+
+test("a job stranded by a crash is due immediately, not penalised with a backoff", () => {
+  // A process that died mid-inference is not evidence that the work is failing.
+  const { graph } = fresh();
+  graph.jobs.enqueue({ evidenceId: "e1", at: T0 });
+  graph.jobs.start("e1", T0);
+  graph.jobs.requeueStranded(T1);
+  assert.equal(graph.jobs.ready(10, T1).length, 1);
 });
 
 test("jobs stranded RUNNING by a crash are requeued on restart", () => {

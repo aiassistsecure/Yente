@@ -18,6 +18,25 @@ export const BLOCK_TAGS = Object.freeze({
    * then have to decide how to interpret.
    */
   OBSERVATIONS: "OBSERVATIONS",
+  /**
+   * The multi-block protocol of obs_v2.
+   *
+   * MANIFEST declares how many blocks follow, which turns two things from
+   * guesswork into arithmetic: the reader knows exactly when the answer is
+   * complete (so it can stop reading rather than waiting out the rest of a
+   * generation), and a stream cut short is DETECTABLE instead of arriving as a
+   * partial envelope that happens to parse. The second is the one that matters —
+   * a truncated answer we believe is complete writes a partial graph and says
+   * nothing.
+   *
+   * One block per claim group, so a malformed INTENTS block costs the intents
+   * and not the entities.
+   */
+  MANIFEST: "MANIFEST",
+  ENTITIES: "ENTITIES",
+  INTENTS: "INTENTS",
+  RELATIONSHIPS: "RELATIONSHIPS",
+  OPPORTUNITIES: "OPPORTUNITIES",
   MISSING_FIELDS: "MISSING_FIELDS",
   INTERVIEW_PLAN: "INTERVIEW_PLAN",
   MATCH: "MATCH",

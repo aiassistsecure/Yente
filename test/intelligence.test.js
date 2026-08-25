@@ -66,6 +66,22 @@ function goodEnvelope() {
   };
 }
 
+/** The obs_v2 wire shape: a manifest, then one block per non-empty group. */
+function manifestReply(envelope) {
+  const GROUPS = [
+    ["entities", "ENTITIES"], ["intents", "INTENTS"],
+    ["relationships", "RELATIONSHIPS"], ["opportunities", "OPPORTUNITIES"],
+    ["observations", "OBSERVATIONS"],
+  ];
+  const blocks = GROUPS
+    .filter(([key]) => Array.isArray(envelope[key]) && envelope[key].length > 0)
+    .map(([key, tag]) => `<<<${tag}>>>\n${JSON.stringify(envelope[key])}\n<<<END>>>`);
+  return [
+    `<<<MANIFEST>>>\n${JSON.stringify({ blocks: blocks.length })}\n<<<END>>>`,
+    ...blocks,
+  ].join("\n");
+}
+
 function clientReturning(envelopeOrText) {
   let calls = 0;
   return {
@@ -74,7 +90,7 @@ function clientReturning(envelopeOrText) {
       calls += 1;
       const text = typeof envelopeOrText === "string"
         ? envelopeOrText
-        : ["<<<OBSERVATIONS>>>", JSON.stringify(envelopeOrText), "<<<END>>>"].join("\n");
+        : manifestReply(envelopeOrText);
       return { text, finishReason: "stop", elapsedMs: 1 };
     },
   };
@@ -245,10 +261,63 @@ test("prose around a bare object does not defeat it", async () => {
   assert.equal(result.verified.entities.length, 2);
 });
 
-test("the strict block path is still preferred and reports no recovery", async () => {
+test("the manifest path is preferred and reports no recovery", async () => {
   const result = await provider(clientReturning(goodEnvelope())).observe({ sources: SOURCES });
   assert.equal(result.recovered, null,
     "a well-behaved model must be parsed by the strict reader, or drift is invisible");
+  assert.equal(result.verified.entities.length, 2);
+  assert.equal(result.verified.intents.length, 1);
+});
+
+test("a truncated answer is REFUSED, not stored as a partial graph", async () => {
+  // The whole reason for the manifest. The model declares 3 and sends 2 — a
+  // context limit, a gateway hiccup, a token ceiling. Under the old protocol
+  // this arrived as an envelope that PARSED, and we would have written two
+  // thirds of a message's meaning while believing it complete. Silent data
+  // loss dressed as success.
+  const truncated = [
+    '<<<MANIFEST>>>\n{"blocks": 3}\n<<<END>>>',
+    `<<<ENTITIES>>>\n${JSON.stringify(goodEnvelope().entities)}\n<<<END>>>`,
+    `<<<INTENTS>>>\n${JSON.stringify(goodEnvelope().intents)}\n<<<END>>>`,
+  ].join("\n");
+
+  const client = clientReturning(truncated);
+  await assert.rejects(
+    () => provider(client, { attempts: 2 }).observe({ sources: SOURCES }),
+    (error) => {
+      assert.match(error.message, /TRUNCATED_ANSWER|Refusing a partial graph/);
+      return true;
+    },
+  );
+  // And it RETRIED, because a cut-off stream is a fact about a moment, not
+  // about the email.
+  assert.equal(client.calls, 2);
+});
+
+test("one malformed block does not silently cost the others — it forces a retry", async () => {
+  const withBadBlock = [
+    '<<<MANIFEST>>>\n{"blocks": 2}\n<<<END>>>',
+    `<<<ENTITIES>>>\n${JSON.stringify(goodEnvelope().entities)}\n<<<END>>>`,
+    '<<<INTENTS>>>\n[ {"actor_ref": "p1", TRUNCATED\n<<<END>>>',
+  ].join("\n");
+
+  await assert.rejects(
+    () => provider(clientReturning(withBadBlock), { attempts: 1 }).observe({ sources: SOURCES }),
+    (error) => {
+      assert.match(error.message, /MALFORMED_BLOCK|Unparseable block/);
+      // Named, so the log says WHICH group we do not have.
+      assert.match(error.message, /intents/);
+      return true;
+    },
+  );
+});
+
+test("a declared count of 0 is a valid answer, not a failure", async () => {
+  // "This evidence supports no claims" is a real and expensive answer.
+  const empty = '<<<MANIFEST>>>\n{"blocks": 0}\n<<<END>>>';
+  const result = await provider(clientReturning(empty)).observe({ sources: SOURCES });
+  assert.equal(result.attempts, 1);
+  assert.equal(claimCount(result.verified), 0);
 });
 
 test("tolerance does not weaken the gate — a recovered envelope is verified identically", async () => {
