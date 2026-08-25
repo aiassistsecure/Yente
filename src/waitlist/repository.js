@@ -222,7 +222,11 @@ export function openWaitlistRepository({ store = null, dataPath = null, clock = 
   }
 
   function provenance(id) {
-    return sharedStore.trace(SUBSCRIBERS, id).map(cleanRecord);
+    // Provenance without collection identity is not provenance. `cleanRecord`
+    // intentionally strips `_coll` from public subscriber payloads, but applying
+    // it here erased which causal node was the subscriber and which was the
+    // inbound event. Preserve the engine metadata on this diagnostic surface.
+    return sharedStore.trace(SUBSCRIBERS, id).map((record) => Object.freeze({ ...record }));
   }
 
   return Object.freeze({

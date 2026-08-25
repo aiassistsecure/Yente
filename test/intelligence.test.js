@@ -216,6 +216,15 @@ test("the system message denies authority and names the untrusted boundary", () 
   assert.match(OBSERVER_SYSTEM, /<<<END>>>/);
 });
 
+test("Muse is asked for one OBSERVATIONS envelope, not a multi-block manifest", () => {
+  const prompt = createObservationPrompt({ sources: SOURCES });
+  assert.match(OBSERVER_SYSTEM, /one OBSERVATIONS block/i);
+  assert.match(prompt, /exactly one OBSERVATIONS block/i);
+  assert.doesNotMatch(OBSERVER_SYSTEM, /MANIFEST block/i);
+  assert.doesNotMatch(prompt, /MANIFEST block/i);
+  assert.match(prompt, /entities, intents, relationships, opportunities, and\s+observations/i);
+});
+
 test("untrusted source text cannot forge a block boundary", () => {
   // blocks.js refuses to build a prompt whose content carries a sentinel token.
   // That refusal is what makes the SOURCE block a real container.
@@ -310,6 +319,37 @@ test("one malformed block does not silently cost the others — it forces a retr
       return true;
     },
   );
+});
+
+test("live stream telemetry exposes content and an internal parser retry", async () => {
+  const events = [];
+  let calls = 0;
+  const good = manifestReply(goodEnvelope());
+  const client = {
+    async complete(request) {
+      calls += 1;
+      if (calls === 1) {
+        const broken = '<<<MANIFEST>>>\n{"blocks":2}\n<<<END>>>\n<<<ENTITIES>>>\n[]\n<<<END>>>';
+        request.onReasoning?.("checking the manifest");
+        request.onToken?.(broken);
+        return { text: broken, finishReason: "length", elapsedMs: 1 };
+      }
+      request.onToken?.(good);
+      return { text: good, finishReason: "stop", elapsedMs: 1 };
+    },
+  };
+
+  const result = await provider(client, { attempts: 2, onStream: (event) => events.push(event) })
+    .observe({ sources: SOURCES });
+
+  assert.equal(result.verified.entities.length, 2);
+  assert.deepEqual(events.map((event) => event.phase), [
+    "reasoning", "content", "rejected", "content",
+  ]);
+  assert.equal(events[2].code, "TRUNCATED_ANSWER");
+  assert.equal(events[2].attempt, 1,
+    "the rejection names the internal attempt instead of looking like one long hang");
+  assert.match(events[2].sample, /MANIFEST/);
 });
 
 test("a declared count of 0 is a valid answer, not a failure", async () => {

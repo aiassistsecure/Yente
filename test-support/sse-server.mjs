@@ -50,6 +50,10 @@ export async function startSseServer(script = {}) {
     splitEvents = false,
     finishReason = "stop",
     errorEvent = null,
+    // Exact OpenAI-compatible payloads for transport-shape regression tests.
+    // When supplied, these are emitted verbatim as SSE data events instead of
+    // synthesising the canonical delta.content string shape below.
+    rawEvents = null,
   } = script;
 
   const requests = [];
@@ -91,6 +95,16 @@ export async function startSseServer(script = {}) {
     if (keepAlive) {
       res.write(": keep-alive\n\n");
       res.write("data: not json at all\n\n");
+    }
+
+    if (Array.isArray(rawEvents)) {
+      for (const payload of rawEvents) {
+        res.write(`data: ${typeof payload === "string" ? payload : JSON.stringify(payload)}\n\n`);
+        if (delayMs > 0) await pause(delayMs);
+      }
+      if (!omitDone) res.write("data: [DONE]\n\n");
+      res.end();
+      return;
     }
 
     // Reasoning first, exactly as a reasoning model streams through AiAS.

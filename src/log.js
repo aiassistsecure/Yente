@@ -197,6 +197,29 @@ export function createLogger({ pid = process.pid, quiet = false } = {}) {
         });
         return;
 
+      case "model_stream": {
+        const phase = meta.phase;
+        const fragment = String(meta.delta ?? "")
+          .replace(/\r/g, "\\r")
+          .replace(/\n/g, "\\n")
+          .replace(/\t/g, "\\t");
+        if (phase === "rejected") {
+          line("warn", "understand", c.yellow("parser rejected Muse's reply"), {
+            attempt: meta.attempt,
+            code: meta.code,
+            why: String(meta.message ?? "").slice(0, 140),
+            said: String(meta.sample ?? "").replace(/\r/g, "\\r").replace(/\n/g, "\\n").slice(0, 240),
+          });
+        } else {
+          line("info", "understand",
+            phase === "reasoning" ? c.dim("Muse thinks") : c.magenta("Muse says"), {
+              attempt: meta.attempt,
+              delta: fragment.slice(0, 240),
+            });
+        }
+        return;
+      }
+
       case "observed": {
         end(meta.evidence);
         stats.observed += 1;

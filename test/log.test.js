@@ -49,6 +49,23 @@ test("an unknown event still prints, with all of its metadata", () => {
   assert.match(out, /note=hello/);
 });
 
+test("the CLI shows Muse reasoning, content, and parser rejection without breaking lines", () => {
+  const logger = createLogger();
+  const out = capture(() => {
+    logger.log("info", "model_stream", { phase: "reasoning", attempt: 2, delta: "checking\nclaims" });
+    logger.log("info", "model_stream", { phase: "content", attempt: 2, delta: "<<<MAN\nIFEST>>>" });
+    logger.log("warn", "model_stream", {
+      phase: "rejected", attempt: 2, code: "TRUNCATED_ANSWER",
+      message: "manifest incomplete", sample: "<<<MANIFEST>>>\n{\"blocks\":2}\n<<<END>>>",
+    });
+  });
+  assert.match(out, /Muse thinks/);
+  assert.match(out, /Muse says/);
+  assert.match(out, /parser rejected Muse's reply/);
+  assert.match(out, /\\n/, "newlines are escaped so a delta cannot tear the dashboard apart");
+  assert.match(out, /TRUNCATED_ANSWER/);
+});
+
 test("in-flight work is named while it runs and released when it settles", () => {
   const logger = createLogger();
   const graph = { jobs: { counts: () => ({ READY: 2, RUNNING: 1 }) } };

@@ -5,6 +5,7 @@ venv/
 node_modules/
 *.gguf
 *.pdf
+!test-support/documents/resume.pdf
 *.env
 .env*
 !.env.example
