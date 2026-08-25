@@ -87,8 +87,12 @@ export function human(ms) {
   if (!Number.isFinite(n)) return "?";
   if (n < 1000) return `${Math.round(n)}ms`;
   if (n < 60_000) return `${(n / 1000).toFixed(1)}s`;
-  const m = Math.floor(n / 60_000);
-  return `${m}m${Math.round((n % 60_000) / 1000)}s`;
+
+  // Round to whole seconds FIRST, then split. Rounding the remainder on its own
+  // prints "2m60s" for 179.6s — the minutes and the seconds each rounded
+  // correctly and disagreed. Mark spotted it in a live heartbeat.
+  const seconds = Math.round(n / 1000);
+  return `${Math.floor(seconds / 60)}m${seconds % 60}s`;
 }
 
 /**
