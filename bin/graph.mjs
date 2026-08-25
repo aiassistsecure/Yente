@@ -114,6 +114,7 @@ const loops = createGraphLoops({
   graph, source, observer, manager, log, begin, end,
   signal: abort.signal,
   isStopping: () => stopping,
+  concurrency,
 });
 const { health } = loops;
 const mailSilenceMinutes = () => loops.mailSilenceMinutes();
@@ -169,7 +170,8 @@ log("info", "started", {
 const heartbeatMs = Number(process.env.YENTE_HEARTBEAT_MS || 30_000);
 const pulse = setInterval(() => {
   logger.heartbeat({
-    graph, health, mailConfigured: imapConfigured, mailSilenceMinutes: mailSilenceMinutes(),
+    graph, health, mailConfigured: imapConfigured, concurrency,
+    mailSilenceMinutes: mailSilenceMinutes(),
   });
 }, heartbeatMs);
 pulse.unref();

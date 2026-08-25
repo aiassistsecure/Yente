@@ -43,6 +43,11 @@ import { proposeIntroductions } from "./matching.js";
  * @param {AbortSignal} deps.signal  aborts every sleep and in-flight completion
  * @param {Function} deps.isStopping () => boolean — owned by the caller, because
  *                                   the merged process shuts the desk down too
+ * @param {number}   [deps.concurrency] how many observations may be in flight.
+ *   Passed in rather than read from the environment here, because the entry
+ *   point already logs this number at boot: two independent reads of one env var
+ *   agree by luck, and when they disagree the log names a value the code is not
+ *   using. One read, one owner, passed down.
  */
 export function createGraphLoops({
   graph,
@@ -55,6 +60,7 @@ export function createGraphLoops({
   signal,
   isStopping = () => false,
   intervals = {},
+  concurrency = undefined,
 }) {
   if (!graph) throw new TypeError("createGraphLoops requires the graph repositories");
   if (!observer) throw new TypeError("createGraphLoops requires an observer");
@@ -139,7 +145,9 @@ export function createGraphLoops({
   async function understand() {
     while (!isStopping()) {
       try {
-        const summary = await drainIntelligence({ graph, observer, log, signal });
+        const summary = await drainIntelligence({
+          graph, observer, log, signal, concurrency,
+        });
         health.ticks.understand += 1;
         if (summary.claimed > 0) {
           log("info", "understood", { ...summary, backlog: graph.jobs.counts().READY });
@@ -189,5 +197,7 @@ export function createGraphLoops({
     }
   }
 
-  return Object.freeze({ listen, understand, connect, health, mailSilenceMinutes, sleep });
+  return Object.freeze({
+    listen, understand, connect, health, mailSilenceMinutes, sleep, concurrency,
+  });
 }
