@@ -152,7 +152,7 @@ export async function drainIntelligence({
   log = () => {},
   signal,
 }) {
-  const jobs = graph.jobs.ready(limit);
+  const jobs = graph.jobs.ready(limit, now());
   if (jobs.length === 0) {
     return { claimed: 0, observed: 0, claims: 0, failed: 0, skipped: 0 };
   }
@@ -174,12 +174,17 @@ export async function drainIntelligence({
 
       const evidence = graph.evidence.get(job.evidenceId);
       if (!evidence?.text) {
-        // Enqueued but the text is gone or was never extractable. Fail it
-        // permanently rather than retrying forever against nothing.
+        // DETERMINISTIC. Evidence with no extractable text will not acquire any
+        // by being asked again, so this is the one case that stops immediately.
         graph.jobs.fail(job.evidenceId, {
-          at: now(), error: "evidence has no extractable text", maxAttempts: 0,
+          at: now(), error: "evidence has no extractable text", transient: false,
         });
         summary.failed += 1;
+        log("error", "job_failed_permanently", {
+          evidence: job.evidenceId,
+          reason: "no extractable text",
+          note: "will never be retried — the evidence itself is unusable",
+        });
         continue;
       }
 
@@ -230,18 +235,57 @@ export async function drainIntelligence({
           elapsed_ms: result.provenance.elapsedMs,
         });
       } catch (error) {
-        graph.jobs.fail(job.evidenceId, { at: now(), error });
+        // EVERYTHING ELSE IS TRANSIENT UNTIL PROVEN OTHERWISE.
+        //
+        // A gateway timeout, a truncated stream, an unparseable reply — none of
+        // those are facts about this email. They are facts about a moment, and
+        // giving up on them discards a real message's meaning because the
+        // network had a bad afternoon. So the job goes back to READY with a
+        // growing, STORED delay and is retried indefinitely.
+        //
+        // The one exception is a request that is itself wrong (an HTTP 400, an
+        // oversized prompt): repeating it unchanged is a slower way to fail.
+        const permanent = error?.code === "HTTP_ERROR"
+          && Number(error?.meta?.status ?? error?.meta?.failures?.[0]?.status ?? 0) === 400;
+
+        const updated = graph.jobs.fail(job.evidenceId, {
+          at: now(), error, transient: !permanent,
+        });
         summary.failed += 1;
-        log("warn", "observe_failed", {
-          evidence: job.evidenceId.slice(0, 16),
+
+        // LOUD, AND IT SAYS WHERE. An attempt count and a next-retry time turn
+        // "it isn't working" into "this evidence, this error, trying again in
+        // four minutes" — which is the difference between a mystery and a
+        // maintenance task.
+        log(permanent ? "error" : "warn",
+          permanent ? "job_failed_permanently" : "observe_failed", {
+          evidence: job.evidenceId,
           code: error?.code ?? "OBSERVE_FAILED",
           error: String(error?.message ?? error),
+          attempt: updated?.attempts ?? null,
+          ...(updated?.retryInMs
+            ? { retry_in_s: Math.round(updated.retryInMs / 1000) } : {}),
           // What the model actually sent, when it sent something unusable.
           // Reporting "malformed" while discarding the malformed thing is how a
           // gateway's own explanation went unread for a whole session.
           ...(error?.meta?.failures?.[0]?.sample
             ? { sample: error.meta.failures[0].sample.slice(0, 300) } : {}),
         });
+
+        // Escalate on a job that has been failing for a long time. Not a
+        // different behaviour — the same retry, said louder, because a backlog
+        // stuck for an hour is an operator problem and silence is how the last
+        // two-day outage happened.
+        if ((updated?.attempts ?? 0) === 5 || (updated?.attempts ?? 0) === 20) {
+          log("error", "job_stuck", {
+            evidence: job.evidenceId,
+            attempts: updated.attempts,
+            since: updated.enqueuedAt,
+            last_error: updated.lastError,
+            note: "still retrying with backoff; nothing is lost, but something "
+              + "upstream needs attention",
+          });
+        }
       }
     }
   }

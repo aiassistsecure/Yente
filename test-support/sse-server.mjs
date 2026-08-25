@@ -41,6 +41,10 @@ export async function startSseServer(script = {}) {
     stallForever = false,
     flushHeaders = false,
     omitDone = false,
+    // Reasoning deltas, streamed BEFORE any content — which is what a reasoning
+    // model actually does through the AiAS gateway. The client used to discard
+    // them, so a model that was working looked like a silent one.
+    reasoningDeltas = [],
     holdOpenMs = 0,
     keepAlive = false,
     splitEvents = false,
@@ -87,6 +91,14 @@ export async function startSseServer(script = {}) {
     if (keepAlive) {
       res.write(": keep-alive\n\n");
       res.write("data: not json at all\n\n");
+    }
+
+    // Reasoning first, exactly as a reasoning model streams through AiAS.
+    for (const delta of reasoningDeltas) {
+      res.write(`data: ${JSON.stringify({
+        choices: [{ index: 0, delta: { reasoning: delta }, finish_reason: null }],
+      })}\n\n`);
+      if (delayMs > 0) await pause(delayMs);
     }
 
     for (const [index, delta] of deltas.entries()) {

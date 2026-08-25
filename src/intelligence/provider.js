@@ -52,6 +52,7 @@ import { isTransient } from "../llm/client.js";
 import { ProtocolError, parseJsonBlock, BLOCK_TAGS } from "../protocol/blocks.js";
 import { verifyFact } from "../extract/spans.js";
 import { createObservationPrompt, OBSERVER_SYSTEM } from "./prompt.js";
+import { manifestStop, readManifestBlocks } from "./manifest.js";
 import {
   OBSERVATION_SCHEMA_VERSION,
   SchemaError,
@@ -66,7 +67,7 @@ import {
  * envelope shape still produces different beliefs, and a cache that ignored
  * that would serve stale interpretations forever.
  */
-export const PROMPT_VERSION = "obs_prompt_v1";
+export const PROMPT_VERSION = "obs_prompt_v2";
 
 /** Default attempts. Transient failures are retried; deterministic ones are not. */
 const DEFAULT_ATTEMPTS = 3;
@@ -132,30 +133,70 @@ export function inferenceKey({ sources, provider, model, schemaVersion, promptVe
  * and any drift shows up in `recovered`.
  */
 export function readEnvelope(text) {
+  // 1. THE MANIFEST PROTOCOL. Preferred, because it is the only shape in which a
+  //    truncated answer is detectable rather than silently partial.
   try {
-    return { raw: parseJsonBlock(text, BLOCK_TAGS.OBSERVATIONS), recovered: null };
-  } catch (blockError) {
-    // A fenced code block — the single most common deviation, and the one the
-    // output contract explicitly asks against, which models still do.
-    const fenced = /```(?:json)?\s*([\s\S]*?)```/i.exec(text);
-    if (fenced) {
-      try {
-        return { raw: JSON.parse(fenced[1]), recovered: "markdown_fence" };
-      } catch { /* fall through */ }
+    const { raw, declared, found, malformed, missing } = readManifestBlocks(text);
+
+    // NEVER ADVANCE ON AN INCOMPLETE ANSWER. The model said N blocks and fewer
+    // arrived: something was cut off. Storing three of four groups as though the
+    // message were fully understood is silent data loss, and it is exactly the
+    // failure this protocol exists to make impossible. A ProtocolError is
+    // transient, so the job goes back to the queue with backoff and is retried
+    // until it lands whole.
+    if (missing > 0) {
+      throw new ProtocolError(
+        "TRUNCATED_ANSWER",
+        `Manifest declared ${declared} blocks; ${found.length + malformed.length} arrived `
+        + `(${missing} missing). Refusing a partial graph.`,
+      );
+    }
+    // Same reasoning, one level down: a group that arrived as unparseable JSON is
+    // a group we do not have. Retry rather than store the rest as complete.
+    if (malformed.length > 0) {
+      throw new ProtocolError(
+        "MALFORMED_BLOCK",
+        `Unparseable block(s): ${malformed.map((m) => `${m.group} (${m.error})`).join("; ")}`,
+      );
+    }
+    return { raw, recovered: null, blocks: found };
+  } catch (manifestError) {
+    if (manifestError instanceof ProtocolError
+        && (manifestError.code === "TRUNCATED_ANSWER" || manifestError.code === "MALFORMED_BLOCK")) {
+      throw manifestError;   // a real incompleteness, not a shape we failed to read
     }
 
-    // A bare object, possibly with prose around it. Scan from the first brace to
-    // the last and let JSON.parse arbitrate — a substring that parses as JSON
-    // and validates as an envelope is an envelope.
-    const first = text.indexOf("{");
-    const last = text.lastIndexOf("}");
-    if (first !== -1 && last > first) {
-      try {
-        return { raw: JSON.parse(text.slice(first, last + 1)), recovered: "bare_json" };
-      } catch { /* fall through */ }
-    }
+    // 2. The obs_v1 single envelope, so a run mid-upgrade still works.
+    try {
+      return {
+        raw: parseJsonBlock(text, BLOCK_TAGS.OBSERVATIONS),
+        recovered: "single_block",
+        blocks: null,
+      };
+    } catch (blockError) {
+      // 3. A fenced code block — the most common deviation, and the one the
+      //    contract explicitly asks against, which models still do.
+      const fenced = /```(?:json)?\s*([\s\S]*?)```/i.exec(text);
+      if (fenced) {
+        try {
+          return { raw: JSON.parse(fenced[1]), recovered: "markdown_fence", blocks: null };
+        } catch { /* fall through */ }
+      }
 
-    throw blockError;
+      // 4. A bare object, possibly with prose around it.
+      const first = text.indexOf("{");
+      const last = text.lastIndexOf("}");
+      if (first !== -1 && last > first) {
+        try {
+          return {
+            raw: JSON.parse(text.slice(first, last + 1)),
+            recovered: "bare_json", blocks: null,
+          };
+        } catch { /* fall through */ }
+      }
+
+      throw blockError;
+    }
   }
 }
 
@@ -290,6 +331,10 @@ export function createIntelligenceProvider({
       try {
         const completion = await client.complete({
           prompt, system: OBSERVER_SYSTEM, prefill, signal,
+          // Stop the moment the manifest's declared block count is satisfied.
+          // Everything after that is a model that did not stop when asked, and
+          // on a reasoning model through PIN that is tens of seconds a message.
+          stopWhen: manifestStop,
         });
         lastText = completion.text;
 

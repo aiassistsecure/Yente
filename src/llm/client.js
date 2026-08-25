@@ -81,7 +81,20 @@ export function isTransient(error) {
 
 const DEFAULTS = Object.freeze({
   temperature: 0,
-  maxTokens: 2048,
+  // 2048 CHOKED THE MODEL, and it is the likeliest cause of every failure in the
+  // first live run.
+  //
+  // Measured through PIN: muse-local spends ~2,900 tokens on reasoning that is
+  // stripped before we see it. With a 2048 ceiling the model never reaches its
+  // answer at all — it burns the entire budget thinking and the reply arrives
+  // empty or cut mid-block. The generous budget is not extravagance; it is the
+  // minimum for a reasoning model whose visible answer starts after 3,000
+  // invisible tokens.
+  //
+  // Overridable, because the right number depends on the model and on num_ctx
+  // (input plus output must fit the context window — muse-local is pinned at
+  // 16384, so 8192 out leaves ample room for a long email plus an attachment).
+  maxTokens: Number(process.env.YENTE_LLM_MAX_TOKENS || 8192),
   firstTokenTimeoutMs: 60_000,
   streamTimeoutMs: 300_000,
   maxCharacters: 64_000,
@@ -131,6 +144,19 @@ async function streamCompletion({
   system,
   prefill,
   onToken,
+  // Called for each reasoning delta. Optional — the deadline is cleared whether
+  // or not anybody is listening, because liveness is not a subscription.
+  onReasoning,
+  // Stop reading when this says the answer is complete.
+  //
+  // A PREDICATE, not a string, because "complete" is a protocol question and
+  // this file deliberately knows nothing about the protocol. The observer passes
+  // a manifest-aware stop (the model declares how many blocks it will send and
+  // we count closings); a simpler caller can pass a first-delimiter check.
+  //
+  // Called with the accumulated text, never the delta, because a delimiter
+  // routinely arrives split across chunks ("<<<E" + "ND>>>").
+  stopWhen = null,
   signal,
   temperature = settings.temperature,
   maxTokens = settings.maxTokens,
@@ -255,6 +281,36 @@ async function streamCompletion({
         }
 
         const choice = parsed.choices?.[0];
+
+        // REASONING DELTAS ARE PROOF OF LIFE.
+        //
+        // A reasoning model emits its thinking FIRST, and the AiAS gateway
+        // streams that as `delta.reasoning` (its own feature — "stream
+        // reasoning-model thinking as delta.reasoning"). This reader only
+        // counted `delta.content`, so for the 30-90 seconds the model spends
+        // deliberating — measured at 70-80% of its total tokens — the client saw
+        // an empty stream and the first-token deadline expired.
+        //
+        // The result was FIRST_TOKEN_TIMEOUT on a model that was working
+        // perfectly, three times per message, on every message. The gateway was
+        // telling us it was alive in a field we discarded. That is the third
+        // time in this codebase a failure was really a reason thrown away, and
+        // the second time it was thrown away in this exact function.
+        //
+        // Thinking clears the deadline but is NOT appended to `text`: it is
+        // liveness, not content, and the envelope must never contain it.
+        const reasoning = choice?.delta?.reasoning
+          ?? choice?.delta?.reasoning_content
+          ?? choice?.delta?.thinking
+          ?? "";
+        if (reasoning) {
+          if (!sawToken) {
+            sawToken = true;
+            clearTimeout(firstTokenTimer);
+          }
+          onReasoning?.(reasoning);
+        }
+
         const delta = choice?.delta?.content ?? choice?.text ?? "";
         if (delta) {
           if (!sawToken) {
@@ -263,6 +319,18 @@ async function streamCompletion({
           }
           text += delta;
           onToken?.(delta);
+
+          // STOP WHEN THE ANSWER IS COMPLETE.
+          //
+          // The moment the protocol says we have everything, every further token
+          // is a model that did not stop when asked — commentary, another block,
+          // or a fresh reasoning trace. Reading it costs real seconds per message
+          // and can only make the artifact harder to parse.
+          if (stopWhen?.(text)) {
+            finishReason = finishReason ?? "stop_sequence";
+            break;
+          }
+
           if (text.length > settings.maxCharacters) {
             abort("budget");
             throw new ModelError(

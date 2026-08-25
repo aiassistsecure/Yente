@@ -336,17 +336,48 @@ export class IntelligenceJobRepository {
       state: JOB_STATES.READY,
       attempts: 0,
       lastError: null,
+      lastErrorAt: null,
       enqueuedAt: at,
+      // Eligibility, not order. A job with a future availableAt is READY but
+      // not yet due — which is how backoff survives a reboot: it is a stored
+      // timestamp, not a timer in a process that may not exist tomorrow.
+      availableAt: at,
       startedAt: null,
       finishedAt: null,
     });
     return { job: { ...job, id: evidenceId }, duplicate: false };
   }
 
-  ready(limit = 10) {
+  /**
+   * Jobs that are READY *and due*.
+   *
+   * The `availableAt` filter is what makes backoff real. Without it a failing
+   * job is retried on every drain — every 15 seconds — which is not persistence,
+   * it is a hot loop against something already known to be broken. That is how
+   * the old poller earned a fail2ban ban.
+   *
+   * Oldest-due first, so a job that has been waiting longest is not starved by a
+   * steady arrival of new mail.
+   */
+  ready(limit = 10, now = new Date().toISOString()) {
     return this.store
       .query(`FROM ${GRAPH_COLLECTIONS.INTELLIGENCE_JOBS} WHERE state = ${quote(JOB_STATES.READY)}`)
+      .filter((job) => !job.availableAt || String(job.availableAt) <= String(now))
+      .sort((a, b) => String(a.availableAt ?? a.enqueuedAt).localeCompare(
+        String(b.availableAt ?? b.enqueuedAt)))
       .slice(0, limit);
+  }
+
+  /**
+   * How long to wait before trying this job again.
+   *
+   * Exponential with a cap, and the cap matters more than the curve: an hour
+   * between attempts on a persistently broken job is cheap, and it means a
+   * gateway that comes back after a night of downtime is picked up within the
+   * hour without anybody restarting anything.
+   */
+  static backoffMs(attempts, { baseMs = 30_000, capMs = 60 * 60_000 } = {}) {
+    return Math.min(capMs, baseMs * 2 ** Math.max(0, Number(attempts) - 1));
   }
 
   /**
@@ -380,15 +411,42 @@ export class IntelligenceJobRepository {
    * because a diagnostic that reads a different name than the store writes is
    * how an SMTP timeout stayed invisible for a day.
    */
-  fail(evidenceId, { at, error, maxAttempts = 5 }) {
+  /**
+   * A job failed. Decide whether it can ever succeed, and when to try again.
+   *
+   * TRANSIENT FAILURES NEVER GIVE UP. A gateway timeout, a truncated stream, an
+   * unparseable reply — none of those are facts about the message, they are facts
+   * about a moment. Marking them FAILED after five tries throws away a real
+   * email's meaning because the network had a bad afternoon. So they go back to
+   * READY with a growing delay, indefinitely, and the delay is a STORED
+   * timestamp so it survives a restart.
+   *
+   * DETERMINISTIC failures stop immediately — evidence with no extractable text
+   * will not acquire any by being asked again.
+   *
+   * Either way the reason is written to `lastError`: the field the inspector
+   * reads, because a diagnostic that reads a different name than the store
+   * writes is how an SMTP timeout stayed invisible for a day.
+   */
+  fail(evidenceId, { at, error, transient = true, maxAttempts = null, backoff = {} }) {
     const job = this.store.get(GRAPH_COLLECTIONS.INTELLIGENCE_JOBS, evidenceId);
     if (!job) return null;
-    const exhausted = Number(job.attempts ?? 0) >= maxAttempts;
+
+    const attempts = Number(job.attempts ?? 0);
+    // maxAttempts is opt-in. Null means "keep trying" — the default for anything
+    // that might work later.
+    const giveUp = !transient
+      || (maxAttempts !== null && attempts >= maxAttempts);
+
+    const waitMs = IntelligenceJobRepository.backoffMs(attempts, backoff);
     return this.store.put(GRAPH_COLLECTIONS.INTELLIGENCE_JOBS, evidenceId, {
       ...job,
-      state: exhausted ? JOB_STATES.FAILED : JOB_STATES.READY,
-      finishedAt: exhausted ? at : null,
+      state: giveUp ? JOB_STATES.FAILED : JOB_STATES.READY,
+      finishedAt: giveUp ? at : null,
+      availableAt: giveUp ? null : new Date(Date.parse(at) + waitMs).toISOString(),
       lastError: String(error?.message ?? error),
+      lastErrorAt: at,
+      retryInMs: giveUp ? null : waitMs,
     });
   }
 
@@ -412,6 +470,9 @@ export class IntelligenceJobRepository {
     for (const job of stranded) {
       this.store.put(GRAPH_COLLECTIONS.INTELLIGENCE_JOBS, job.evidenceId, {
         ...job, state: JOB_STATES.READY, startedAt: null,
+        // Due immediately: a process that died mid-inference is not evidence
+        // that the work is failing, so it should not inherit a backoff.
+        availableAt: at,
         lastError: "requeued after restart",
       });
     }
