@@ -204,7 +204,14 @@ export function createLogger({ pid = process.pid, quiet = false } = {}) {
           .replace(/\n/g, "\\n")
           .replace(/\t/g, "\\t");
         if (phase === "rejected") {
-          line("warn", "understand", c.yellow("parser rejected Muse's reply"), {
+          const parserCodes = new Set([
+            "TRUNCATED_ANSWER", "MALFORMED_BLOCK", "MALFORMED_ARTIFACT",
+            "INVALID_JSON", "BAD_ENVELOPE", "BAD_CLAIM", "FIELD_MISSING",
+          ]);
+          const parserRejected = parserCodes.has(String(meta.code));
+          line("warn", "understand", c.yellow(
+            parserRejected ? "parser rejected Muse's reply" : "Muse attempt failed",
+          ), {
             attempt: meta.attempt,
             code: meta.code,
             why: String(meta.message ?? "").slice(0, 140),
