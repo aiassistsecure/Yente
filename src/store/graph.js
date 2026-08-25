@@ -112,6 +112,18 @@ export function observationKey(observation) {
     observation.evidenceId ?? "",
     observation.model ?? "",
     observation.schemaVersion ?? "",
+    // AUTHORITY AND `supersedes` ARE PART OF IDENTITY.
+    //
+    // Without them a retraction collides with the claim it retracts — same
+    // subject, predicate, object and evidence — so `append` saw a duplicate and
+    // silently wrote NOTHING. The correction appeared to succeed while the wrong
+    // claim stayed live: the worst available outcome for a feature whose entire
+    // promise is that a person's judgment sticks.
+    //
+    // Including them keeps a human retraction a distinct row, while a replay of
+    // the same model claim is still one row.
+    String(observation.authority ?? ""),
+    observation.supersedes ?? "",
   ].join(""));
 }
 

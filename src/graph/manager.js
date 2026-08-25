@@ -35,6 +35,9 @@
  */
 
 import { AUTHORITY, MATCH_ORIGIN, MATCH_STATES, matchPairKey } from "../store/graph.js";
+import {
+  buildIdentityIndex, resolveObservations, proposeIdentityMerges,
+} from "./identity.js";
 
 export const CORRECTION = Object.freeze({
   SAME_PERSON: "same_person",
@@ -76,26 +79,137 @@ export function createGraphManager({
       }));
   }
 
-  /** Everything known about one subject, projected, newest-authority-first. */
+  /**
+   * The profile. Everything known about one person or organisation.
+   *
+   * Reads through identity resolution, so a person with two addresses is ONE
+   * profile carrying claims that arrived under either — with `originalSubject`
+   * marking which, because a merge you cannot audit is a merge you have to
+   * trust.
+   */
   function subject(id) {
-    const projected = graph.observations.project(id);
-    const all = graph.observations.forSubject(id);
+    const resolved = resolveObservations(graph.observations.all());
+    const index = buildIdentityIndex(graph.observations.all());
+    const canonical = index.canonical(id);
+    const mine = resolved.filter((row) => row.subject === canonical);
+
+    // Project over the merged set rather than the stored one, or a claim that
+    // arrived under an alias would be invisible on the profile that owns it.
+    const byPredicate = new Map();
+    for (const row of mine) {
+      const key = `${row.predicate}${row.object ?? ""}`;
+      const held = byPredicate.get(key);
+      const better = !held
+        || row.authority > held.authority
+        || (row.authority === held.authority
+            && String(row.observedAt) > String(held.observedAt));
+      if (better) byPredicate.set(key, row);
+    }
+    const current = [...byPredicate.values()]
+      .filter((row) => !row.attributes?.retracted);
+
+    const evidenceIds = [...new Set(mine.map((r) => r.evidenceId).filter(Boolean))];
+
     return {
-      id,
-      // The current view — what Yente believes now.
-      current: projected,
-      // The full history, because §8 says a relationship is a memory and not a
-      // row, and because a person reviewing a claim wants to see what it
-      // replaced.
-      history: all.sort((a, b) => String(b.observedAt).localeCompare(String(a.observedAt))),
-      intents: projected.filter((row) => String(row.predicate).startsWith("intent:")),
+      id: canonical,
+      aliases: index.aliasesOf(canonical).filter((a) => a !== canonical),
+      name: current.find((r) => r.predicate === "is_person" || r.predicate === "is_organization")?.object ?? null,
+      kind: current.some((r) => r.predicate === "is_organization") ? "organization" : "person",
+      title: current.find((r) => r.attributes?.title)?.attributes?.title ?? null,
+      current,
+      intents: current.filter((row) => String(row.predicate).startsWith("intent:")),
+      // Who they are connected to, and how. §10's Connections.
+      relationships: current.filter((row) =>
+        ["works_at", "knows", "communicated_with", "introduced", "associated_with"]
+          .includes(row.predicate)),
+      opportunities: current.filter((row) => row.predicate === "opportunity"),
+      notes: current.filter((row) => row.predicate === "note"),
+      // §8: the memory, not the row. A reviewer wants to see what a claim
+      // replaced, and which claims were retracted.
+      history: mine
+        .slice()
+        .sort((a, b) => String(b.observedAt).localeCompare(String(a.observedAt))),
+      // The documents and messages this profile was built from — §10's Documents
+      // tab, and the answer to "where did all this come from".
+      evidence: evidenceIds
+        .map((eid) => {
+          const row = graph.evidence.get(eid);
+          return row ? { id: eid, ...row } : null;
+        })
+        .filter(Boolean)
+        .sort((a, b) => String(b.receivedAt).localeCompare(String(a.receivedAt))),
+      // §14, and labelled as what it is: a calculated signal, not a claim about
+      // the relationship itself.
+      signal: relationshipSignal(mine),
+      eligible: isEligible(canonical),
+      matches: graph.matches.all()
+        .filter((m) => m.seeker === canonical || m.offerer === canonical)
+        .map((m) => ({ ...m, id: matchPairKey(m) })),
     };
+  }
+
+  /**
+   * Yente's calculated relationship signal.
+   *
+   * §14 is explicit that this must not pretend to be psychological truth, so it
+   * is named for what it is and computed from things we can literally count:
+   * how many distinct messages, over how long, how recently, how many documents.
+   * No weighting theatre — the inputs are shown so a person can disagree with
+   * the number.
+   */
+  function relationshipSignal(rows) {
+    if (rows.length === 0) return { strength: "none", inputs: {} };
+    const evidence = new Set(rows.map((r) => r.evidenceId).filter(Boolean));
+    const dates = rows.map((r) => String(r.validFrom ?? r.observedAt)).filter(Boolean).sort();
+    const spanDays = dates.length > 1
+      ? Math.round((new Date(dates[dates.length - 1]) - new Date(dates[0])) / 86_400_000)
+      : 0;
+    const lastSeen = dates[dates.length - 1] ?? null;
+    const daysSince = lastSeen
+      ? Math.round((Date.now() - new Date(lastSeen).getTime()) / 86_400_000)
+      : null;
+
+    const inputs = {
+      distinctEvidence: evidence.size,
+      claims: rows.length,
+      spanDays,
+      daysSinceLast: daysSince,
+    };
+
+    // Deliberately coarse. A finer scale would imply a precision these inputs
+    // do not support.
+    let strength = "new";
+    if (evidence.size >= 8 && (daysSince ?? 999) < 30) strength = "strong";
+    else if (evidence.size >= 3) strength = "growing";
+    else if ((daysSince ?? 0) > 180) strength = "dormant";
+
+    return { strength, inputs, label: "Yente's calculated signal, not a fact about the person" };
+  }
+
+  /**
+   * Identity merges worth a human's attention. Never applied automatically —
+   * see the asymmetry note in identity.js: a missed merge costs a click, a
+   * wrong one conflates two people's intents and then introduces somebody on a
+   * claim they never made.
+   */
+  function pendingIdentities({ limit = 20 } = {}) {
+    const observations = graph.observations.all();
+    const evidenceById = {};
+    for (const id of new Set(observations.map((r) => r.evidenceId).filter(Boolean))) {
+      const row = graph.evidence.get(id);
+      if (row) evidenceById[id] = row;
+    }
+    return proposeIdentityMerges({
+      observations,
+      evidenceById,
+      existingSubjects: subjects().map((s) => s.id),
+    }).slice(0, limit);
   }
 
   /** Every subject the graph knows, with enough to render a list. */
   function subjects() {
     const bySubject = new Map();
-    for (const row of graph.observations.all()) {
+    for (const row of resolveObservations(graph.observations.all())) {
       const held = bySubject.get(row.subject) ?? {
         id: row.subject, claims: 0, lastSeen: null, name: null, kind: "person",
       };
@@ -319,9 +433,10 @@ export function createGraphManager({
   }
 
   return Object.freeze({
-    pendingMatches, subject, subjects, summary,
+    pendingMatches, pendingIdentities, subject, subjects, summary,
     confirmMatch, rejectMatch, createMatch,
     samePerson, differentPeople, wrongClaim, excludeSubject, isEligible,
+    relationshipSignal,
     actor,
   });
 }
