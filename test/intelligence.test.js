@@ -124,6 +124,35 @@ test("a grounded envelope survives shape and span checks with provenance", async
   assert.match(result.provenance.contentHash, /^[0-9a-f]{64}$/);
 });
 
+test("a uniquely shortened source id is canonicalized before grounding", async () => {
+  const sources = [{ id: "message:abc123", text: "I’m Mark Evans Jr." }];
+  const envelope = {
+    entities: [{
+      ref: "p1", kind: "PERSON", name: "Mark Evans Jr.",
+      source_id: "abc123", evidence: "Mark Evans Jr.", explicit: true, confidence: 1,
+    }],
+    intents: [], relationships: [], opportunities: [], observations: [],
+  };
+  const result = await provider(clientReturning(envelope)).observe({ sources });
+  assert.equal(result.verified.entities.length, 1);
+  assert.equal(result.verified.entities[0].sourceId, "message:abc123",
+    "the stored claim cites the canonical evidence id, never the model's shorthand");
+});
+
+test("short exact identity evidence is not rejected by the prose floor", async () => {
+  const sources = [{ id: "message:short", text: "I’m Mark" }];
+  const envelope = {
+    entities: [{
+      ref: "p1", kind: "PERSON", name: "Mark",
+      source_id: "message:short", evidence: "I’m Mark", explicit: true, confidence: 1,
+    }],
+    intents: [], relationships: [], opportunities: [], observations: [],
+  };
+  const result = await provider(clientReturning(envelope)).observe({ sources });
+  assert.equal(result.verified.entities.length, 1);
+  assert.equal(result.rejected.length, 0);
+});
+
 /* --- invention is rejected, and the rest is kept -------------------------- */
 
 test("a claim whose quote is not in the source is dropped, and its siblings are not", async () => {
@@ -223,6 +252,7 @@ test("Muse is asked for one OBSERVATIONS envelope, not a multi-block manifest", 
   assert.doesNotMatch(OBSERVER_SYSTEM, /MANIFEST block/i);
   assert.doesNotMatch(prompt, /MANIFEST block/i);
   assert.match(prompt, /entities, intents, relationships, opportunities, and\s+observations/i);
+  assert.match(prompt, /COMPLETE id[\s\S]*including its message: or attachment: prefix/i);
 });
 
 test("untrusted source text cannot forge a block boundary", () => {

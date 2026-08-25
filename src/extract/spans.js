@@ -58,10 +58,12 @@ export function normaliseForGrounding(value) {
  *
  * @param {object} fact  as emitted in a PROFILE_FACTS block
  * @param {Map<string,string>|Record<string,string>} sources  source id -> text
+ * @param {object} [options]
+ * @param {number} [options.minEvidenceChars] claim-specific evidence floor
  * @returns {{field: string, value: unknown, sourceId: string, evidence: string, offset: number, explicit: boolean, confidence: string}}
  * @throws {GroundingError}
  */
-export function verifyFact(fact, sources) {
+export function verifyFact(fact, sources, { minEvidenceChars = MIN_EVIDENCE_CHARS } = {}) {
   const lookup = sources instanceof Map ? sources : new Map(Object.entries(sources ?? {}));
 
   for (const required of ["field", "value", "source_id", "evidence"]) {
@@ -81,8 +83,8 @@ export function verifyFact(fact, sources) {
   }
 
   const evidence = String(fact.evidence);
-  if (normaliseForGrounding(evidence).length < MIN_EVIDENCE_CHARS) {
-    throw new GroundingError("EVIDENCE_TOO_SHORT", `Evidence must be at least ${MIN_EVIDENCE_CHARS} characters`, {
+  if (normaliseForGrounding(evidence).length < minEvidenceChars) {
+    throw new GroundingError("EVIDENCE_TOO_SHORT", `Evidence must be at least ${minEvidenceChars} characters`, {
       evidence,
     });
   }

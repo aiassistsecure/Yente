@@ -369,6 +369,20 @@ test("jobs stranded RUNNING by a crash are requeued on restart", () => {
   assert.equal(graph.jobs.counts().READY, 1);
 });
 
+test("a prompt bump requeues each old completed job exactly once", () => {
+  const { graph } = fresh();
+  graph.jobs.enqueue({ evidenceId: "e1", at: T0 });
+  graph.jobs.start("e1", T0);
+  graph.jobs.finish("e1", { at: T1, claims: 0, promptVersion: "obs_prompt_v3" });
+
+  assert.equal(graph.jobs.requeueForPrompt("obs_prompt_v4", T1), 1);
+  assert.equal(graph.jobs.counts().READY, 1);
+  graph.jobs.start("e1", T1);
+  graph.jobs.finish("e1", { at: T1, claims: 0, promptVersion: "obs_prompt_v4" });
+  assert.equal(graph.jobs.requeueForPrompt("obs_prompt_v4", T1), 0,
+    "an honest zero-claim message must not loop forever");
+});
+
 test("the drain writes observations and never lets one bad job stop the others", async () => {
   const { graph } = fresh();
   for (const id of ["e1", "e2", "e3"]) {

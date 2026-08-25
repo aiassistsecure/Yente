@@ -98,6 +98,16 @@ const observer = createIntelligenceProvider({
     event,
   ),
 });
+const promptRequeued = graph.jobs.requeueForPrompt(
+  observer.describe().promptVersion,
+  new Date().toISOString(),
+);
+if (promptRequeued > 0) {
+  log("info", "prompt_jobs_requeued", {
+    count: promptRequeued,
+    prompt: observer.describe().promptVersion,
+  });
+}
 log("info", "intelligence", {
   provider: providerName,
   model: clients.describe.model,
