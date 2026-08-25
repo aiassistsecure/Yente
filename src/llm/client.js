@@ -81,7 +81,20 @@ export function isTransient(error) {
 
 const DEFAULTS = Object.freeze({
   temperature: 0,
-  maxTokens: 2048,
+  // 2048 CHOKED THE MODEL, and it is the likeliest cause of every failure in the
+  // first live run.
+  //
+  // Measured through PIN: muse-local spends ~2,900 tokens on reasoning that is
+  // stripped before we see it. With a 2048 ceiling the model never reaches its
+  // answer at all — it burns the entire budget thinking and the reply arrives
+  // empty or cut mid-block. The generous budget is not extravagance; it is the
+  // minimum for a reasoning model whose visible answer starts after 3,000
+  // invisible tokens.
+  //
+  // Overridable, because the right number depends on the model and on num_ctx
+  // (input plus output must fit the context window — muse-local is pinned at
+  // 16384, so 8192 out leaves ample room for a long email plus an attachment).
+  maxTokens: Number(process.env.YENTE_LLM_MAX_TOKENS || 8192),
   firstTokenTimeoutMs: 60_000,
   streamTimeoutMs: 300_000,
   maxCharacters: 64_000,
