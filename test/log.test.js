@@ -174,6 +174,15 @@ test("a failed observation counts as a retry, and the heartbeat says so", () => 
   assert.match(out, /retries 1/);
 });
 
+test("network-wide proposals are not worded as matches for the operator", () => {
+  const logger = createLogger();
+  const out = capture(() => logger.log("info", "proposed", { queued: 4, pending: 7 }));
+  assert.match(out, /4 network-wide introduction candidates queued/);
+  assert.match(out, /pending_review=7/);
+  assert.doesNotMatch(out, /for you/,
+    "the operator reviews the network queue; the operator is not a match subject");
+});
+
 test("mail failure is the loudest thing on the line", () => {
   // Two days of silence went unnoticed once. The state of the sensor is not a
   // detail buried in a counter; it is the first field.
