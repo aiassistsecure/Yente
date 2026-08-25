@@ -77,6 +77,20 @@ test("an upstream silence is named as an attempt failure, not a parser rejection
   assert.match(out, /UPSTREAM_ERROR/);
 });
 
+test("tiny model tokens are coalesced into readable lines", () => {
+  const logger = createLogger();
+  const chunks = ["We", " can", " create", " entities", ": ", "org", "1", " is", " an", " organization", "."];
+  const out = capture(() => {
+    for (const delta of chunks) {
+      logger.log("info", "model_stream", { phase: "reasoning", attempt: 1, delta });
+    }
+    logger.log("info", "observed", { evidence: "message:x", claims: 1, elapsed_ms: 10 });
+  });
+  assert.equal((out.match(/Muse thinks/g) ?? []).length, 1,
+    "one token must not become one terminal line");
+  assert.match(out, /text=We can create entities: org1 is an organization\./);
+});
+
 test("in-flight work is named while it runs and released when it settles", () => {
   const logger = createLogger();
   const graph = { jobs: { counts: () => ({ READY: 2, RUNNING: 1 }) } };
