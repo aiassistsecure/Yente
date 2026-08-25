@@ -20,7 +20,8 @@
     "nedb-engine": "^2.8.2",
     "nodemailer": "^9.0.5",
     "sentinel-blocks": "1.0.2",
-    "unpdf": "^1.8.0"
+    "unpdf": "^1.8.0",
+    "postal-mime": "^3.0.0"
   },
   "devDependencies": {
     "smtp-server": "^3.19.3"
