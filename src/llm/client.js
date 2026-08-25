@@ -198,7 +198,21 @@ async function streamCompletion({
   const firstTokenTimer = setTimeout(() => {
     if (!sawToken) abort("first-token");
   }, settings.firstTokenTimeoutMs);
-  const streamTimer = setTimeout(() => abort("stream"), settings.streamTimeoutMs);
+
+  // STREAM TIMEOUT MEANS INACTIVITY, NOT TOTAL RUNTIME.
+  //
+  // muse-local can reason for more than five minutes while continuously sending
+  // deltas. The previous one-shot timer killed every such request at exactly
+  // 300s — including two healthy concurrent streams in the same heartbeat — and
+  // then retried the entire inference from zero. Reset this deadline on every
+  // reasoning or content delta. A moving stream may run as long as it needs; a
+  // socket that stops making progress is still bounded.
+  let streamTimer = null;
+  const resetStreamTimer = () => {
+    clearTimeout(streamTimer);
+    streamTimer = setTimeout(() => abort("stream"), settings.streamTimeoutMs);
+  };
+  resetStreamTimer();
 
   try {
     const messages = [];
@@ -326,6 +340,7 @@ async function streamCompletion({
             sawToken = true;
             clearTimeout(firstTokenTimer);
           }
+          resetStreamTimer();
           onReasoning?.(reasoning);
         }
 
@@ -339,6 +354,7 @@ async function streamCompletion({
             sawToken = true;
             clearTimeout(firstTokenTimer);
           }
+          resetStreamTimer();
           text += delta;
           onToken?.(delta);
 
@@ -427,7 +443,7 @@ function translateAbort(reason, error, partial) {
     return new ModelError(ModelErrorCode.FIRST_TOKEN_TIMEOUT, "The model produced no first token in time", meta);
   }
   if (reason === "stream") {
-    return new ModelError(ModelErrorCode.STREAM_TIMEOUT, "The model stream did not complete in time", meta);
+    return new ModelError(ModelErrorCode.STREAM_TIMEOUT, "The model stream stopped making progress", meta);
   }
   if (reason === "caller") {
     return new ModelError(ModelErrorCode.ABORTED, "The caller aborted the completion", meta);
