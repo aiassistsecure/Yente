@@ -66,6 +66,17 @@ test("the CLI shows Muse reasoning, content, and parser rejection without breaki
   assert.match(out, /TRUNCATED_ANSWER/);
 });
 
+test("an upstream silence is named as an attempt failure, not a parser rejection", () => {
+  const logger = createLogger();
+  const out = capture(() => logger.log("warn", "model_stream", {
+    phase: "rejected", attempt: 1, code: "UPSTREAM_ERROR",
+    message: "operator produced nothing for 90s", sample: null,
+  }));
+  assert.match(out, /Muse attempt failed/);
+  assert.doesNotMatch(out, /parser rejected/);
+  assert.match(out, /UPSTREAM_ERROR/);
+});
+
 test("in-flight work is named while it runs and released when it settles", () => {
   const logger = createLogger();
   const graph = { jobs: { counts: () => ({ READY: 2, RUNNING: 1 }) } };
