@@ -27,6 +27,13 @@ test("human() reads like a duration a person would say", () => {
   assert.equal(human(800), "800ms");
   assert.equal(human(48_213), "48.2s");
   assert.equal(human(74_000), "1m14s");
+
+  // The rollover. 179.6s used to print "2m60s": the minutes floored to 2 and the
+  // remainder rounded to 60, each correct on its own and wrong together. Round
+  // to whole seconds first, then split.
+  assert.equal(human(179_600), "3m0s");
+  assert.equal(human(239_600), "4m0s");
+  assert.equal(human(179_400), "2m59s");
   assert.equal(human(undefined), "?");
 });
 
