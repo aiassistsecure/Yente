@@ -346,6 +346,8 @@ test("live stream telemetry exposes content and an internal parser retry", async
   assert.deepEqual(events.map((event) => event.phase), [
     "reasoning", "content", "rejected", "content",
   ]);
+  assert.ok(events.every((event) => event.evidence === "msg-1"),
+    "every stream fragment carries the job identity so concurrent buffers cannot braid");
   assert.equal(events[2].code, "TRUNCATED_ANSWER");
   assert.equal(events[2].attempt, 1,
     "the rejection names the internal attempt instead of looking like one long hang");
