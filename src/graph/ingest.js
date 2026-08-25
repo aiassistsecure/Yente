@@ -44,6 +44,9 @@ export async function ingestMail({
   // Injected so the ordering test does not fork Python, and so a box without
   // the worker's dependencies still ingests mail bodies.
   attachments: extractAttachments = ingestAttachments,
+  // Optional side-effect owned by the merged runtime: founding-seat accounting.
+  // It runs only after evidence is durable and only for a new message.
+  onMessage = null,
 }) {
   const { messages, uidValidity, resynced } = await source.fetchNew();
 
@@ -89,6 +92,20 @@ export async function ingestMail({
       summary.duplicates += 1;
     } else {
       summary.recorded += 1;
+      if (onMessage) {
+        try {
+          await onMessage(message);
+        } catch (error) {
+          // Seat accounting must never cost the mailbox cursor or the evidence.
+          // Capacity-full and malformed-address failures are visible, then mail
+          // ingestion continues.
+          log("warn", "seat_claim_failed", {
+            from: message.from,
+            subject: message.subject,
+            error: String(error?.message ?? error),
+          });
+        }
+      }
       // Enqueue only for new evidence. A redelivered message must not pay for
       // inference twice — that is the expensive part of the whole system.
       const { duplicate: jobExisted } = graph.jobs.enqueue({

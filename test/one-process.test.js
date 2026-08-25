@@ -160,6 +160,15 @@ test("the boot line reports the model the client chose, not the env default", ()
   }
 });
 
+test("the merged process wires inbound mail to founding-seat accounting", () => {
+  const src = read("bin/yente.mjs");
+  assert.match(src, /claimSeatFromInbound/);
+  assert.match(src, /createGraphLoops\([\s\S]{0,500}onMessage:/,
+    "new inbox evidence must update the capacity ledger without a web form");
+  assert.match(src, /graph\.evidence\.all\(\)/,
+    "boot reconciles historical emails so existing members do not need to write again");
+});
+
 test("the heartbeat shows RUNNING against its ceiling", () => {
   // Three in flight when you asked for one is the difference between a setting
   // you made and a setting that took. Printing RUNNING alone hides it.

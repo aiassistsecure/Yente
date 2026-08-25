@@ -164,6 +164,10 @@ export class EvidenceRepository {
   get(id) {
     return this.store.get(GRAPH_COLLECTIONS.EVIDENCE, id) ?? null;
   }
+
+  all() {
+    return this.store.query(`FROM ${GRAPH_COLLECTIONS.EVIDENCE}`);
+  }
 }
 
 /* --- observations ------------------------------------------------------ */

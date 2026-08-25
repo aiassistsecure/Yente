@@ -61,6 +61,7 @@ export function createGraphLoops({
   isStopping = () => false,
   intervals = {},
   concurrency = undefined,
+  onMessage = null,
 }) {
   if (!graph) throw new TypeError("createGraphLoops requires the graph repositories");
   if (!observer) throw new TypeError("createGraphLoops requires an observer");
@@ -97,7 +98,7 @@ export function createGraphLoops({
     if (!source) return;
     while (!isStopping()) {
       try {
-        const summary = await ingestMail({ source, graph, log });
+        const summary = await ingestMail({ source, graph, log, onMessage });
         health.lastMailAt = new Date().toISOString();
         health.consecutiveMailFailures = 0;
         health.lastMailError = null;

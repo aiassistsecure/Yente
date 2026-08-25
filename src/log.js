@@ -63,6 +63,7 @@ const EVENT_CHANNEL = {
   requeued_stranded_jobs: "boot", mail_not_configured: "boot",
   imap_connected: "listen", imap_error: "listen", imap_idle_ended: "listen",
   ingested: "listen", listen_failed: "listen", mail_unreachable: "listen",
+  seat_claimed: "listen", seat_claim_failed: "listen", seats_backfilled: "boot",
   mail_uidvalidity_changed: "listen", mail_parse_failed: "listen",
   observe_started: "understand",
   observed: "understand", understood: "understand", observe_failed: "understand",
@@ -227,6 +228,12 @@ export function createLogger({ pid = process.pid, quiet = false } = {}) {
           });
         return;
 
+      case "seats_backfilled":
+        line("info", "boot", c.green("reconciled founding seats from inbox history"), {
+          count: meta.count,
+        });
+        return;
+
       case "imap_connected":
         line("info", "listen", `connected to ${meta.host}`, { mailbox: meta.mailbox });
         return;
@@ -243,6 +250,14 @@ export function createLogger({ pid = process.pid, quiet = false } = {}) {
         });
         return;
       }
+
+      case "seat_claimed":
+        line("info", "listen", c.green("founding seat claimed by email"), {
+          email: meta.email,
+          cohort: meta.cohort,
+          remaining: meta.remaining,
+        });
+        return;
 
       case "observe_started":
         begin("understand", meta.evidence,

@@ -11,6 +11,11 @@ import {
   openWaitlistRepository,
 } from "../src/waitlist/repository.js";
 import { subscribersToCsv } from "../src/waitlist/csv.js";
+import {
+  addressFromInbound,
+  claimSeatFromInbound,
+  cohortFromInbound,
+} from "../src/waitlist/inbound.js";
 
 function input(overrides = {}) {
   return {
@@ -39,6 +44,43 @@ test("capacity keeps the two 5,000-seat cohorts independent", () => {
   assert.equal(snapshot.cohorts.foundersDevelopers.full, true);
   assert.equal(snapshot.cohorts.investorsEmployers.joined, 1);
   assert.equal(snapshot.cohorts.investorsEmployers.remaining, 4_999);
+});
+
+test("founding-seat email subjects choose the correct side deterministically", () => {
+  assert.equal(
+    cohortFromInbound({ subject: "Founding seat — developer / founder", attachmentCount: 1 }),
+    COHORTS.FOUNDER_DEVELOPER,
+  );
+  assert.equal(
+    cohortFromInbound({ subject: "Founding seat — investor / employer / acquirer" }),
+    COHORTS.INVESTOR_EMPLOYER,
+  );
+  assert.equal(
+    cohortFromInbound({ subject: "Hello", attachments: [{ filename: "resume.docx" }] }),
+    COHORTS.FOUNDER_DEVELOPER,
+  );
+  assert.equal(cohortFromInbound({ subject: "Hello" }), null,
+    "ambiguity never spends a scarce seat");
+  assert.equal(addressFromInbound("Mark <Founders@VibeCode-101.com>"),
+    "founders@vibecode-101.com");
+});
+
+test("a resume email decrements one founding seat exactly once", () => {
+  const repository = openWaitlistRepository({ store: openInMemory() });
+  const message = {
+    from: "Mark <founders@vibecode-101.com>",
+    subject: "Founding seat — developer / founder",
+    attachments: [{ filename: "mark-resume.docx" }],
+  };
+  const first = claimSeatFromInbound({ repository, message });
+  const again = claimSeatFromInbound({ repository, message });
+
+  assert.equal(first.created, true);
+  assert.equal(again.created, false);
+  assert.equal(first.subscriber.source, "inbound_email");
+  assert.equal(first.capacity.cohorts.foundersDevelopers.remaining, 4_999);
+  assert.equal(again.capacity.cohorts.foundersDevelopers.remaining, 4_999,
+    "a reply or redelivery cannot spend a second seat");
 });
 
 test("embedded NEDB stores idempotent subscriber records and DAG-linked inbound events", () => {
