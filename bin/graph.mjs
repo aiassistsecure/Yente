@@ -92,6 +92,11 @@ const observer = createIntelligenceProvider({
   client: clients.extractionClient,
   provider: providerName,
   model: clients.describe.model,
+  onStream: (event) => log(
+    event.phase === "rejected" ? "warn" : "info",
+    "model_stream",
+    event,
+  ),
 });
 log("info", "intelligence", {
   provider: providerName,

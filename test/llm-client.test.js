@@ -3,6 +3,7 @@ import test from "node:test";
 import { getEventListeners } from "node:events";
 
 import { ModelErrorCode, createModelClient } from "../src/llm/client.js";
+import { manifestStop } from "../src/intelligence/manifest.js";
 import { startSseServer } from "../test-support/sse-server.mjs";
 
 async function withServer(script, run) {
@@ -54,6 +55,70 @@ test("events split across chunk boundaries are reassembled", async () => {
   await withServer({ deltas: ["alpha ", "beta ", "gamma"], splitEvents: true }, async (server) => {
     const result = await client(server.baseUrl).complete({ prompt: "p" });
     assert.equal(result.text, "alpha beta gamma");
+  });
+});
+
+test("Sentinel closings split across delta.content events are not lost", async () => {
+  // The socket can split an SSE event, and the model can also split the delimiter
+  // itself across separate deltas. Those are different boundaries. The existing
+  // splitEvents test covered only the first one.
+  await withServer({
+    deltas: [
+      '<<<MANIFEST>>>\n{"blocks":0}\n<<<E',
+      "ND",
+      ">>>",
+    ],
+    omitDone: true,
+    holdOpenMs: 2_000,
+  }, async (server) => {
+    const started = Date.now();
+    const result = await client(server.baseUrl).complete({ prompt: "p", stopWhen: manifestStop });
+    assert.equal(result.text, '<<<MANIFEST>>>\n{"blocks":0}\n<<<END>>>');
+    assert.equal(result.finishReason, "stop_sequence");
+    assert.ok(Date.now() - started < 1_000, "the split closing stops immediately when complete");
+  });
+});
+
+test("the one-block OBSERVATIONS reply stops on its split closing delimiter", async () => {
+  const envelope = '{"entities":[],"intents":[],"relationships":[],"opportunities":[],"observations":[]}';
+  await withServer({
+    deltas: ["<<<OBSERVATIONS>>>\n", envelope, "\n<<<E", "ND", ">>>"],
+    omitDone: true,
+    holdOpenMs: 2_000,
+  }, async (server) => {
+    const started = Date.now();
+    const result = await client(server.baseUrl).complete({ prompt: "p", stopWhen: manifestStop });
+    assert.equal(result.text, `<<<OBSERVATIONS>>>\n${envelope}\n<<<END>>>`);
+    assert.equal(result.finishReason, "stop_sequence");
+    assert.ok(Date.now() - started < 1_000);
+  });
+});
+
+test("content-part arrays are joined as text instead of becoming object strings", async () => {
+  await withServer({ rawEvents: [{
+    choices: [{
+      delta: { content: [
+        { type: "text", text: "<<<MANIFEST>>>\n" },
+        { type: "output_text", text: '{"blocks":0}\n<<<END>>>' },
+      ] },
+      finish_reason: "stop",
+    }],
+  }] }, async (server) => {
+    const result = await client(server.baseUrl).complete({ prompt: "p", stopWhen: manifestStop });
+    assert.equal(result.text, '<<<MANIFEST>>>\n{"blocks":0}\n<<<END>>>');
+    assert.doesNotMatch(result.text, /\[object Object\]/);
+  });
+});
+
+test("a final choice.message.content is not discarded", async () => {
+  await withServer({ rawEvents: [{
+    choices: [{
+      message: { role: "assistant", content: '<<<MANIFEST>>>\n{"blocks":0}\n<<<END>>>' },
+      finish_reason: "stop",
+    }],
+  }] }, async (server) => {
+    const result = await client(server.baseUrl).complete({ prompt: "p", stopWhen: manifestStop });
+    assert.equal(result.text, '<<<MANIFEST>>>\n{"blocks":0}\n<<<END>>>');
   });
 });
 

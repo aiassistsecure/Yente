@@ -282,6 +282,28 @@ async function streamCompletion({
 
         const choice = parsed.choices?.[0];
 
+        // NORMALISE THE GATEWAY'S TEXT SHAPES BEFORE THE PROTOCOL EVER SEES THEM.
+        //
+        // OpenAI's original streaming shape is `choice.delta.content: string`,
+        // but gateways also emit content-part arrays/objects and, on the final
+        // event, a non-streaming `choice.message.content`. The old reader accepted
+        // only the first shape. An array was concatenated as "[object Object]";
+        // a final message was ignored entirely. Both then surfaced downstream as
+        // MALFORMED_ARTIFACT / TRUNCATED_ANSWER, blaming the model for text the
+        // transport had discarded.
+        //
+        // One normaliser for content and reasoning keeps the accepted wire shapes
+        // identical. It deliberately extracts TEXT only — images, tool calls and
+        // unknown content parts have no place in Yente's observation envelope.
+        const reasoning = textFromWire(
+          choice?.delta?.reasoning
+          ?? choice?.delta?.reasoning_content
+          ?? choice?.delta?.thinking
+          ?? choice?.message?.reasoning
+          ?? choice?.message?.reasoning_content
+          ?? choice?.message?.thinking,
+        );
+
         // REASONING DELTAS ARE PROOF OF LIFE.
         //
         // A reasoning model emits its thinking FIRST, and the AiAS gateway
@@ -299,10 +321,6 @@ async function streamCompletion({
         //
         // Thinking clears the deadline but is NOT appended to `text`: it is
         // liveness, not content, and the envelope must never contain it.
-        const reasoning = choice?.delta?.reasoning
-          ?? choice?.delta?.reasoning_content
-          ?? choice?.delta?.thinking
-          ?? "";
         if (reasoning) {
           if (!sawToken) {
             sawToken = true;
@@ -311,7 +329,11 @@ async function streamCompletion({
           onReasoning?.(reasoning);
         }
 
-        const delta = choice?.delta?.content ?? choice?.text ?? "";
+        const delta = textFromWire(
+          choice?.delta?.content
+          ?? choice?.message?.content
+          ?? choice?.text,
+        );
         if (delta) {
           if (!sawToken) {
             sawToken = true;
@@ -374,6 +396,29 @@ async function streamCompletion({
     clearTimeout(streamTimer);
     releaseSignal();
   }
+}
+
+/**
+ * Extract text from the content shapes used by OpenAI-compatible gateways.
+ *
+ * Accepted:
+ *   "plain string"
+ *   { type: "text", text: "..." }
+ *   [{ type: "text", text: "..." }, { type: "output_text", text: "..." }]
+ *   nested `{ content: ... }` wrappers seen on some proxy final events
+ *
+ * Unknown/non-text parts are ignored rather than string-coerced. In particular,
+ * an object must never become "[object Object]" inside a Sentinel artifact.
+ */
+function textFromWire(value) {
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) return value.map(textFromWire).join("");
+  if (!value || typeof value !== "object") return "";
+  if (typeof value.text === "string") return value.text;
+  if (typeof value.content === "string" || Array.isArray(value.content)) {
+    return textFromWire(value.content);
+  }
+  return "";
 }
 
 function translateAbort(reason, error, partial) {

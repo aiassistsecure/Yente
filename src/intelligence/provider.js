@@ -67,7 +67,7 @@ import {
  * envelope shape still produces different beliefs, and a cache that ignored
  * that would serve stale interpretations forever.
  */
-export const PROMPT_VERSION = "obs_prompt_v2";
+export const PROMPT_VERSION = "obs_prompt_v3";
 
 /** Default attempts. Transient failures are retried; deterministic ones are not. */
 const DEFAULT_ATTEMPTS = 3;
@@ -283,6 +283,10 @@ export function createIntelligenceProvider({
   prefill = process.env.YENTE_LLM_PREFILL || null,
   attempts: maxAttempts = DEFAULT_ATTEMPTS,
   retryDelayMs = DEFAULT_RETRY_DELAY_MS,
+  // Optional live telemetry. The transport still returns only validated text;
+  // this observer lets the operator see whether Muse is reasoning, answering,
+  // or repeatedly producing a shape the parser rejects.
+  onStream = null,
   now = () => new Date().toISOString(),
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 }) {
@@ -331,6 +335,8 @@ export function createIntelligenceProvider({
       try {
         const completion = await client.complete({
           prompt, system: OBSERVER_SYSTEM, prefill, signal,
+          onReasoning: (delta) => onStream?.({ phase: "reasoning", delta, attempt, contentHash }),
+          onToken: (delta) => onStream?.({ phase: "content", delta, attempt, contentHash }),
           // Stop the moment the manifest's declared block count is satisfied.
           // Everything after that is a model that did not stop when asked, and
           // on a reasoning model through PIN that is tens of seconds a message.
@@ -381,7 +387,7 @@ export function createIntelligenceProvider({
           error instanceof ProtocolError ||
           error instanceof SchemaError;
 
-        failures.push({
+        const failure = {
           code: error?.code ?? "OBSERVE_FAILED",
           message: String(error?.message ?? error),
           transient: retryable,
@@ -391,7 +397,9 @@ export function createIntelligenceProvider({
           // while the gateway's own explanation sat unread in the stream. If a
           // reply cannot be parsed, the reply is the evidence.
           sample: typeof lastText === "string" ? lastText.slice(0, 1_200) : null,
-        });
+        };
+        failures.push(failure);
+        onStream?.({ phase: "rejected", ...failure, contentHash });
 
         if (!retryable || attempt >= maxAttempts) {
           throw new IntelligenceError(

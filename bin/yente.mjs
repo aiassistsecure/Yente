@@ -178,6 +178,15 @@ const observer = createIntelligenceProvider({
   client: clients.extractionClient,
   provider: providerName,
   model: clients.describe.model,
+  // The terminal is the operator console. Show the stream here rather than
+  // hiding it inside the HTTP adapter: reasoning proves liveness, content shows
+  // the exact Sentinel text the parser will receive, and a rejection names the
+  // internal retry that otherwise looks like one multi-minute hang.
+  onStream: (event) => log(
+    event.phase === "rejected" ? "warn" : "info",
+    "model_stream",
+    event,
+  ),
 });
 
 // Read ONCE, here, and passed down. The previous version read this env var in
