@@ -60,7 +60,7 @@ const CHANNELS = {
 /** Which channel an event belongs to. Unknown events land in `store`. */
 const EVENT_CHANNEL = {
   started: "boot", manager: "boot", intelligence: "boot",
-  requeued_stranded_jobs: "boot", mail_not_configured: "boot",
+  requeued_stranded_jobs: "boot", prompt_jobs_requeued: "boot", mail_not_configured: "boot",
   imap_connected: "listen", imap_error: "listen", imap_idle_ended: "listen",
   ingested: "listen", listen_failed: "listen", mail_unreachable: "listen",
   seat_claimed: "listen", seat_claim_failed: "listen", seats_backfilled: "boot",
@@ -226,6 +226,13 @@ export function createLogger({ pid = process.pid, quiet = false } = {}) {
             concurrency: meta.concurrency,
             third_party: meta.third_party ? c.red("YES") : "no",
           });
+        return;
+
+      case "prompt_jobs_requeued":
+        line("info", "boot", c.cyan("requeued evidence for the repaired prompt"), {
+          count: meta.count,
+          prompt: meta.prompt,
+        });
         return;
 
       case "seats_backfilled":

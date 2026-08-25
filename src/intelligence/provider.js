@@ -67,7 +67,7 @@ import {
  * envelope shape still produces different beliefs, and a cache that ignored
  * that would serve stale interpretations forever.
  */
-export const PROMPT_VERSION = "obs_prompt_v3";
+export const PROMPT_VERSION = "obs_prompt_v4";
 
 /** Default attempts. Transient failures are retried; deterministic ones are not. */
 const DEFAULT_ATTEMPTS = 3;
@@ -99,6 +99,59 @@ export function inferenceKey({ sources, provider, model, schemaVersion, promptVe
     context ? JSON.stringify(context, Object.keys(context).sort()) : "",
     canonical,
   ].join(""));
+}
+
+/**
+ * Source-id aliases that remain unambiguous.
+ *
+ * Muse repeatedly copied a SOURCE id while dropping only the transport prefix:
+ * `message:6e2b...` became `6e2b...`. The evidence quote was exact, but every
+ * claim then failed UNKNOWN_SOURCE and a nine-minute completion became 0 claims.
+ * Accept that deterministic shorthand only when it maps to exactly one source;
+ * an invented or ambiguous id still has nowhere to land.
+ */
+export function sourceAliases(sources) {
+  const aliases = new Map();
+  const ambiguous = new Set();
+  const add = (alias, canonical) => {
+    if (!alias) return;
+    const held = aliases.get(alias);
+    if (held && held !== canonical) {
+      aliases.delete(alias);
+      ambiguous.add(alias);
+      return;
+    }
+    if (!ambiguous.has(alias)) aliases.set(alias, canonical);
+  };
+
+  for (const source of sources ?? []) {
+    const canonical = String(source.id);
+    add(canonical, canonical);
+    const colon = canonical.indexOf(":");
+    if (colon >= 0) add(canonical.slice(colon + 1), canonical);
+  }
+  return aliases;
+}
+
+/** Rewrite accepted aliases to the canonical id before schema and span checks. */
+export function canonicalizeSourceIds(raw, aliases) {
+  if (!raw || typeof raw !== "object" || !aliases) return raw;
+  const copy = structuredClone(raw);
+  for (const group of CLAIM_GROUPS) {
+    if (!Array.isArray(copy[group])) continue;
+    for (const claim of copy[group]) {
+      if (!claim || typeof claim !== "object") continue;
+      const field = claim.source_id !== undefined ? "source_id"
+        : claim.sourceId !== undefined ? "sourceId" : null;
+      if (!field) continue;
+      const canonical = aliases.get(String(claim[field]));
+      if (canonical) claim[field] = canonical;
+    }
+  }
+  if (Array.isArray(copy.evidence_refs)) {
+    copy.evidence_refs = copy.evidence_refs.map((id) => aliases.get(String(id)) ?? id);
+  }
+  return copy;
 }
 
 /**
@@ -243,6 +296,10 @@ function verifyEnvelope(envelope, sourceTextById) {
           evidence: claim.evidence,
         },
         sourceTextById,
+        // Identity evidence is often legitimately short: "I’m Mark", "Bob",
+        // "Acme". Keep the ordinary 12-character floor for substantive intents,
+        // relationships and notes; an exact entity name only needs four.
+        { minEvidenceChars: group === "entities" ? 4 : undefined },
       );
       verified[group].push(claim);
     } catch (error) {
@@ -324,6 +381,7 @@ export function createIntelligenceProvider({
 
     const sourceTextById = new Map(sources.map((source) => [source.id, source.text]));
     const knownSourceIds = new Set(sourceTextById.keys());
+    const aliases = sourceAliases(sources);
     // Stable identity for stream telemetry. Concurrency means several attempt=1
     // streams coexist; attempt alone cannot keep their token buffers separate.
     const evidence = sources.map((source) => source.id).sort().join(",");
@@ -354,7 +412,8 @@ export function createIntelligenceProvider({
         // Shape, then meaning. A parse or schema failure is the model answering
         // in the wrong form, which is worth another attempt; an ungrounded claim
         // is the model inventing, which is not.
-        const { raw, recovered } = readEnvelope(completion.text);
+        const { raw: receivedRaw, recovered } = readEnvelope(completion.text);
+        const raw = canonicalizeSourceIds(receivedRaw, aliases);
         const { envelope, rejected: schemaRejected, discrepancies } =
           validateEnvelope(raw, { knownSourceIds });
         const { verified, rejected: groundingRejected } =

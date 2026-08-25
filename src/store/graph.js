@@ -400,12 +400,38 @@ export class IntelligenceJobRepository {
     });
   }
 
-  finish(evidenceId, { at, claims = 0 }) {
+  finish(evidenceId, { at, claims = 0, promptVersion = null }) {
     const job = this.store.get(GRAPH_COLLECTIONS.INTELLIGENCE_JOBS, evidenceId);
     if (!job) return null;
     return this.store.put(GRAPH_COLLECTIONS.INTELLIGENCE_JOBS, evidenceId, {
-      ...job, state: JOB_STATES.DONE, finishedAt: at, claims, lastError: null,
+      ...job, state: JOB_STATES.DONE, finishedAt: at, claims, promptVersion, lastError: null,
     });
+  }
+
+  /**
+   * Reprocess evidence when the observation prompt changes materially.
+   *
+   * Old jobs did not record promptVersion, so they are intentionally included
+   * once. After they finish under the current version they stay DONE, including
+   * honest zero-claim messages — no infinite replay of genuinely empty mail.
+   */
+  requeueForPrompt(promptVersion, at) {
+    let count = 0;
+    for (const job of this.store.query(`FROM ${GRAPH_COLLECTIONS.INTELLIGENCE_JOBS}`)) {
+      if (job.state !== JOB_STATES.DONE || job.promptVersion === promptVersion) continue;
+      this.store.put(GRAPH_COLLECTIONS.INTELLIGENCE_JOBS, job.evidenceId, {
+        ...job,
+        state: JOB_STATES.READY,
+        availableAt: at,
+        startedAt: null,
+        finishedAt: null,
+        lastError: null,
+        lastErrorAt: null,
+        retryInMs: null,
+      });
+      count += 1;
+    }
+    return count;
   }
 
   /**

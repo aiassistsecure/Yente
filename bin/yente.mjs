@@ -216,6 +216,21 @@ const observer = createIntelligenceProvider({
 // looked exactly like a setting that worked.
 const concurrency = Number(process.env.YENTE_INTELLIGENCE_CONCURRENCY || 3);
 
+// Prompt v4 repairs the source-id prefix drift that turned valid streamed claims
+// into 0 stored claims. Requeue every DONE job produced by an older/unknown
+// prompt exactly once; the finished job records this version so empty evidence
+// does not loop forever.
+const promptRequeued = graph.jobs.requeueForPrompt(
+  observer.describe().promptVersion,
+  new Date().toISOString(),
+);
+if (promptRequeued > 0) {
+  log("info", "prompt_jobs_requeued", {
+    count: promptRequeued,
+    prompt: observer.describe().promptVersion,
+  });
+}
+
 log("info", "intelligence", {
   provider: providerName,
   // From the CLIENT, not from the environment. `process.env.YENTE_MODEL || "..."`

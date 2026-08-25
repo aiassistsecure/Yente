@@ -246,7 +246,10 @@ export async function drainIntelligence({
           if (!duplicate) written += 1;
         }
 
-        graph.jobs.finish(job.evidenceId, { at: now(), claims: written });
+        graph.jobs.finish(job.evidenceId, {
+          at: now(), claims: written,
+          promptVersion: result.provenance.promptVersion ?? null,
+        });
         summary.observed += 1;
         summary.claims += written;
 

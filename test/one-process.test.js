@@ -167,6 +167,8 @@ test("the merged process wires inbound mail to founding-seat accounting", () => 
     "new inbox evidence must update the capacity ledger without a web form");
   assert.match(src, /graph\.evidence\.all\(\)/,
     "boot reconciles historical emails so existing members do not need to write again");
+  assert.match(src, /requeueForPrompt/,
+    "jobs completed under the broken source-id prompt are reprocessed once");
 });
 
 test("the heartbeat shows RUNNING against its ceiling", () => {
