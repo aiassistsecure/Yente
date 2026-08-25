@@ -360,8 +360,8 @@ export function createLogger({ pid = process.pid, quiet = false } = {}) {
       case "proposed":
         stats.matches += Number(meta.queued ?? 0);
         line("info", "connect",
-          `${c.bold(meta.queued)} introduction${meta.queued === 1 ? "" : "s"} for you`, {
-            pending: meta.pending,
+          `${c.bold(meta.queued)} network-wide introduction candidate${meta.queued === 1 ? "" : "s"} queued`, {
+            pending_review: meta.pending,
           });
         return;
 
