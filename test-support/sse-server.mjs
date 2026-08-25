@@ -54,6 +54,9 @@ export async function startSseServer(script = {}) {
     // When supplied, these are emitted verbatim as SSE data events instead of
     // synthesising the canonical delta.content string shape below.
     rawEvents = null,
+    // Send the configured deltas, then leave the socket open with no further
+    // progress. Used to distinguish an inactivity timeout from total runtime.
+    stallAfterDeltas = false,
   } = script;
 
   const requests = [];
@@ -135,6 +138,8 @@ export async function startSseServer(script = {}) {
       }
       if (delayMs > 0) await pause(delayMs);
     }
+
+    if (stallAfterDeltas) return;
 
     // A gateway that finishes the completion and then just sits there. Not
     // hypothetical: AiAS does not reliably send `[DONE]`, so a client waiting

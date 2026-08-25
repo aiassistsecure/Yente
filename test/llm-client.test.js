@@ -190,6 +190,43 @@ test("a model that never sends headers at all also trips the deadline", async ()
   });
 });
 
+test("an active stream may outlive the stream timeout while it keeps making progress", async () => {
+  // Four deltas over ~90ms with a 40ms timeout. A one-shot wall timer kills this
+  // at 40ms; an inactivity timer resets on each delta and lets it finish.
+  await withServer({ deltas: ["a", "b", "c", "d"], delayMs: 30 }, async (server) => {
+    const started = Date.now();
+    const result = await client(server.baseUrl, {
+      firstTokenTimeoutMs: 100,
+      streamTimeoutMs: 40,
+    }).complete({ prompt: "p" });
+    assert.equal(result.text, "abcd");
+    assert.ok(Date.now() - started >= 80,
+      "the request ran longer than the inactivity window without being killed");
+  });
+});
+
+test("a stream that goes silent after progress still times out", async () => {
+  await withServer({
+    deltas: ["alive"],
+    finishReason: null,
+    stallAfterDeltas: true,
+    flushHeaders: true,
+  }, async (server) => {
+    await assert.rejects(
+      client(server.baseUrl, {
+        firstTokenTimeoutMs: 100,
+        streamTimeoutMs: 50,
+      }).complete({ prompt: "p" }),
+      (error) => {
+        assert.equal(error.code, ModelErrorCode.STREAM_TIMEOUT);
+        assert.match(error.message, /stopped making progress/);
+        assert.equal(error.meta.partial, "alive");
+        return true;
+      },
+    );
+  });
+});
+
 test("a run that blows its character budget is cut off at the budget", async () => {
   await withServer({ deltas: ["x".repeat(50), "y".repeat(50), "z".repeat(50)] }, async (server) => {
     await assert.rejects(
