@@ -324,6 +324,9 @@ export function createIntelligenceProvider({
 
     const sourceTextById = new Map(sources.map((source) => [source.id, source.text]));
     const knownSourceIds = new Set(sourceTextById.keys());
+    // Stable identity for stream telemetry. Concurrency means several attempt=1
+    // streams coexist; attempt alone cannot keep their token buffers separate.
+    const evidence = sources.map((source) => source.id).sort().join(",");
     const prompt = createObservationPrompt({ sources, context });
 
     const failures = [];
@@ -335,8 +338,12 @@ export function createIntelligenceProvider({
       try {
         const completion = await client.complete({
           prompt, system: OBSERVER_SYSTEM, prefill, signal,
-          onReasoning: (delta) => onStream?.({ phase: "reasoning", delta, attempt, contentHash }),
-          onToken: (delta) => onStream?.({ phase: "content", delta, attempt, contentHash }),
+          onReasoning: (delta) => onStream?.({
+            phase: "reasoning", delta, attempt, evidence, contentHash,
+          }),
+          onToken: (delta) => onStream?.({
+            phase: "content", delta, attempt, evidence, contentHash,
+          }),
           // Stop the moment the manifest's declared block count is satisfied.
           // Everything after that is a model that did not stop when asked, and
           // on a reasoning model through PIN that is tens of seconds a message.
@@ -399,7 +406,7 @@ export function createIntelligenceProvider({
           sample: typeof lastText === "string" ? lastText.slice(0, 1_200) : null,
         };
         failures.push(failure);
-        onStream?.({ phase: "rejected", ...failure, contentHash });
+        onStream?.({ phase: "rejected", ...failure, evidence, contentHash });
 
         if (!retryable || attempt >= maxAttempts) {
           throw new IntelligenceError(

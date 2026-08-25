@@ -52,10 +52,14 @@ test("an unknown event still prints, with all of its metadata", () => {
 test("the CLI shows Muse reasoning, content, and parser rejection without breaking lines", () => {
   const logger = createLogger();
   const out = capture(() => {
-    logger.log("info", "model_stream", { phase: "reasoning", attempt: 2, delta: "checking\nclaims" });
-    logger.log("info", "model_stream", { phase: "content", attempt: 2, delta: "<<<MAN\nIFEST>>>" });
+    logger.log("info", "model_stream", {
+      phase: "reasoning", evidence: "message:x", attempt: 2, delta: "checking\nclaims",
+    });
+    logger.log("info", "model_stream", {
+      phase: "content", evidence: "message:x", attempt: 2, delta: "<<<MAN\nIFEST>>>",
+    });
     logger.log("warn", "model_stream", {
-      phase: "rejected", attempt: 2, code: "TRUNCATED_ANSWER",
+      phase: "rejected", evidence: "message:x", attempt: 2, code: "TRUNCATED_ANSWER",
       message: "manifest incomplete", sample: "<<<MANIFEST>>>\n{\"blocks\":2}\n<<<END>>>",
     });
   });
@@ -82,13 +86,37 @@ test("tiny model tokens are coalesced into readable lines", () => {
   const chunks = ["We", " can", " create", " entities", ": ", "org", "1", " is", " an", " organization", "."];
   const out = capture(() => {
     for (const delta of chunks) {
-      logger.log("info", "model_stream", { phase: "reasoning", attempt: 1, delta });
+      logger.log("info", "model_stream", {
+        phase: "reasoning", evidence: "message:x", attempt: 1, delta,
+      });
     }
     logger.log("info", "observed", { evidence: "message:x", claims: 1, elapsed_ms: 10 });
   });
   assert.equal((out.match(/Muse thinks/g) ?? []).length, 1,
     "one token must not become one terminal line");
   assert.match(out, /text=We can create entities: org1 is an organization\./);
+});
+
+test("concurrent attempt-one streams never braid their tokens together", () => {
+  const logger = createLogger();
+  const out = capture(() => {
+    logger.log("info", "model_stream", {
+      phase: "reasoning", evidence: "message:A", attempt: 1, delta: "Alpha ",
+    });
+    logger.log("info", "model_stream", {
+      phase: "reasoning", evidence: "message:B", attempt: 1, delta: "Bravo ",
+    });
+    logger.log("info", "model_stream", {
+      phase: "reasoning", evidence: "message:A", attempt: 1, delta: "one\n",
+    });
+    logger.log("info", "model_stream", {
+      phase: "reasoning", evidence: "message:B", attempt: 1, delta: "two\n",
+    });
+  });
+  assert.match(out, /evidence=message:A.*text=Alpha one/);
+  assert.match(out, /evidence=message:B.*text=Bravo two/);
+  assert.doesNotMatch(out, /Alpha Bravo|Bravo Alpha/,
+    "same attempt number is not a stream identity");
 });
 
 test("in-flight work is named while it runs and released when it settles", () => {

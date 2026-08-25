@@ -120,10 +120,10 @@ export function createLogger({ pid = process.pid, quiet = false } = {}) {
   const inFlight = new Map();      // key -> { channel, what, since }
   // Model tokens arrive as tiny fragments ("org", "1", ":", " ORGAN"). Printing
   // one terminal line per token turns the operator console into a firehose and
-  // pushes the heartbeat off screen. Buffer by phase+attempt and emit readable
-  // logical lines instead.
+  // pushes the heartbeat off screen. Buffer by evidence+attempt+phase and emit
+  // readable logical lines instead. Evidence is load-bearing: four concurrent
+  // attempt=1 streams must never be braided into one sentence.
   const modelStreamBuffers = new Map();
-  let activeModelStreamKey = null;
   const stats = {
     ingested: 0, documents: 0, observed: 0, claims: 0,
     failures: 0, retries: 0, matches: 0, decisions: 0,
@@ -145,11 +145,12 @@ export function createLogger({ pid = process.pid, quiet = false } = {}) {
     );
   }
 
-  function printModelStream(phase, attempt, text) {
+  function printModelStream(phase, attempt, evidence, text) {
     const clean = String(text ?? "").replace(/\r/g, "").trim();
     if (!clean) return;
     line("info", "understand",
       phase === "reasoning" ? c.dim("Muse thinks") : c.magenta("Muse says"), {
+        evidence: String(evidence ?? "").slice(0, 20) || undefined,
         attempt,
         text: clean,
       });
@@ -158,26 +159,35 @@ export function createLogger({ pid = process.pid, quiet = false } = {}) {
   function flushModelStream(key) {
     const buffered = modelStreamBuffers.get(key);
     if (!buffered) return;
-    printModelStream(buffered.phase, buffered.attempt, buffered.text);
+    printModelStream(
+      buffered.phase, buffered.attempt, buffered.evidence, buffered.text,
+    );
     modelStreamBuffers.delete(key);
-    if (activeModelStreamKey === key) activeModelStreamKey = null;
   }
 
   function flushAllModelStreams() {
     for (const key of [...modelStreamBuffers.keys()]) flushModelStream(key);
   }
 
+  function flushModelStreamsFor(evidence, attempt = null) {
+    const prefix = `${String(evidence ?? "unknown")}:`;
+    for (const [key, buffered] of [...modelStreamBuffers.entries()]) {
+      if (!key.startsWith(prefix)) continue;
+      if (attempt !== null && buffered.attempt !== Number(attempt)) continue;
+      flushModelStream(key);
+    }
+  }
+
   function appendModelStream(meta) {
     const phase = meta.phase === "reasoning" ? "reasoning" : "content";
     const attempt = Number(meta.attempt ?? 0);
-    const key = `${attempt}:${phase}`;
+    const evidence = String(meta.evidence ?? meta.contentHash ?? "unknown");
+    const base = `${evidence}:${attempt}`;
+    const key = `${base}:${phase}`;
 
-    // Keep reasoning and answer visually separate even when the gateway changes
-    // channel without a trailing newline.
-    if (activeModelStreamKey && activeModelStreamKey !== key) {
-      flushModelStream(activeModelStreamKey);
-    }
-    activeModelStreamKey = key;
+    // Keep one job's reasoning and answer visually separate without touching any
+    // other job currently streaming at the same attempt number.
+    if (phase === "content") flushModelStream(`${base}:reasoning`);
 
     let text = (modelStreamBuffers.get(key)?.text ?? "") + String(meta.delta ?? "");
     // Emit complete logical lines immediately. For long unbroken output, wrap at
@@ -185,10 +195,10 @@ export function createLogger({ pid = process.pid, quiet = false } = {}) {
     while (text.includes("\n") || text.length >= 240) {
       const newline = text.indexOf("\n");
       const cut = newline >= 0 && newline < 240 ? newline : 240;
-      printModelStream(phase, attempt, text.slice(0, cut));
+      printModelStream(phase, attempt, evidence, text.slice(0, cut));
       text = text.slice(cut + (newline === cut ? 1 : 0));
     }
-    modelStreamBuffers.set(key, { phase, attempt, text });
+    modelStreamBuffers.set(key, { phase, attempt, evidence, text });
   }
 
   /**
@@ -252,7 +262,7 @@ export function createLogger({ pid = process.pid, quiet = false } = {}) {
       case "model_stream": {
         const phase = meta.phase;
         if (phase === "rejected") {
-          flushAllModelStreams();
+          flushModelStreamsFor(meta.evidence, meta.attempt);
           const parserCodes = new Set([
             "TRUNCATED_ANSWER", "MALFORMED_BLOCK", "MALFORMED_ARTIFACT",
             "INVALID_JSON", "BAD_ENVELOPE", "BAD_CLAIM", "FIELD_MISSING",
@@ -273,7 +283,7 @@ export function createLogger({ pid = process.pid, quiet = false } = {}) {
       }
 
       case "observed": {
-        flushAllModelStreams();
+        flushModelStreamsFor(meta.evidence);
         end(meta.evidence);
         stats.observed += 1;
         stats.claims += Number(meta.claims ?? 0);
@@ -299,7 +309,7 @@ export function createLogger({ pid = process.pid, quiet = false } = {}) {
         return;
 
       case "observe_failed":
-        flushAllModelStreams();
+        flushModelStreamsFor(meta.evidence);
         end(meta.evidence);
         stats.failures += 1;
         stats.retries += 1;
