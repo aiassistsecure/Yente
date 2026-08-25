@@ -24,11 +24,23 @@
  *    the HTTP daemon's shape, where the engine normalises a top-level field
  *    into `_caused_by` on the way in.)
  *
- * 3. **A durable directory is exclusively locked.** A second `open` of the same
- *    path is refused — deliberately, to prevent a split-brain where one engine
- *    cannot see the other's writes. So the process holds exactly one handle,
- *    and `openDatabase` enforces that rather than letting a second call
- *    discover it as a runtime error.
+ * 3. **A durable directory is exclusively locked — PER DIRECTORY, not per
+ *    process.** A second `open` of the SAME path is refused, deliberately, to
+ *    prevent a split-brain where one engine cannot see the other's writes. Two
+ *    DIFFERENT paths in one process are fine, and that is measured rather than
+ *    assumed: `NedbCore.open("/tmp/a")` followed by `NedbCore.open("/tmp/b")`
+ *    both succeed and both stay writable.
+ *
+ *    This file used to claim otherwise — that one process could hold exactly
+ *    one handle — and enforced it with a throw. That was my assertion, not the
+ *    engine's, and it was the reason the desk and the listener had to be two
+ *    processes: two directories, two locks, two owners, and nothing able to
+ *    read across them. Which is how the landing page came to advertise a
+ *    population the listener had never met.
+ *
+ *    So the rule is one OWNER per directory, and a single process is allowed to
+ *    be the owner of several. Cross-directory reads then happen in-process, at
+ *    memory speed, with no protocol between them.
  */
 
 import { NedbCore } from "nedb-engine";
@@ -51,10 +63,11 @@ export const COLLECTIONS = Object.freeze({
   SUBSCRIPTION_EVENTS: "subscription_events",
 });
 
-let openHandle = null;
+/** path -> the one handle this process holds for it. */
+const openHandles = new Map();
 
 /**
- * Open the durable database. One engine per process, by construction.
+ * Open a durable database. One handle per PATH, for the life of the process.
  *
  * Opening the same path twice returns the SAME store rather than a second
  * handle. That is not a convenience — the addon exposes no `close`, so the
@@ -62,24 +75,25 @@ let openHandle = null;
  * implied otherwise would be lying. Idempotence is the honest shape: a caller
  * that asks for the database it already has, gets it.
  *
- * A different path while one is open is a real error, because that genuinely
- * cannot be satisfied.
+ * Opening a DIFFERENT path is allowed, and is what lets one process own both
+ * the desk's directory and the graph's. See note 3 above for why the previous
+ * refusal was wrong.
  *
  * @param {string} path
  * @returns {Store}
  */
 export function openDatabase(path) {
-  if (openHandle) {
-    if (openHandle.path === path) return openHandle;
-    throw new Error(
-      `A database is already open in this process (${openHandle.path}); cannot also open ${path}. ` +
-        "The engine takes an exclusive lock on its data directory and the addon exposes no close, " +
-        "so a second directory would need a second process.",
-    );
-  }
+  const existing = openHandles.get(path);
+  if (existing) return existing;
+
   const store = new Store(NedbCore.open(path), path);
-  openHandle = store;
+  openHandles.set(path, store);
   return store;
+}
+
+/** Every durable handle this process holds, for a flush-everything on exit. */
+export function openDatabases() {
+  return [...openHandles.values()];
 }
 
 /**

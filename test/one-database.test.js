@@ -38,35 +38,60 @@ import { createRepositories } from "../src/store/repositories.js";
 import { openWaitlistRepository } from "../src/waitlist/repository.js";
 import { COHORTS } from "../src/waitlist/capacity.js";
 
-const daemon = readFileSync(new URL("../bin/daemon.mjs", import.meta.url), "utf8");
+const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), "utf8");
+
+const daemon = read("bin/daemon.mjs");
+
+/**
+ * The tick moved into a module, and these assertions followed it.
+ *
+ * The premise of reading source as text is unchanged and still right: the bug
+ * class is "the function exists, it is tested, and nothing in production calls
+ * it", which a test that makes the call itself can never see. What changed is
+ * WHERE production calls it. The desk's tick now lives in one module because two
+ * entry points run it, and asserting against bin/daemon.mjs alone would pass
+ * happily while the merged entry point quietly skipped matching.
+ *
+ * So: the ORDER assertions read the module that owns the tick, and every entry
+ * point that claims to run a desk must be shown to construct one.
+ */
+const desk = read("src/runtime/desk.js");
+const ENTRY_POINTS_WITH_A_DESK = ["bin/daemon.mjs", "bin/yente.mjs"];
 
 /* --- the daemon reaches the whole loop ---------------------------------- */
 
 test("the daemon calls matching and the veto clock, not just ingest and drain", () => {
   // The two that were unreachable. D8 proves the chain works; nothing drove it.
-  assert.match(daemon, /runtime\.proposeMatches\(/,
+  assert.match(desk, /runtime\.proposeMatches\(/,
     "matching was exported and called by nothing outside the test suite");
-  assert.match(daemon, /runtime\.advanceDeadlines\(/,
+  assert.match(desk, /runtime\.advanceDeadlines\(/,
     "without this a veto window never expires and no introduction is ever sent");
 
   // And the two that already worked, so a refactor cannot quietly drop them.
-  assert.match(daemon, /runtime\.ingest\(/);
-  assert.match(daemon, /runtime\.drainOutbox\(/);
+  assert.match(desk, /runtime\.ingest\(/);
+  assert.match(desk, /runtime\.drainOutbox\(/);
+
+  // And every entry point that claims to run a desk must actually build one,
+  // or the tick above is unreachable from production no matter how correct it is.
+  for (const entry of ENTRY_POINTS_WITH_A_DESK) {
+    assert.match(read(entry), /createDesk\(/,
+      `${entry} must construct the desk, or none of the above runs`);
+  }
 });
 
 test("matching runs BEFORE the outbox drains", () => {
   // Ordering is load-bearing: a window that expired while the process slept has
   // to close before the drain, or the introduction it authorises waits a whole
   // extra tick for no reason.
-  assert.ok(daemon.indexOf("runtime.proposeMatches(") < daemon.indexOf("runtime.drainOutbox("),
+  assert.ok(desk.indexOf("runtime.proposeMatches(") < desk.indexOf("runtime.drainOutbox("),
     "propose, then advance, then send");
-  assert.ok(daemon.indexOf("runtime.advanceDeadlines(") < daemon.indexOf("runtime.drainOutbox("));
+  assert.ok(desk.indexOf("runtime.advanceDeadlines(") < desk.indexOf("runtime.drainOutbox("));
 });
 
 test("a failure in matching cannot cost us the inbox or the outbox", () => {
   // The message is durably recorded by then. One malformed opportunity must not
   // strand a queued letter.
-  const block = daemon.slice(daemon.indexOf("let proposed = 0;"), daemon.indexOf("const drained ="));
+  const block = desk.slice(desk.indexOf("let proposed = 0;"), desk.indexOf("const drained ="));
   assert.match(block, /try \{/);
   assert.match(block, /matching_failed/);
 });
@@ -81,7 +106,7 @@ test("the daemon serves the BFF from the same process and the same store", () =>
 test("only ACTIVE members are offered to matching", () => {
   // Matchability is a separate gate from qualification (§7.2). Enforced here by
   // whose profile is even built.
-  const block = daemon.slice(daemon.indexOf("const profiles = {}"), daemon.indexOf("runtime.proposeMatches"));
+  const block = desk.slice(desk.indexOf("const profiles = {}"), desk.indexOf("runtime.proposeMatches"));
   assert.match(block, /state !== "ACTIVE"/);
   assert.match(block, /buildProfileView\(/,
     "profiles are materialised from span-verified facts, never handed in");

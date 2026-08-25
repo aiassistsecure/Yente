@@ -54,6 +54,7 @@ const CHANNELS = {
   store:      { glyph: "🗄", label: "STORE     ", tint: c.cyan },
   boot:       { glyph: "⚡", label: "BOOT      ", tint: c.bold },
   doc:        { glyph: "📄", label: "DOCUMENT  ", tint: c.cyan },
+  desk:       { glyph: "🗂", label: "DESK      ", tint: c.cyan },
 };
 
 /** Which channel an event belongs to. Unknown events land in `store`. */
@@ -69,7 +70,9 @@ const EVENT_CHANNEL = {
   job_failed_permanently: "understand", thinking: "understand",
   proposed: "connect", connect_failed: "connect",
   attachment_refused: "doc", attachment_empty: "doc",
-  shutting_down: "boot", stopped: "boot", http_failed: "boot",
+  shutting_down: "boot", stopped: "boot", http_failed: "boot", http: "boot",
+  desk: "boot", tick: "desk", tick_failed: "desk", matching_failed: "desk",
+  extraction_failed: "desk", facts_rejected: "desk",
 };
 
 const LEVEL = {
@@ -238,6 +241,24 @@ export function createLogger({ pid = process.pid, quiet = false } = {}) {
         });
         return;
 
+      case "tick":
+        line("info", "desk", "tick", {
+          in: meta.ingested || undefined,
+          sent: meta.sent || undefined,
+          facts: meta.facts || undefined,
+          matched: meta.proposed || undefined,
+          windows_closed: meta.advanced || undefined,
+          took: human(meta.ms),
+        });
+        return;
+
+      case "tick_failed":
+        line("error", "desk", "the desk tick failed", {
+          why: String(meta.error ?? "").slice(0, 140),
+          note: "the loop continues; the next tick runs",
+        });
+        return;
+
       case "proposed":
         stats.matches += Number(meta.queued ?? 0);
         line("info", "connect",
@@ -291,7 +312,7 @@ export function createLogger({ pid = process.pid, quiet = false } = {}) {
    * death. It prints what is in flight and for how long, so "stuck" and "busy"
    * look different.
    */
-  function heartbeat({ graph, health, mailSilenceMinutes }) {
+  function heartbeat({ graph, health, mailSilenceMinutes, mailConfigured = true }) {
     if (quiet) return;
 
     const jobs = graph.jobs.counts();
@@ -303,7 +324,12 @@ export function createLogger({ pid = process.pid, quiet = false } = {}) {
     const running = [...inFlight.entries()].map(([key, v]) =>
       `${CHANNELS[v.channel]?.glyph ?? "•"} ${v.what} ${c.grey(human(Date.now() - v.since))}`);
 
-    const mailState = health.consecutiveMailFailures > 0
+    // "mail ok" with no mailbox configured is a lie of exactly the kind this
+    // dashboard exists to prevent — it reads as a healthy sensor when there is
+    // no sensor at all.
+    const mailState = !mailConfigured
+      ? c.grey("no mailbox")
+      : health.consecutiveMailFailures > 0
       ? c.red(`mail DOWN ${health.consecutiveMailFailures}x`)
       : mailSilenceMinutes > 120
         ? c.yellow(`quiet ${mailSilenceMinutes}m`)

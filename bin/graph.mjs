@@ -44,11 +44,8 @@ import { createServer } from "node:http";
 
 import { openDatabase, closeDatabase } from "../src/store/db.js";
 import { createGraphRepositories } from "../src/store/graph.js";
-import { createImapClient } from "../src/mail/imap-client.js";
-import { createMailSource } from "../src/mail/source.js";
-import { ingestMail } from "../src/graph/ingest.js";
-import { drainIntelligence } from "../src/intelligence/queue.js";
-import { proposeIntroductions } from "../src/graph/matching.js";
+import { createMailFromEnv } from "../src/mail/from-env.js";
+import { createGraphLoops } from "../src/graph/loops.js";
 import { createGraphManager } from "../src/graph/manager.js";
 import { createIntelligenceProvider, resolveIntelligenceConfig } from "../src/intelligence/provider.js";
 import { createLlmClients } from "../src/llm/providers.js";
@@ -80,58 +77,12 @@ if (requeued > 0) log("warn", "requeued_stranded_jobs", { count: requeued });
 
 /* --- the sensor -------------------------------------------------------- */
 
-const mailbox = process.env.YENTE_MAILBOX || "INBOX";
-const imapConfigured = Boolean(process.env.YENTE_MAIL_HOST && process.env.YENTE_MAIL_USER);
-
-let source = null;
-let imap = null;
-if (imapConfigured) {
-  imap = createImapClient({
-    imap: {
-      host: process.env.YENTE_MAIL_HOST,
-      port: Number(process.env.YENTE_IMAP_PORT || 993),
-      secure: true,
-      auth: {
-        user: process.env.YENTE_MAIL_USER,
-        pass: process.env.YENTE_MAIL_PASS,
-      },
-    },
-    mailbox,
-    log,
-  });
-
-  source = createMailSource({
-    client: imap,
-    cursors: graph.cursors,
-    mailbox,
-    // postal-mime: zero dependencies, actively maintained, and mailparser's own
-    // README now points at it. Imported lazily so a box without it can still run
-    // the other two loops.
-    parse: async (raw) => {
-      const { default: PostalMime } = await import("postal-mime");
-      const parsed = await PostalMime.parse(raw);
-      return {
-        messageId: parsed.messageId,
-        inReplyTo: parsed.inReplyTo,
-        references: Array.isArray(parsed.references) ? parsed.references : undefined,
-        from: parsed.from?.address ?? null,
-        to: (parsed.to ?? []).map((a) => a.address),
-        cc: (parsed.cc ?? []).map((a) => a.address),
-        subject: parsed.subject,
-        text: parsed.text ?? parsed.html ?? "",
-        date: parsed.date,
-        attachments: parsed.attachments ?? [],
-      };
-    },
-    log,
-  });
-} else {
-  log("warn", "mail_not_configured", {
-    note: "YENTE_MAIL_HOST/USER unset — the intelligence and matching loops still "
-      + "run over whatever is already in the graph, so a backlog can be worked "
-      + "without a mailbox.",
-  });
-}
+// Built by src/mail/from-env.js, which bin/yente.mjs also uses. Two entry points
+// deriving the same IMAP config by hand is how a mailbox ends up configured
+// slightly differently in each, and that difference shows up as a silence rather
+// than as an error.
+const { source, imap, mailbox, configured: imapConfigured } =
+  createMailFromEnv({ graph, log });
 
 /* --- the interpreter --------------------------------------------------- */
 
@@ -151,131 +102,21 @@ log("info", "intelligence", {
 
 const manager = createGraphManager({ graph });
 
-/* --- health that answers the question nobody asked ---------------------- */
+/* --- the loops --------------------------------------------------------- */
 
-const health = {
-  startedAt: new Date().toISOString(),
-  lastMailAt: null,
-  lastMailError: null,
-  consecutiveMailFailures: 0,
-  ticks: { listen: 0, understand: 0, connect: 0 },
-};
-
-/**
- * "I have not successfully read mail in N hours."
- *
- * The failure that cost two days was not that IMAP broke — it was that nothing
- * said so. A listener has exactly one job and its silence is indistinguishable
- * from a quiet mailbox unless it reports the difference itself.
- */
-function mailSilenceMinutes() {
-  const since = health.lastMailAt ?? health.startedAt;
-  return Math.round((Date.now() - new Date(since).getTime()) / 60_000);
-}
-
-/* --- LISTEN ------------------------------------------------------------- */
-
+// createGraphLoops owns LISTEN / UNDERSTAND / CONNECT and the health record. It
+// lives in src/ so bin/yente.mjs can run these same three loops beside the desk
+// in one process; a loop that exists in two files is a loop that gets fixed once.
 let stopping = false;
 const abort = new AbortController();
 
-async function listenLoop() {
-  if (!source) return;
-  while (!stopping) {
-    try {
-      const summary = await ingestMail({ source, graph, log });
-      health.lastMailAt = new Date().toISOString();
-      health.consecutiveMailFailures = 0;
-      health.lastMailError = null;
-      health.ticks.listen += 1;
-
-      // Something arrived: come straight back rather than idling, in case the
-      // batch was capped.
-      if (summary.fetched > 0) continue;
-    } catch (error) {
-      health.consecutiveMailFailures += 1;
-      health.lastMailError = String(error?.message ?? error);
-      log("error", "listen_failed", {
-        error: health.lastMailError,
-        consecutive: health.consecutiveMailFailures,
-        silent_for_min: mailSilenceMinutes(),
-      });
-
-      // Back off hard and say it plainly. ECONNREFUSED repeated for a week is
-      // how we got banned in the first place; grinding at a closed port is not
-      // persistence, it is the thing that caused the problem.
-      const backoffMs = Math.min(30 * 60_000, 30_000 * 2 ** Math.min(6, health.consecutiveMailFailures));
-      if (health.consecutiveMailFailures === 3) {
-        log("error", "mail_unreachable", {
-          note: "three consecutive failures. If this is ECONNREFUSED, check "
-            + "fail2ban on the mail server before anything else.",
-        });
-      }
-      await sleep(backoffMs);
-      continue;
-    }
-
-    // Nothing new: wait for the server to tell us, rather than asking again.
-    begin("listen", "imap:idle", "waiting on IDLE");
-    const arrived = await source.waitForMail({ timeoutMs: 15 * 60_000, signal: abort.signal });
-    end("imap:idle");
-    if (!arrived && !stopping) await sleep(30_000);
-  }
-}
-
-/* --- UNDERSTAND -------------------------------------------------------- */
-
-async function understandLoop() {
-  while (!stopping) {
-    try {
-      const summary = await drainIntelligence({
-        graph, observer, log, signal: abort.signal,
-      });
-      health.ticks.understand += 1;
-      if (summary.claimed > 0) {
-        log("info", "understood", { ...summary, backlog: graph.jobs.counts().READY });
-        continue;   // keep going while there is a backlog
-      }
-    } catch (error) {
-      // The whole drain failing is different from one job failing; the drain
-      // already handles the latter. This is a bug or a dead gateway.
-      log("error", "understand_failed", { error: String(error?.message ?? error) });
-    }
-    await sleep(15_000);
-  }
-}
-
-/* --- CONNECT ----------------------------------------------------------- */
-
-async function connectLoop() {
-  while (!stopping) {
-    try {
-      const observations = graph.observations
-        .all()
-        // §20: an excluded subject is not a matching candidate. Read here rather
-        // than filtered at write time so the exclusion stays reversible.
-        .filter((row) => manager.isEligible(row.subject));
-
-      begin("connect", "match:scan", `scoring ${observations.length} observations`);
-      const proposals = proposeIntroductions({ observations });
-      let queued = 0;
-      for (const proposal of proposals) {
-        const { decided } = graph.matches.propose({
-          ...proposal, at: new Date().toISOString(),
-        });
-        // A match a person already ruled on is never re-opened. Without this the
-        // review queue is a treadmill.
-        if (!decided) queued += 1;
-      }
-      end("match:scan");
-      health.ticks.connect += 1;
-      if (queued > 0) log("info", "proposed", { queued, pending: manager.pendingMatches().length });
-    } catch (error) {
-      end("match:scan");
-      log("error", "connect_failed", { error: String(error?.message ?? error) });
-    }
-    await sleep(60_000);
-  }
-}
+const loops = createGraphLoops({
+  graph, source, observer, manager, log, begin, end,
+  signal: abort.signal,
+  isStopping: () => stopping,
+});
+const { health } = loops;
+const mailSilenceMinutes = () => loops.mailSilenceMinutes();
 
 /* --- the manager surface ----------------------------------------------- */
 
@@ -308,12 +149,7 @@ httpServer.listen(port, host, () => {
 
 /* --- run --------------------------------------------------------------- */
 
-function sleep(ms) {
-  return new Promise((resolve) => {
-    const timer = setTimeout(resolve, ms);
-    abort.signal.addEventListener("abort", () => { clearTimeout(timer); resolve(); }, { once: true });
-  });
-}
+const sleep = (ms) => loops.sleep(ms);
 
 log("info", "started", {
   data: dataPath,
@@ -332,11 +168,13 @@ log("info", "started", {
  */
 const heartbeatMs = Number(process.env.YENTE_HEARTBEAT_MS || 30_000);
 const pulse = setInterval(() => {
-  logger.heartbeat({ graph, health, mailSilenceMinutes: mailSilenceMinutes() });
+  logger.heartbeat({
+    graph, health, mailConfigured: imapConfigured, mailSilenceMinutes: mailSilenceMinutes(),
+  });
 }, heartbeatMs);
 pulse.unref();
 
-const loops = Promise.all([listenLoop(), understandLoop(), connectLoop()]);
+const running = Promise.all([loops.listen(), loops.understand(), loops.connect()]);
 
 async function shutdown(signal) {
   if (stopping) return;
@@ -348,7 +186,7 @@ async function shutdown(signal) {
   // Stop accepting first, then flush. An accepted decision must not be written
   // to a closing store.
   await new Promise((resolve) => httpServer.close(resolve));
-  await Promise.race([loops, sleep(10_000)]);
+  await Promise.race([running, sleep(10_000)]);
   await imap?.close().catch(() => {});
   closeDatabase(store);
   log("info", "stopped", { ticks: JSON.stringify(health.ticks) });
@@ -358,4 +196,4 @@ async function shutdown(signal) {
 process.on("SIGINT", () => shutdown("SIGINT"));
 process.on("SIGTERM", () => shutdown("SIGTERM"));
 
-await loops;
+await running;
