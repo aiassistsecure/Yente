@@ -421,6 +421,43 @@ test("the drain writes observations and never lets one bad job stop the others",
   assert.equal(graph.jobs.counts().READY, 1, "the failure is retryable, not lost");
 });
 
+test("the observer sees the current reply but not quoted Yente history", async () => {
+  const { graph } = fresh();
+  const text = [
+    "From: founder@example.com",
+    "To: yente@ccme.network",
+    "",
+    "I’m looking for investors.",
+    "> On Aug 14, 2026, Yente <yente@ccme.network> wrote:",
+    "> Role: Founder & Systems Architect",
+    "> Works with: Rust, Python, TypeScript",
+  ].join("\n");
+  const evidence = graph.evidence.record({
+    kind: "message", contentHash: "thread", text, receivedAt: T0,
+  }).evidence;
+  graph.jobs.enqueue({ evidenceId: evidence.id, at: T0 });
+  let seen = null;
+  const observer = {
+    async observe({ sources }) {
+      seen = sources[0].text;
+      return {
+        verified: { entities: [], intents: [], relationships: [], opportunities: [], observations: [] },
+        rejected: [], cached: false, recovered: null,
+        provenance: {
+          model: "m", schemaVersion: "obs_v1", promptVersion: "obs_prompt_v6",
+          contentHash: "h", elapsedMs: 1,
+        },
+      };
+    },
+  };
+  await drainIntelligence({ graph, observer, now: () => T1 });
+  assert.match(seen, /looking for investors/);
+  assert.doesNotMatch(seen, /Role: Founder|Works with: Rust/,
+    "Yente's prior summary is stored in evidence but never re-extracted as new truth");
+  assert.match(graph.evidence.get(evidence.id).text, /Role: Founder/,
+    "canonical NEDB evidence remains complete");
+});
+
 test("resume facts and full text land on the covering sender's manager profile", async () => {
   const { graph } = fresh();
   const parent = graph.evidence.record({

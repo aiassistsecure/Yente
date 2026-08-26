@@ -217,8 +217,9 @@ const observer = createIntelligenceProvider({
 // looked exactly like a setting that worked.
 const concurrency = Number(process.env.YENTE_INTELLIGENCE_CONCURRENCY || 3);
 
-// Prompt v5 carries deterministic attachment ownership so résumé facts land on
-// the sender's member profile. Requeue every DONE job produced by an older/unknown
+// Prompt v6 keeps quoted copies of Yente's prior email out of the model's
+// analysis view while preserving the complete message in NEDB evidence. Requeue
+// every DONE job produced by an older/unknown
 // prompt exactly once; the finished job records this version so empty evidence
 // does not loop forever.
 const promptRequeued = graph.jobs.requeueForPrompt(
