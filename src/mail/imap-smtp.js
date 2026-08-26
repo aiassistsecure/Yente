@@ -113,6 +113,12 @@ export function createMailTransport(config, deps = {}) {
 
     /** Called by the runtime AFTER the message is durably recorded. */
     async markSeen(uid) {
+      if (sendOnly) {
+        throw new TransportError(
+          "SEND_ONLY",
+          "This transport is SMTP-only; inbound mail is owned by the graph MailSource",
+        );
+      }
       return withMailbox(async (client) => {
         await client.messageFlagsAdd({ uid: String(uid) }, ["\\Seen"], { uid: true });
       });

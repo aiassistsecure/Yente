@@ -99,6 +99,11 @@ export function createRuntime({
   transport,
   extractionClient = null,
   emailClient = null,
+  // The graph's evidence collection — the single source of mail truth.
+  // The desk consumes from this instead of opening its own IMAP connection,
+  // so the graph's LISTEN loop and the desk's tick never race for the same
+  // inbox.
+  graphEvidence = null,
   // A desk with no policies could not qualify anybody: `policies` had no
   // default and the only qualification policy in the tree lived in
   // test-support/fixtures.js, so `policies.memberQualification` was undefined in
@@ -109,6 +114,10 @@ export function createRuntime({
 }) {
   assertTransport(transport);
   const { store } = repositories;
+  // Evidence the graph has durably recorded. The desk processes each
+  // message evidence exactly once through the profile pipeline.
+  const evidenceSource = graphEvidence ?? { all: () => [] };
+  const processedEvidence = new Set();
   const policies = { ...DEFAULT_POLICIES, ...policyOverrides };
   const {
     vetoWindowMs = 48 * 60 * 60 * 1000,
@@ -136,14 +145,75 @@ export function createRuntime({
   /* --- 1. ingest -------------------------------------------------------- */
 
   async function ingest(now) {
+    // The desk must NOT race the graph's LISTEN loop for the same INBOX.
+    // The graph's MailSource owns the single IMAP read path with its durable
+    // cursor; the desk consumes evidence the graph has already durably
+    // recorded. Two separate IMAP connections to the same mailbox was the
+    // resume-attachment bug: whichever loop fired first won the message and
+    // the other never saw it.
+    //
+    // When no graphEvidence is provided (legacy tests, standalone daemon),
+    // fall back to the transport's fetchUnseen so the desk still works
+    // without the graph — backward compatible, not the production path.
+    if (!evidenceSource || evidenceSource.all().length === 0) {
+      const results = [];
+      for (const inbound of await transport.fetchUnseen()) {
+        results.push(await ingestOne(inbound, now));
+        await transport.markSeen(inbound.uid);
+      }
+      return results;
+    }
+
+    // One inbound per covering message. Attachments are folded onto the
+    // parent so ingestOne stays the single pipeline: STOP is evaluated
+    // before any résumé is mined, and qualify() runs once after every
+    // source on that mail has been stored.
+    const attachmentsByMessage = new Map();
+    for (const evidence of evidenceSource.all()) {
+      if (evidence.kind !== "attachment") continue;
+      if (processedEvidence.has(evidence.id)) continue;
+      const parentId = evidence.meta?.messageEvidenceId ?? null;
+      if (!parentId) continue;
+      const list = attachmentsByMessage.get(parentId) ?? [];
+      list.push(evidence);
+      attachmentsByMessage.set(parentId, list);
+    }
+
     const results = [];
-    for (const inbound of await transport.fetchUnseen()) {
-      results.push(await ingestOne(inbound, now));
-      await transport.markSeen(inbound.uid);
+    for (const evidence of evidenceSource.all()) {
+      if (evidence.kind !== "message") continue;
+      if (processedEvidence.has(evidence.id)) continue;
+      processedEvidence.add(evidence.id);
+      const attachments = attachmentsByMessage.get(evidence.id) ?? [];
+      for (const attachment of attachments) processedEvidence.add(attachment.id);
+      results.push(await ingestFromEvidence(evidence, attachments, now));
     }
     return results;
   }
 
+  // Map graph evidence into the shape ingestOne expects, then run the same
+  // profile pipeline. The graph already parsed MIME, extracted attachment
+  // text, and content-hashed the raw source. The desk does not re-read IMAP.
+  async function ingestFromEvidence(evidence, attachments, now) {
+    const meta = evidence.meta ?? {};
+    const inbound = {
+      uid: 0,
+      rfcMessageId: meta.rfcMessageId ?? evidence.id,
+      threadId: meta.threadId ?? null,
+      from: meta.from ?? null,
+      to: meta.to ?? [],
+      cc: meta.cc ?? [],
+      subject: meta.subject ?? null,
+      text: evidence.text ?? "",
+      sentAt: meta.sentAt ?? null,
+      attachments: attachments.map((attachment) => ({
+        filename: attachment.meta?.filename ?? "attachment",
+        mimeType: attachment.meta?.mimeType ?? "text/plain",
+        content: attachment.text ?? "",
+      })),
+    };
+    return ingestOne(inbound, now);
+  }
   async function ingestOne(inbound, now) {
     // INV-2: dedupe and record BEFORE anything can act on it.
     const { message, duplicate } = repositories.messages.recordInbound({
@@ -715,6 +785,15 @@ export function createRuntime({
       canReceiveOutbound(repositories.members.findByAddress(address) ?? { state: MEMBER_STATES.NEW }),
     );
     if (live.length !== recipients.length) return null; // INV-9 before anything else
+    // REPLY IN THREAD. The inbound message that caused this letter is
+    // the thread anchor: set its Message-ID as In-Reply-To so the
+    // recipient's mail client threads this reply under the original
+    // conversation. A letter without threading headers is a fresh
+    // email from a stranger, and deliverability for a matchmaker who
+    // shows up in a separate folder is zero.
+    const inReplyTo = causedBy
+      .map((c) => c?.rfcMessageId ?? null)
+      .find((id) => id) ?? null;
     const job = enqueueEmail({
       jobId: key,
       idempotencyKey: key,
@@ -723,7 +802,11 @@ export function createRuntime({
       enqueuedAt: now,
       headers: email.headers ?? {},
     });
-    const { job: stored, duplicate } = repositories.outbox.enqueue({ ...job, email, context }, { causedBy });
+    const { job: stored, duplicate } = repositories.outbox.enqueue({
+      ...job,
+      email: { ...email, ...(inReplyTo ? { inReplyTo } : {}) },
+      context,
+    }, { causedBy });
     return duplicate ? null : stored;
   }
 
@@ -740,6 +823,13 @@ export function createRuntime({
           subject: claimed.email?.subject ?? "",
           text: claimed.email?.text ?? "",
           headers: claimed.headers ?? {},
+          // REPLY IN THREAD. Every outbound letter must be a reply to the
+          // inbound message that caused it, so the recipient's mail client
+          // threads it under the original conversation. A fresh email with
+          // no threading headers looks like a cold message from a stranger,
+          // and a matchmaker whose replies land in a separate folder is a
+          // matchmaker nobody reads.
+          ...(claimed.email?.inReplyTo ? { inReplyTo: claimed.email.inReplyTo } : {}),
         });
         const delivered = markSent(claimed, { messageId, sentAt: now });
         repositories.outbox.save(delivered);
