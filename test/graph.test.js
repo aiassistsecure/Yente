@@ -29,6 +29,8 @@ import { createMailSource, normalizeMessage, contentHashOf } from "../src/mail/s
 import { observationsFrom, drainIntelligence } from "../src/intelligence/queue.js";
 import { proposeIntroductions, explainIntroduction } from "../src/graph/matching.js";
 import { createGraphManager, CORRECTION } from "../src/graph/manager.js";
+import { createMemoryTransport } from "../src/mail/transport.js";
+import { drainConfirmedIntroductions } from "../src/graph/introductions.js";
 
 function fresh() {
   const store = openInMemory();
@@ -692,6 +694,44 @@ test("confirming and rejecting are recorded as decisions, with who and why", () 
   assert.equal(decision.verdict, MATCH_STATES.CONFIRMED);
   assert.equal(decision.by, "mark");
   assert.equal(decision.detail.note, "send it");
+});
+
+test("a confirmed graph match sends one autonomous introduction and stops", async () => {
+  const { graph, manager } = seeded();
+  const [proposal] = proposeIntroductions({ observations: graph.observations.all() });
+  const { match } = graph.matches.propose({ ...proposal, at: T0 });
+  const id = matchPairKey(match);
+  manager.confirmMatch({ matchId: id, note: "approved" });
+
+  const transport = createMemoryTransport();
+  const first = await drainConfirmedIntroductions({
+    graph, manager, transport, now: () => T1,
+  });
+  const again = await drainConfirmedIntroductions({
+    graph, manager, transport, now: () => T1,
+  });
+
+  assert.equal(first.sent, 1);
+  assert.equal(again.sent, 0, "an introduced match is terminal and cannot send twice");
+  assert.equal(transport.sent.length, 1);
+  assert.deepEqual(transport.sent[0].to.sort(), ["david@dev.io", "sarah@acme.com"]);
+  assert.match(transport.sent[0].text, /I’m stepping out/);
+  assert.match(transport.sent[0].text, /— Yente/);
+  assert.match(transport.sent[0].messageId, /^<yente-introduction-/);
+  assert.equal(graph.matches.get(id).state, MATCH_STATES.INTRODUCED);
+  assert.equal(manager.summary().matches.introduced, 1);
+});
+
+test("an interrupted introduction is requeued after restart", () => {
+  const { graph, manager } = seeded();
+  const [proposal] = proposeIntroductions({ observations: graph.observations.all() });
+  const { match } = graph.matches.propose({ ...proposal, at: T0 });
+  const id = matchPairKey(match);
+  manager.confirmMatch({ matchId: id });
+  graph.matches.claimIntroduction(id, T1);
+  assert.equal(graph.matches.get(id).state, MATCH_STATES.INTRODUCTION_SENDING);
+  assert.equal(graph.matches.requeueStrandedIntroductions(T1), 1);
+  assert.equal(graph.matches.get(id).state, MATCH_STATES.CONFIRMED);
 });
 
 test("cannot introduce a subject to itself, even by hand", () => {

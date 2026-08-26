@@ -98,12 +98,14 @@ test("a joint introduction is addressed to both members on one envelope", async 
       to: ["bob@example.com", "alice@northwindlog.com"],
       subject: "Yente introduction — Bob x Alice",
       text: "Please reply-all.",
+      messageId: "<yente-introduction-fixed@ccme.network>",
     });
     await transport.close();
     assert.deepEqual(
       received[0].envelope.rcptTo.map((r) => r.address).sort(),
       ["alice@northwindlog.com", "bob@example.com"],
     );
+    assert.match(received[0].raw, /Message-ID: <yente-introduction-fixed@ccme\.network>/i);
   });
 });
 

@@ -425,6 +425,8 @@ export function createGraphManager({
       matches: {
         proposed: matches.filter((m) => m.state === MATCH_STATES.PROPOSED).length,
         confirmed: matches.filter((m) => m.state === MATCH_STATES.CONFIRMED).length,
+        sending: matches.filter((m) => m.state === MATCH_STATES.INTRODUCTION_SENDING).length,
+        introduced: matches.filter((m) => m.state === MATCH_STATES.INTRODUCED).length,
         rejected: matches.filter((m) => m.state === MATCH_STATES.REJECTED).length,
         curated: matches.filter((m) => m.origin === MATCH_ORIGIN.HUMAN).length,
       },

@@ -515,6 +515,8 @@ export class IntelligenceJobRepository {
 export const MATCH_STATES = Object.freeze({
   PROPOSED: "PROPOSED",
   CONFIRMED: "CONFIRMED",
+  INTRODUCTION_SENDING: "INTRODUCTION_SENDING",
+  INTRODUCED: "INTRODUCED",
   REJECTED: "REJECTED",
 });
 
@@ -582,7 +584,74 @@ export class GraphMatchRepository {
       ...held, state, decidedAt: at, decidedBy: by,
       note: note ?? held.note ?? null,
       updatedAt: at,
+      ...(state === MATCH_STATES.CONFIRMED ? {
+        introductionAvailableAt: at,
+        introductionAttempts: Number(held.introductionAttempts ?? 0),
+        introductionLastError: null,
+      } : {}),
     });
+  }
+
+  confirmedReady(at) {
+    return this.byState(MATCH_STATES.CONFIRMED)
+      .filter((match) => !match.introductionAvailableAt
+        || String(match.introductionAvailableAt) <= String(at));
+  }
+
+  claimIntroduction(matchId, at) {
+    const held = this.get(matchId);
+    if (!held || held.state !== MATCH_STATES.CONFIRMED) return null;
+    if (held.introductionAvailableAt && String(held.introductionAvailableAt) > String(at)) return null;
+    return this.store.put(GRAPH_COLLECTIONS.MATCHES, matchId, {
+      ...held,
+      state: MATCH_STATES.INTRODUCTION_SENDING,
+      introductionAttempts: Number(held.introductionAttempts ?? 0) + 1,
+      introductionStartedAt: at,
+      updatedAt: at,
+    });
+  }
+
+  markIntroduced(matchId, { at, messageId }) {
+    const held = this.get(matchId);
+    if (!held || held.state !== MATCH_STATES.INTRODUCTION_SENDING) return null;
+    return this.store.put(GRAPH_COLLECTIONS.MATCHES, matchId, {
+      ...held,
+      state: MATCH_STATES.INTRODUCED,
+      introductionMessageId: messageId,
+      introducedAt: at,
+      introductionLastError: null,
+      updatedAt: at,
+    });
+  }
+
+  failIntroduction(matchId, { at, error }) {
+    const held = this.get(matchId);
+    if (!held || held.state !== MATCH_STATES.INTRODUCTION_SENDING) return null;
+    const attempts = Number(held.introductionAttempts ?? 1);
+    const waitMs = Math.min(60 * 60_000, 60_000 * 2 ** Math.max(0, attempts - 1));
+    return this.store.put(GRAPH_COLLECTIONS.MATCHES, matchId, {
+      ...held,
+      state: MATCH_STATES.CONFIRMED,
+      introductionAvailableAt: new Date(Date.parse(at) + waitMs).toISOString(),
+      introductionLastError: String(error?.message ?? error),
+      introductionLastErrorAt: at,
+      updatedAt: at,
+    });
+  }
+
+  requeueStrandedIntroductions(at) {
+    const stranded = this.byState(MATCH_STATES.INTRODUCTION_SENDING);
+    for (const match of stranded) {
+      const id = match.id ?? match._id;
+      this.store.put(GRAPH_COLLECTIONS.MATCHES, id, {
+        ...match,
+        state: MATCH_STATES.CONFIRMED,
+        introductionAvailableAt: at,
+        introductionLastError: "requeued after restart",
+        updatedAt: at,
+      });
+    }
+    return stranded.length;
   }
 
   get(matchId) {

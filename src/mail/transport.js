@@ -85,7 +85,7 @@ export function createMemoryTransport({ domain = "ccme.network", failSend = null
       if (!message.to || message.to.length === 0) {
         throw new TransportError("NO_RECIPIENT", "An outbound message requires at least one recipient");
       }
-      const messageId = `<${randomUUID()}@${domain}>`;
+      const messageId = message.messageId ?? `<${randomUUID()}@${domain}>`;
       sent.push({ ...message, messageId, sentAt: new Date().toISOString() });
       return { messageId };
     },

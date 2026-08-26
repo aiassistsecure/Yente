@@ -18,6 +18,7 @@ import {
 } from "../protocol/blocks.js";
 import { verifyFacts, qualifyingFacts, factsNeedingConfirmation } from "./spans.js";
 import { isTransient } from "../llm/client.js";
+import { YENTE_SYSTEM_IDENTITY } from "../llm/identity.js";
 
 /**
  * @param {object} input
@@ -93,7 +94,9 @@ export function createExtractionPrompt({ sourceId, text, vocabulary }) {
  * MALFORMED_ARTIFACT. Two unrelated models resolving an ambiguity the same way
  * is not two model failures; it is one specification failure.
  */
-const EXTRACTION_SYSTEM = [
+export const EXTRACTION_SYSTEM = [
+  YENTE_SYSTEM_IDENTITY,
+  "",
   "You reply only in Sentinel Blocks. A block is a line containing three",
   "left angle brackets, the tag, then three right angle brackets; then the",
   "content on its own lines; then a closing line of three left angle brackets,",

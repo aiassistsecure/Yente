@@ -70,6 +70,8 @@ const EVENT_CHANNEL = {
   understand_failed: "understand", job_stuck: "understand",
   job_failed_permanently: "understand", thinking: "understand",
   proposed: "connect", connect_failed: "connect",
+  graph_introduction_sent: "connect", graph_introduction_failed: "connect",
+  introductions_requeued: "boot",
   attachment_refused: "doc", attachment_empty: "doc",
   shutting_down: "boot", stopped: "boot", http_failed: "boot", http: "boot",
   desk: "boot", tick: "desk", tick_failed: "desk", matching_failed: "desk",
@@ -376,6 +378,28 @@ export function createLogger({ pid = process.pid, quiet = false } = {}) {
         line("error", "desk", "the desk tick failed", {
           why: String(meta.error ?? "").slice(0, 140),
           note: "the loop continues; the next tick runs",
+        });
+        return;
+
+      case "introductions_requeued":
+        line("warn", "boot", "requeued introductions interrupted by restart", {
+          count: meta.count,
+        });
+        return;
+
+      case "graph_introduction_sent":
+        line("info", "connect", c.green("introduction sent and Yente stepped out"), {
+          match: String(meta.match ?? "").slice(0, 12),
+          to: meta.to,
+          message_id: meta.message_id,
+        });
+        return;
+
+      case "graph_introduction_failed":
+        line("error", "connect", "confirmed introduction could not be sent", {
+          match: String(meta.match ?? "").slice(0, 12),
+          why: String(meta.error ?? "").slice(0, 160),
+          note: "stored for automatic retry",
         });
         return;
 
