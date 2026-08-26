@@ -64,16 +64,57 @@ function harness(facts) {
   const store = openInMemory();
   const repositories = createRepositories(store);
   const transport = createMemoryTransport();
-  // NO policies argument — production passes none either, and that used to make
-  // qualify() throw on `policies.memberQualification`. Defaults now live in the
-  // runtime, so this is the shape the daemon actually runs in.
+  // The desk now consumes from the graph's evidence collection instead
+  // of opening its own IMAP connection. The test harness bridges the
+  // memory transport's deliver() into a fake evidence source so the
+  // runtime sees delivered messages as graph-recorded evidence.
+  const evidenceById = new Map();
+  const graphEvidence = {
+    all: () => [...evidenceById.values()],
+    get: (id) => evidenceById.get(id) ?? null,
+  };
+  const realDeliver = transport.deliver.bind(transport);
+  transport.deliver = (message) => {
+    const delivered = realDeliver(message);
+    const id = `message:${delivered.rfcMessageId}`;
+    evidenceById.set(id, {
+      id,
+      kind: "message",
+      text: delivered.text ?? "",
+      meta: {
+        rfcMessageId: delivered.rfcMessageId,
+        threadId: delivered.threadId ?? null,
+        from: delivered.from,
+        to: delivered.to,
+        cc: delivered.cc ?? [],
+        subject: delivered.subject,
+        sentAt: delivered.sentAt ?? null,
+      },
+      receivedAt: delivered.receivedAt ?? new Date().toISOString(),
+    });
+    // Record attachments as separate evidence, linked to the parent.
+    for (const attachment of delivered.attachments ?? []) {
+      const attachmentId = `attachment:${delivered.rfcMessageId}:${attachment.filename}`;
+      evidenceById.set(attachmentId, {
+        id: attachmentId,
+        kind: "attachment",
+        text: String(attachment.content ?? ""),
+        meta: {
+          filename: attachment.filename,
+          mimeType: attachment.mimeType,
+          messageEvidenceId: id,
+        },
+        receivedAt: delivered.receivedAt ?? new Date().toISOString(),
+      });
+    }
+    return delivered;
+  };
   const runtime = createRuntime({
     repositories, transport, extractionClient: scriptedModel(facts),
-    // No real backoff in the suite. Production waits 5s then 10s between
-    // transient retries; a test asserting the failure path must not.
+    graphEvidence,
     config: { extractionRetryDelayMs: 0 },
   });
-  return { store, repositories, transport, runtime };
+  return { store, repositories, transport, runtime, graphEvidence };
 }
 
 function sendResume(transport, id = "<r1@sender.test>") {
@@ -155,6 +196,8 @@ test("a member who qualifies is told what she has — the second silence", async
   assert.match(letter.text, /Role: Founder & Systems Architect/);
   assert.match(letter.text, /reply CORRECT/, "corrigible by the one person who can spot an error");
   assert.match(letter.text, /without showing you first/);
+  assert.equal(letter.inReplyTo, "<r1@sender.test>",
+    "the confirmation is a reply in the original thread, not a fresh email");
 });
 
 test("re-sending the same résumé does not send a second letter — INV-10", async () => {

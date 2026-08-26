@@ -36,6 +36,8 @@ export function mailConfigFromEnv(env = process.env) {
     },
     from: env.YENTE_FROM || `Yente <${user}>`,
     mailbox: env.YENTE_MAILBOX || "INBOX",
+    // The desk transport is SMTP-only. The graph MailSource owns IMAP.
+    sendOnly: true,
   };
 }
 

@@ -167,6 +167,15 @@ if (deskStore) {
   }
   if (backfilledSeats > 0) log("info", "seats_backfilled", { count: backfilledSeats });
 
+  // The desk sends mail but must NOT race the graph's LISTEN loop for the same
+  // INBOX. The graph's MailSource owns the single IMAP read path with its
+  // durable cursor; the desk consumes what the graph has already durably
+  // recorded. Two separate IMAP connections to the same mailbox was the
+  // resume-attachment bug: whichever loop fired first won the message and
+  // the other never saw it. A resume that reached the desk got a letter
+  // but never entered the graph as evidence; a resume that reached the
+  // graph got understood but never got profile facts extracted or a reply.
+  transport = null;
   try {
     transport = assertTransport(createMailTransport(mailConfigFromEnv()));
   } catch (error) {
@@ -186,6 +195,7 @@ if (deskStore) {
       transport,
       extractionClient: llm.extractionClient,
       emailClient: llm.emailClient,
+      graphEvidence: graph.evidence,
     });
     desk = createDesk({ store: deskStore, runtime, log, mode: "yente" });
     log("info", "desk", { parsers: parserTypes.length, llm: llm.describe?.provider ?? "?" });
