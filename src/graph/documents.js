@@ -156,6 +156,7 @@ export async function ingestAttachments({
   attachments = [],
   graph,
   messageEvidenceId,
+  subjectHint = null,
   receivedAt,
   sentAt = null,
   now = () => new Date().toISOString(),
@@ -210,6 +211,10 @@ export async function ingestAttachments({
         // The covering message. §4's `EMAIL --has_attachment--> DOCUMENT`, and
         // what lets a profile show which mail a document arrived on.
         messageEvidenceId,
+        // Deterministic owner from the covering message's From header. This is
+        // what makes résumé facts and the full document appear on the sender's
+        // manager profile instead of an orphan name-derived subject.
+        subjectHint,
         sentAt,
       },
       receivedAt,
@@ -219,7 +224,7 @@ export async function ingestAttachments({
     if (!duplicate) {
       const { duplicate: jobExisted } = graph.jobs.enqueue({
         evidenceId: evidence.id ?? `attachment:${result.contentHash}`,
-        subjectHint: null,
+        subjectHint,
         at: now(),
       });
       if (!jobExisted) summary.enqueued += 1;

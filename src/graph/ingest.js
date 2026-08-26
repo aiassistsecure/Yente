@@ -28,6 +28,7 @@
 
 import { normalizeMessage } from "../mail/source.js";
 import { ingestAttachments } from "./documents.js";
+import { addressesIn, subjectForAddress } from "./identity.js";
 
 /**
  * One pass of the listener.
@@ -122,10 +123,12 @@ export async function ingestMail({
       // Only for NEW messages: re-extracting an attachment we already have would
       // fork a parser for nothing.
       if (message.attachments.length > 0) {
+        const senderAddress = addressesIn(message.from ?? "")[0]?.normalized ?? message.from;
         const docs = await extractAttachments({
           attachments: message.attachments,
           graph,
           messageEvidenceId: evidence.id ?? `message:${message.contentHash}`,
+          subjectHint: senderAddress ? subjectForAddress(senderAddress) : null,
           receivedAt: message.receivedAt,
           sentAt: message.sentAt,
           now, log,
