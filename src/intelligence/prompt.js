@@ -41,12 +41,15 @@ import {
   createPromptArtifact,
 } from "../protocol/blocks.js";
 import { ENTITY_KINDS, INTENT_TYPES, RELATIONSHIP_PREDICATES } from "./schema.js";
+import { YENTE_SYSTEM_IDENTITY } from "../llm/identity.js";
 
 /**
  * The system message. Carries three things and nothing else: what Muse is, the
  * delimiter protocol (out of band, per above), and the authority denial.
  */
 export const OBSERVER_SYSTEM = [
+  YENTE_SYSTEM_IDENTITY,
+  "",
   "You are an observation extractor for a business relationship graph. You read",
   "business correspondence and the documents attached to it, and you report what",
   "it shows about people, organisations, and what they are seeking or offering.",

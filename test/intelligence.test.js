@@ -31,6 +31,8 @@ import {
   IntelligenceError,
 } from "../src/intelligence/provider.js";
 import { createObservationPrompt, OBSERVER_SYSTEM } from "../src/intelligence/prompt.js";
+import { EXTRACTION_SYSTEM } from "../src/extract/profile.js";
+import { YENTE_SYSTEM_IDENTITY } from "../src/llm/identity.js";
 import { ModelError, ModelErrorCode } from "../src/llm/client.js";
 
 const SOURCE_TEXT =
@@ -243,6 +245,15 @@ test("the system message denies authority and names the untrusted boundary", () 
   // And the delimiter protocol must be here, not in the user turn, or injected
   // text could forge a block boundary.
   assert.match(OBSERVER_SYSTEM, /<<<END>>>/);
+});
+
+test("every model path knows Yente owns yente@ccme.network", () => {
+  for (const system of [YENTE_SYSTEM_IDENTITY, OBSERVER_SYSTEM, EXTRACTION_SYSTEM]) {
+    assert.match(system, /You are Yente/i);
+    assert.match(system, /yente@ccme\.network/);
+    assert.match(system, /never a member|not.*member/i);
+  }
+  assert.match(OBSERVER_SYSTEM, /Do not extract Yente or CCME/i);
 });
 
 test("Muse is asked for one OBSERVATIONS envelope, not a multi-block manifest", () => {

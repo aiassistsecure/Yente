@@ -30,6 +30,7 @@
 import { ingestMail } from "./ingest.js";
 import { drainIntelligence } from "../intelligence/queue.js";
 import { proposeIntroductions } from "./matching.js";
+import { drainConfirmedIntroductions } from "./introductions.js";
 
 /**
  * @param {object}   deps
@@ -62,6 +63,7 @@ export function createGraphLoops({
   intervals = {},
   concurrency = undefined,
   onMessage = null,
+  transport = null,
 }) {
   if (!graph) throw new TypeError("createGraphLoops requires the graph repositories");
   if (!observer) throw new TypeError("createGraphLoops requires an observer");
@@ -190,6 +192,7 @@ export function createGraphLoops({
         if (queued > 0) {
           log("info", "proposed", { queued, pending: manager.pendingMatches().length });
         }
+        await drainConfirmedIntroductions({ graph, manager, transport, log });
       } catch (error) {
         end("match:scan");
         log("error", "connect_failed", { error: String(error?.message ?? error) });

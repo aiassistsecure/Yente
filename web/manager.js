@@ -32,7 +32,7 @@ const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (c) => ESCAPES[c]
  * Redirects after a successful POST rather than rendering, so a refresh does not
  * re-submit the same ruling.
  */
-export async function handleManagerRequest({ req, res, manager, graph, health }) {
+export async function handleManagerRequest({ req, res, manager, graph, health, onConfirmed = null }) {
   const url = new URL(req.url, "http://localhost");
 
   if (url.pathname === "/health") {
@@ -69,9 +69,11 @@ export async function handleManagerRequest({ req, res, manager, graph, health })
 
   try {
     switch (action) {
-      case "confirm":
-        manager.confirmMatch({ matchId: form.get("matchId"), note });
+      case "confirm": {
+        const match = manager.confirmMatch({ matchId: form.get("matchId"), note });
+        if (match && onConfirmed) await onConfirmed(match);
         break;
+      }
       case "reject":
         manager.rejectMatch({ matchId: form.get("matchId"), note });
         break;

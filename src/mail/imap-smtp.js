@@ -118,7 +118,7 @@ export function createMailTransport(config, deps = {}) {
       });
     },
 
-    async send({ to, subject, text, headers = {}, inReplyTo }) {
+    async send({ to, subject, text, headers = {}, inReplyTo, messageId }) {
       if (!to || to.length === 0) {
         throw new TransportError("NO_RECIPIENT", "An outbound message requires at least one recipient");
       }
@@ -130,6 +130,7 @@ export function createMailTransport(config, deps = {}) {
           subject,
           text,
           headers,
+          ...(messageId ? { messageId } : {}),
           ...(inReplyTo ? { inReplyTo, references: [inReplyTo] } : {}),
         });
         return { messageId: info.messageId };

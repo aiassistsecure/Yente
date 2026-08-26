@@ -78,6 +78,7 @@ import { createDesk } from "../src/runtime/desk.js";
 import { createGraphLoops } from "../src/graph/loops.js";
 import { createMailFromEnv, mailConfigFromEnv } from "../src/mail/from-env.js";
 import { createGraphManager } from "../src/graph/manager.js";
+import { drainConfirmedIntroductions } from "../src/graph/introductions.js";
 import {
   createIntelligenceProvider,
   resolveIntelligenceConfig,
@@ -135,6 +136,7 @@ if (requeued > 0) log("warn", "requeued_stranded_jobs", { count: requeued });
 
 let desk = null;
 let waitlist = null;
+let transport = null;
 
 if (deskStore) {
   // WITHOUT THIS, EVERY ATTACHMENT IS UNREADABLE. The extractor registry starts
@@ -165,7 +167,6 @@ if (deskStore) {
   }
   if (backfilledSeats > 0) log("info", "seats_backfilled", { count: backfilledSeats });
 
-  let transport = null;
   try {
     transport = assertTransport(createMailTransport(mailConfigFromEnv()));
   } catch (error) {
@@ -242,6 +243,10 @@ log("info", "intelligence", {
 });
 
 const manager = createGraphManager({ graph });
+const strandedIntroductions = graph.matches.requeueStrandedIntroductions(new Date().toISOString());
+if (strandedIntroductions > 0) {
+  log("warn", "introductions_requeued", { count: strandedIntroductions });
+}
 
 /* --- the loops --------------------------------------------------------- */
 
@@ -255,6 +260,7 @@ const loops = createGraphLoops({
   signal: abort.signal,
   isStopping: () => stopping,
   concurrency,
+  transport,
   onMessage: waitlist
     ? (message) => {
         const claimed = claimSeatFromInbound({ repository: waitlist, message });
@@ -365,7 +371,12 @@ if (on("YENTE_HTTP")) {
 
   managerServer = createServer(async (req, res) => {
     try {
-      const handled = await handleManagerRequest({ req, res, manager, graph, health });
+      const handled = await handleManagerRequest({
+        req, res, manager, graph, health,
+        onConfirmed: () => drainConfirmedIntroductions({
+          graph, manager, transport, log,
+        }),
+      });
       if (handled) return;
       const html = renderManager({
         manager, health, mailSilenceMinutes: loops.mailSilenceMinutes(),
@@ -429,6 +440,7 @@ async function shutdown(signal) {
   if (ticking) log("error", "shutdown_timeout", { note: "desk tick still running" });
 
   await imap?.close().catch(() => {});
+  await transport?.close?.().catch(() => {});
   for (const store of openDatabases()) closeDatabase(store);
   log("info", "stopped", { ticks: JSON.stringify(health.ticks) });
   process.exit(0);
