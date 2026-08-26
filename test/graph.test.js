@@ -419,6 +419,59 @@ test("the drain writes observations and never lets one bad job stop the others",
   assert.equal(graph.jobs.counts().READY, 1, "the failure is retryable, not lost");
 });
 
+test("resume facts and full text land on the covering sender's manager profile", async () => {
+  const { graph } = fresh();
+  const parent = graph.evidence.record({
+    kind: "message", contentHash: "cover", text: "From: dev@interchained.org\nResume attached",
+    meta: { from: "dev@interchained.org" }, receivedAt: T0,
+  }).evidence;
+  const resume = graph.evidence.record({
+    kind: "attachment", contentHash: "resume", receivedAt: T0,
+    text: "Mark Evans\nSystems architect with ten years of infrastructure experience.",
+    meta: { filename: "Mark_Evans_Resume.docx", messageEvidenceId: parent.id },
+  }).evidence;
+  // Deliberately old shape: no subjectHint on the job. The parent-message fallback
+  // must repair attachments already stored before this field existed.
+  graph.jobs.enqueue({ evidenceId: resume.id, subjectHint: null, at: T0 });
+
+  const observer = {
+    async observe() {
+      return {
+        verified: {
+          entities: [{
+            ref: "p1", kind: "PERSON", name: "Mark Evans", emailAddress: null,
+            title: "Systems architect", evidence: "Mark Evans", confidence: 1,
+            explicit: true, sourceId: resume.id,
+          }],
+          intents: [{
+            actorRef: "p1", type: "OFFERING", object: "infrastructure experience",
+            attributes: {}, evidence: "ten years of infrastructure experience",
+            confidence: 1, explicit: true, sourceId: resume.id,
+          }],
+          relationships: [], opportunities: [], observations: [],
+        },
+        rejected: [], cached: false, recovered: null,
+        provenance: {
+          model: "muse-local:latest", schemaVersion: "obs_v1",
+          promptVersion: "obs_prompt_v5", contentHash: "h", elapsedMs: 1,
+        },
+      };
+    },
+  };
+
+  const summary = await drainIntelligence({ graph, observer, now: () => T1 });
+  assert.equal(summary.claims, 3, "identity + intent + deterministic alias");
+  const manager = createGraphManager({ graph });
+  const profile = manager.subject("person:dev@interchained.org");
+  assert.equal(profile.name, "Mark Evans");
+  assert.equal(profile.intents[0].object, "infrastructure experience");
+  assert.equal(profile.evidence[0].id, resume.id);
+  assert.match(profile.evidence[0].text, /ten years of infrastructure experience/,
+    "the complete extracted résumé text is available in the manager Documents view");
+  assert.equal(manager.subject("person:name:mark evans").id, profile.id,
+    "the old name-derived orphan resolves onto the sender's member identity");
+});
+
 test("evidence with no text fails permanently instead of retrying against nothing", async () => {
   const { graph } = fresh();
   graph.evidence.record({ kind: "message", contentHash: "e9", text: null, receivedAt: T0 });
@@ -866,6 +919,7 @@ test("an attachment becomes its own evidence and its own job", async () => {
     attachments: [{ filename: "deck.pdf", mimeType: "application/pdf", content: Buffer.from("x") }],
     graph,
     messageEvidenceId: "message:abc",
+    subjectHint: "person:founder@example.com",
     receivedAt: T0,
     sentAt: "2026-08-20T00:00:00.000Z",
     now: () => T1,
@@ -883,6 +937,9 @@ test("an attachment becomes its own evidence and its own job", async () => {
   assert.equal(evidence.kind, "attachment");
   assert.equal(evidence.meta.messageEvidenceId, "message:abc",
     "EMAIL -has_attachment-> DOCUMENT is recorded");
+  assert.equal(evidence.meta.subjectHint, "person:founder@example.com");
+  assert.equal(graph.jobs.ready()[0].subjectHint, "person:founder@example.com",
+    "the résumé job carries the deterministic owner from the covering email");
   assert.match(evidence.text, /\[\[page 3\]\]/,
     "the page marker lives in the text a quote is checked against, so 'page 3' can ground");
 });

@@ -41,7 +41,7 @@ import { CLAIM_GROUPS } from "./schema.js";
 // plus-tags — so the graph stored `person:s.chen@gmail.com` and identity
 // resolution looked for `person:schen@gmail.com` and found nothing. Silent, and
 // exactly the drift that once dropped sixteen verified facts.
-import { subjectForAddress } from "../graph/identity.js";
+import { addressesIn, subjectForAddress } from "../graph/identity.js";
 
 /**
  * Turn one verified envelope into graph observations.
@@ -54,17 +54,29 @@ import { subjectForAddress } from "../graph/identity.js";
  * its ref names. A claim whose ref was never declared has already been dropped
  * by validateEnvelope, so there is no dangling case to handle.
  */
-export function observationsFrom({ verified, evidenceId, provenance, observedAt, sentAt }) {
+export function observationsFrom({
+  verified, evidenceId, provenance, observedAt, sentAt,
+  subjectHint = null, evidenceKind = null,
+}) {
   const out = [];
   const subjectOf = new Map();
+  const entities = verified.entities ?? [];
+  // A covering message's From header is deterministic ownership for its résumé.
+  // Anchor only the unambiguous case: one person entity in attachment evidence.
+  // Multi-person decks and arbitrary documents keep their own identities.
+  const anchoredRef = evidenceKind === "attachment" && subjectHint
+    && entities.filter((entity) => entity.kind === "PERSON").length === 1
+    ? entities.find((entity) => entity.kind === "PERSON")?.ref
+    : null;
 
-  for (const entity of verified.entities ?? []) {
+  for (const entity of entities) {
     // Identity: prefer the address, because an address is an identifier and a
     // name is not. §7 — "Sarah Chen" is three different people in three
     // different mailboxes; sarah@acme.com is one.
-    const subject = entity.emailAddress
+    const naturalSubject = entity.emailAddress
       ? subjectForAddress(entity.emailAddress)
       : `${entity.kind === "ORGANIZATION" ? "org" : "person"}:name:${entity.name.toLowerCase()}`;
+    const subject = entity.ref === anchoredRef ? subjectHint : naturalSubject;
     subjectOf.set(entity.ref, subject);
 
     out.push({
@@ -81,6 +93,22 @@ export function observationsFrom({ verified, evidenceId, provenance, observedAt,
       validFrom: sentAt ?? observedAt,
       ...provenance,
     });
+
+    if (entity.ref === anchoredRef && naturalSubject !== subject) {
+      out.push({
+        subject: naturalSubject,
+        predicate: "same_as",
+        object: subject,
+        attributes: { reason: "covering_message_sender" },
+        evidenceId,
+        quote: entity.evidence,
+        authority: AUTHORITY.DETERMINISTIC,
+        confidence: 1,
+        observedAt,
+        validFrom: sentAt ?? observedAt,
+        ...provenance,
+      });
+    }
   }
 
   const attach = (group, toClaim) => {
@@ -131,6 +159,24 @@ export function observationsFrom({ verified, evidenceId, provenance, observedAt,
   return out;
 }
 
+/** Resolve the deterministic member who owns this evidence, including old rows. */
+function subjectHintFor({ graph, job, evidence }) {
+  if (job.subjectHint) {
+    return String(job.subjectHint).startsWith("person:")
+      ? job.subjectHint
+      : subjectForAddress(addressesIn(job.subjectHint)[0]?.normalized ?? job.subjectHint);
+  }
+  if (evidence.meta?.subjectHint) return evidence.meta.subjectHint;
+  if (evidence.kind !== "attachment" || !evidence.meta?.messageEvidenceId) return null;
+
+  // Attachments ingested before subjectHint existed still cite their covering
+  // message. Recover the sender from that immutable parent instead of asking the
+  // model to infer ownership from a résumé filename.
+  const parent = graph.evidence.get(evidence.meta.messageEvidenceId);
+  const address = addressesIn(parent?.meta?.from ?? "")[0]?.normalized;
+  return address ? subjectForAddress(address) : null;
+}
+
 /**
  * Drain the backlog with bounded concurrency.
  *
@@ -177,6 +223,7 @@ export async function drainIntelligence({
       summary.claimed += 1;
 
       const evidence = graph.evidence.get(job.evidenceId);
+      const subjectHint = evidence ? subjectHintFor({ graph, job, evidence }) : null;
       if (!evidence?.text) {
         // DETERMINISTIC. Evidence with no extractable text will not acquire any
         // by being asked again, so this is the one case that stops immediately.
@@ -221,8 +268,9 @@ export async function drainIntelligence({
           // signature block would be slower and less reliable. Anything it
           // reports still needs its own quote.
           context: {
-            sender: evidence.meta?.from ?? null,
-            subject: evidence.meta?.subject ?? null,
+            sender: evidence.meta?.from
+              ?? (subjectHint?.startsWith("person:") ? subjectHint.slice("person:".length) : null),
+            subject: evidence.meta?.subject ?? evidence.meta?.filename ?? null,
             sent_at: evidence.meta?.sentAt ?? null,
           },
           signal,
@@ -238,6 +286,8 @@ export async function drainIntelligence({
           },
           observedAt: now(),
           sentAt: evidence.meta?.sentAt ?? null,
+          subjectHint,
+          evidenceKind: evidence.kind,
         });
 
         let written = 0;
