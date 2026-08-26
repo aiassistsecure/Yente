@@ -42,6 +42,7 @@ import { CLAIM_GROUPS } from "./schema.js";
 // resolution looked for `person:schen@gmail.com` and found nothing. Silent, and
 // exactly the drift that once dropped sixteen verified facts.
 import { addressesIn, subjectForAddress } from "../graph/identity.js";
+import { currentReplyOnly } from "../mail/quoted.js";
 
 /**
  * Turn one verified envelope into graph observations.
@@ -244,8 +245,11 @@ export async function drainIntelligence({
       // whose prefill exceeds that is killed before it speaks — identically on
       // every retry, because the input never changes. Permanent, disguised as
       // transient. See bound.js.
+      const analysisText = evidence.kind === "message"
+        ? currentReplyOnly(evidence.text)
+        : evidence.text;
       const { sources, report } = boundSources([
-        { id: job.evidenceId, text: evidence.text },
+        { id: job.evidenceId, text: analysisText },
       ]);
 
       // Announced BEFORE the await, because the whole point is the 40-75s in
