@@ -43,6 +43,8 @@ export const COMPLEMENTS = Object.freeze({
   PARTNERING: ["PARTNERING"],
 });
 
+import { isIntakeArtifact, intakeRefusal } from "./qualification.js";
+
 const STOP = new Set([
   "a", "an", "and", "the", "for", "with", "who", "that", "this", "of", "in", "on",
   "to", "at", "is", "are", "was", "were", "be", "been", "some", "any", "our", "we",
@@ -89,6 +91,26 @@ function scorePair(seeker, offerer) {
   const reasons = [];
   const conflicts = [];
   let score = 0;
+
+  // 0. NEITHER SIDE IS TALKING ABOUT THE INTAKE PROCESS.
+  //
+  //    Yente sent a real introduction reading "both mention resume", built from
+  //    one person sending a résumé and Yente confirming she got it. The scorer
+  //    was not wrong; its inputs were the onboarding conversation dressed as
+  //    business intent. A résumé is how a profile gets BUILT — it is never what
+  //    one person wants from another — so this is refused before anything is
+  //    scored, and the refusal is named rather than expressed as a low number.
+  if (isIntakeArtifact(seeker.object) || isIntakeArtifact(offerer.object)) {
+    return {
+      score: 0,
+      reasons: [],
+      conflicts: [{
+        id: "intake_artifact",
+        detail: intakeRefusal(
+          isIntakeArtifact(seeker.object) ? seeker.object : offerer.object),
+      }],
+    };
+  }
 
   // 1. The predicates complement each other at all. Without this there is no
   //    match to make, whatever else lines up.

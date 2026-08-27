@@ -36,6 +36,10 @@
 
 import { AUTHORITY, MATCH_ORIGIN, MATCH_STATES, matchPairKey } from "../store/graph.js";
 import {
+  PROFILE_STATES, PROFILE_STATE_PREDICATE,
+  isLegalTransition, isQualified, profileState,
+} from "./qualification.js";
+import {
   buildIdentityIndex, resolveObservations, proposeIdentityMerges,
 } from "./identity.js";
 
@@ -142,6 +146,8 @@ export function createGraphManager({
       // the relationship itself.
       signal: relationshipSignal(mine),
       eligible: isEligible(canonical),
+      profileState: profileState(graph.observations.project(canonical)),
+      matchable: isMatchable(canonical),
       matches: graph.matches.all()
         .filter((m) => m.seeker === canonical || m.offerer === canonical)
         .map((m) => ({ ...m, id: matchPairKey(m) })),
@@ -415,6 +421,65 @@ export function createGraphManager({
       .some((row) => row.predicate === "matchmaking_excluded" && row.object === "true");
   }
 
+  /**
+   * Can this person be introduced to anyone RIGHT NOW?
+   *
+   * Two conditions, and the second is new: they must not be excluded, AND they
+   * must have approved their own profile. Before that approval a person is
+   * mid-onboarding — Yente has read a document about them and drawn
+   * conclusions, but they have not seen those conclusions or agreed to them.
+   *
+   * Introducing on unapproved facts is the failure the résumé match exposed:
+   * both parties were mid-intake, so no introduction should have existed at
+   * all, whatever the scorer made of the word "resume".
+   *
+   * `isEligible` stays as it was — exclusion is a separate, reversible act by
+   * the operator — so the two reasons a person is not matchable never collapse
+   * into one unreadable boolean.
+   */
+  function isMatchable(id) {
+    return isEligible(id) && isQualified(graph.observations.project(id));
+  }
+
+  /**
+   * Move a person along the intake lifecycle.
+   *
+   * Recorded as an observation rather than a column so that "when did they
+   * qualify, and on the strength of what" is answerable by TRACE. An illegal
+   * move throws: a lifecycle that silently accepts any transition is a
+   * lifecycle that is not enforcing anything.
+   */
+  function setProfileState({ subject: id, state, evidenceId = null, quote = null, by = null }) {
+    const current = profileState(graph.observations.project(id));
+    if (!isLegalTransition(current, state)) {
+      throw new Error(`cannot move ${id} from ${current} to ${state}`);
+    }
+    const at = now();
+    const observation = graph.observations.append({
+      subject: id,
+      predicate: PROFILE_STATE_PREDICATE,
+      object: state,
+      evidenceId,
+      quote: quote || `${current} -> ${state}`,
+      // The person's own approval is a correction in the strongest sense: it
+      // outranks every inference the pipeline made about them.
+      authority: state === PROFILE_STATES.QUALIFIED || by
+        ? AUTHORITY.USER_CORRECTION
+        : AUTHORITY.DETERMINISTIC,
+      confidence: 1,
+      observedAt: at,
+    });
+    graph.decisions.record({
+      kind: "profile", target: id, verdict: state,
+      by: by || actor, at, detail: { from: current, evidenceId },
+    });
+    return observation;
+  }
+
+  function profileStateOf(id) {
+    return profileState(graph.observations.project(id));
+  }
+
   /** Counts for the header, so the operator can see the loop moving. */
   function summary() {
     const matches = graph.matches.all();
@@ -438,6 +503,11 @@ export function createGraphManager({
     pendingMatches, pendingIdentities, subject, subjects, summary,
     confirmMatch, rejectMatch, createMatch,
     samePerson, differentPeople, wrongClaim, excludeSubject, isEligible,
+    // Matchability is deliberately separate from eligibility: one is the
+    // operator excluding somebody, the other is the person not having approved
+    // their profile yet. Collapsing them would make "why isn't this person
+    // matching" unanswerable.
+    isMatchable, setProfileState, profileStateOf,
     relationshipSignal,
     actor,
   });

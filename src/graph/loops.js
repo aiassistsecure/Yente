@@ -174,7 +174,13 @@ export function createGraphLoops({
           .all()
           // §20: an excluded subject is not a matching candidate. Read here
           // rather than filtered at write time so the exclusion stays reversible.
-          .filter((row) => manager.isEligible(row.subject));
+          //
+          // AND they must have approved their own profile. Yente introduced two
+          // people on the strength of "both mention resume" while both were
+          // still mid-onboarding — neither had seen what she believed about
+          // them, let alone agreed to it. Matching an unapproved profile is
+          // matching on facts the person has never confirmed.
+          .filter((row) => manager.isMatchable(row.subject));
 
         begin("connect", "match:scan", `scoring ${observations.length} observations`);
         const proposals = proposeIntroductions({ observations });
