@@ -261,6 +261,28 @@ test("fetching never sets \\Seen — the runtime does that after recording", asy
   assert.ok(events.some((e) => e === "flag:9:\\Seen"), "markSeen must flag");
 });
 
+test("a send-only transport REFUSES to mark seen, rather than crashing", async () => {
+  // The refusal was written and the name it tested was never bound, so this
+  // path raised `ReferenceError: sendOnly is not defined` — a crash standing
+  // exactly where a handled error was intended. A caller that catches
+  // TransportError, as the desk does, would not have caught it.
+  //
+  // The distinction matters beyond tidiness: an SMTP-only transport that
+  // claimed it could mark mail seen would be asserting ownership of a mailbox
+  // the graph's MailSource actually owns, and two readers of one INBOX is the
+  // bug that lost résumé attachments.
+  const transport = createMailTransport({ smtp: {}, from: "yente@ccme.network" });
+
+  await assert.rejects(
+    transport.markSeen(1),
+    (error) => {
+      assert.equal(error.name, "TransportError", "must be the refusal, not a ReferenceError");
+      assert.equal(error.code, "SEND_ONLY");
+      return true;
+    },
+  );
+});
+
 test("the mailbox lock is released even when the fetch throws", async () => {
   // imapflow's lock is exclusive. One leaked by an exception wedges every later
   // poll while the process still looks perfectly healthy.
