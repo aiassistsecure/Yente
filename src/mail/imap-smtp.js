@@ -45,6 +45,14 @@ export function createMailTransport(config, deps = {}) {
   const { imap, smtp, from, mailbox = "INBOX" } = config;
   if (!from) throw new TransportError("BAD_CONFIG", "A mail transport requires a From address");
 
+  // A transport with no IMAP config can send but must never claim to read. The
+  // refusal in markSeen already said so; it just referenced a name that was
+  // never bound, so it raised a ReferenceError instead of the TransportError it
+  // meant to — a crash where a handled refusal was written. Derived from the
+  // config rather than passed in, because "can this transport read" is a fact
+  // about what it was given, not a second setting that can disagree with it.
+  const sendOnly = !imap;
+
   const ImapFlowCtor = deps.ImapFlow;
   const createSmtp = deps.createTransport;
 
