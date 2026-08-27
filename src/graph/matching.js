@@ -44,6 +44,7 @@ export const COMPLEMENTS = Object.freeze({
 });
 
 import { isIntakeArtifact, intakeRefusal } from "./qualification.js";
+import { indexDocumentVocabulary, significantWords, sourceKindOf } from "./provenance.js";
 
 const STOP = new Set([
   "a", "an", "and", "the", "for", "with", "who", "that", "this", "of", "in", "on",
@@ -87,7 +88,7 @@ function attributeValues(attributes) {
  * tuned weight is a guess wearing a decimal point. What matters for now is that
  * the breakdown is legible: every point has a name and a quote behind it.
  */
-function scorePair(seeker, offerer) {
+function scorePair(seeker, offerer, documents = EMPTY_DOCUMENTS) {
   const reasons = [];
   const conflicts = [];
   let score = 0;
@@ -155,11 +156,50 @@ function scorePair(seeker, offerer) {
     });
   }
 
+  // 4. THE DOCUMENTS BACK IT UP.
+  //
+  //    Everything above reads two sentences people typed into email. A résumé,
+  //    a portfolio and a vendor profile are the most considered things a person
+  //    gives us and, until now, they scored nothing at all: `proposeIntroductions`
+  //    filtered the graph down to `intent:` rows and discarded every fact those
+  //    documents had produced.
+  //
+  //    The direction matters. What we want to know is whether the OFFERER can
+  //    actually do the thing the SEEKER is asking for — so the seeker's words
+  //    are checked against the offerer's evidence, not against their own. A
+  //    person whose CV lists React answering somebody looking for React is a
+  //    different proposition from two people who both typed the word.
+  //
+  //    Deliberately weighted below the stated intent. A document proves
+  //    capability, not desire: "knows Rust" is not "wants a Rust job", and a
+  //    scorer that let capability outvote a stated intent would introduce a
+  //    contented employee to a recruiter on the strength of a skills list.
+  const backing = corroboration(seeker.object, documents.offerer);
+  if (backing.length > 0) {
+    const weight = Math.min(0.2, 0.07 * backing.length);
+    score += weight;
+    reasons.push({
+      id: "document_corroboration",
+      weight,
+      detail: `their ${sourceLabel(backing)} evidences ${backing.map((b) => b.word).join(", ")}`,
+      matched: backing.map((b) => b.word),
+      // The quote travels with the reason. An introduction that says "David's
+      // CV lists React" is one the recipient can check; "the vocabularies
+      // overlapped" is not, and INV-5 applies to a match's stated reason as
+      // much as to the claim underneath it.
+      quotes: backing.map((b) => ({ quote: b.quote, evidenceId: b.evidenceId })),
+    });
+  }
+
   // A pair that only shares a predicate shape and nothing else is the "both
   // mentioned AI" case. Recorded as a conflict so the reason survives into the
   // output instead of being silently filtered — a match we refuse is worth
   // showing to whoever is calibrating the threshold.
-  if (objectOverlap.length === 0 && attrOverlap.length === 0) {
+  //
+  // Document corroboration counts as a shared specific. It is a stronger one
+  // than a word appearing in both emails, because only one side authored it and
+  // the other side had no way to echo it.
+  if (objectOverlap.length === 0 && attrOverlap.length === 0 && backing.length === 0) {
     conflicts.push({
       id: "no_shared_specifics",
       detail: "the intents complement in shape but share no subject or attribute",
@@ -167,6 +207,35 @@ function scorePair(seeker, offerer) {
   }
 
   return { score: Math.min(1, score), reasons, conflicts };
+}
+
+/** No documents on either side — the shape callers get when nothing is indexed. */
+const EMPTY_DOCUMENTS = Object.freeze({ seeker: new Map(), offerer: new Map() });
+
+/**
+ * Which of the words in one person's stated intent the OTHER person's documents
+ * can vouch for.
+ */
+function corroboration(intentObject, vocabulary) {
+  if (!vocabulary || vocabulary.size === 0) return [];
+  const seen = new Set();
+  const found = [];
+  for (const word of significantWords(intentObject)) {
+    const entry = vocabulary.get(word);
+    if (entry && !seen.has(word)) {
+      seen.add(word);
+      found.push(entry);
+    }
+  }
+  return found.sort((a, b) => a.word.localeCompare(b.word));
+}
+
+/** "résumé" reads better than "attachment" in a reason a person will read. */
+function sourceLabel(backing) {
+  const kinds = new Set(backing.map((b) => sourceKindOf(b.evidenceId)));
+  if (kinds.size > 1) return "documents";
+  const [only] = kinds;
+  return { attachment: "résumé", link: "portfolio", vendor: "profile" }[only] ?? "documents";
 }
 
 /**
@@ -180,6 +249,11 @@ function scorePair(seeker, offerer) {
 export function proposeIntroductions({ observations, threshold = 0.5, limit = 50 }) {
   const intents = observations.filter((row) => String(row.predicate ?? "").startsWith("intent:"));
 
+  // Built once for the whole pass, not per pair. Scoring is O(intents²) and
+  // every pair needs both sides' documents; re-deriving a subject's vocabulary
+  // inside that loop would compute the same answer once per partner.
+  const vocabularies = indexDocumentVocabulary(observations);
+
   const proposals = [];
   for (const a of intents) {
     for (const b of intents) {
@@ -188,7 +262,10 @@ export function proposeIntroductions({ observations, threshold = 0.5, limit = 50
       // chatty sender generating a page of imaginary introductions.
       if (a.subject === b.subject) continue;
 
-      const scored = scorePair(a, b);
+      const scored = scorePair(a, b, {
+        seeker: vocabularies.for(a.subject),
+        offerer: vocabularies.for(b.subject),
+      });
       if (!scored || scored.score < threshold) continue;
 
       proposals.push(Object.freeze({

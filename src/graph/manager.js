@@ -42,6 +42,7 @@ import {
 import {
   buildIdentityIndex, resolveObservations, proposeIdentityMerges,
 } from "./identity.js";
+import { documentVocabulary, groupBySource, sourceKindOf } from "./provenance.js";
 
 export const CORRECTION = Object.freeze({
   SAME_PERSON: "same_person",
@@ -135,13 +136,41 @@ export function createGraphManager({
         .sort((a, b) => String(b.observedAt).localeCompare(String(a.observedAt))),
       // The documents and messages this profile was built from — §10's Documents
       // tab, and the answer to "where did all this come from".
+      //
+      // Each one carries the claims IT produced, because the flat list answered
+      // "what do we hold" and not "which of this belongs where". A reviewer
+      // needs to see that a job title came from a CV and a budget came from an
+      // email — those deserve different amounts of trust, and one
+      // undifferentiated list of everything Yente believes hides the difference.
       evidence: evidenceIds
         .map((eid) => {
           const row = graph.evidence.get(eid);
-          return row ? { id: eid, ...row } : null;
+          if (!row) return null;
+          const claims = mine.filter((r) => r.evidenceId === eid);
+          return {
+            id: eid,
+            ...row,
+            sourceKind: sourceKindOf(eid),
+            claimCount: claims.length,
+            claims,
+          };
         })
         .filter(Boolean)
         .sort((a, b) => String(b.receivedAt).localeCompare(String(a.receivedAt))),
+
+      // The same claims, organised by what produced them: what they wrote to
+      // us, what their résumé says, what their portfolio says, what a person
+      // here corrected by hand.
+      sources: groupBySource(current),
+
+      // What their documents can vouch for — the vocabulary that substantiates
+      // their stated intents during matching. Surfaced on the profile because
+      // "why did this match" and "why did this NOT match" are the same
+      // question, and neither is answerable without seeing what Yente can
+      // actually evidence about the person.
+      substantiated: [...documentVocabulary(mine).values()]
+        .sort((a, b) => a.word.localeCompare(b.word)),
+
       // §14, and labelled as what it is: a calculated signal, not a claim about
       // the relationship itself.
       signal: relationshipSignal(mine),
