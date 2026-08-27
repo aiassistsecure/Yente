@@ -142,19 +142,19 @@ export function observationsFrom({
     subject: subjectOf.get(claim.subjectRef),
     predicate: claim.predicate,
     object: subjectOf.get(claim.objectRef) ?? null,
-    attributes: claim.rawPredicate ? { rawPredicate: claim.rawPredicate } : {},
   }));
 
-  attach("opportunities", (claim) => ({
+  // What the message revealed about somebody. The FIELD is the predicate, so a
+  // disclosure is queryable the same way an intent is — `capability` claims are
+  // findable as a set rather than buried in free text under `note`.
+  //
+  // This is what documents were always producing and the graph had nowhere to
+  // put: a résumé's facts used to arrive as `opportunity` summaries and `note`
+  // blobs, which is why matching could see almost nothing in them.
+  attach("disclosures", (claim) => ({
     subject: subjectOf.get(claim.subjectRef),
-    predicate: "opportunity",
-    object: claim.summary,
-  }));
-
-  attach("observations", (claim) => ({
-    subject: claim.subjectRef ? subjectOf.get(claim.subjectRef) : null,
-    predicate: "note",
-    object: claim.text,
+    predicate: claim.field,
+    object: claim.value,
   }));
 
   return out;

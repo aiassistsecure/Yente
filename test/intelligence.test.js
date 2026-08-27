@@ -262,7 +262,16 @@ test("Muse is asked for one OBSERVATIONS envelope, not a multi-block manifest", 
   assert.match(prompt, /exactly one OBSERVATIONS block/i);
   assert.doesNotMatch(OBSERVER_SYSTEM, /MANIFEST block/i);
   assert.doesNotMatch(prompt, /MANIFEST block/i);
-  assert.match(prompt, /entities, intents, relationships, opportunities, and\s+observations/i);
+  assert.match(prompt, /entities, intents, relationships, and\s+disclosures/i);
+  // The two arrays that are GONE, and must stay gone. `opportunities` asked the
+  // model to speculate about business possibilities; `observations` was a
+  // catch-all whose own description ("anything else worth remembering") was an
+  // instruction to keep producing until it ran out of text.
+  assert.doesNotMatch(prompt, /opportunities/i);
+  assert.doesNotMatch(prompt, /anything else worth remembering/i);
+  // And the scope: this is ONE message, not a picture of the world.
+  assert.match(OBSERVER_SYSTEM, /ONE message/);
+  assert.match(prompt, /THIS message/);
   assert.match(prompt, /COMPLETE id[\s\S]*including its message: or attachment: prefix/i);
 });
 

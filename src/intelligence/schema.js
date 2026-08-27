@@ -50,7 +50,7 @@
  * inference cache key, so a bump invalidates cached inferences by construction
  * instead of by remembering to clear something.
  */
-export const OBSERVATION_SCHEMA_VERSION = "obs_v1";
+export const OBSERVATION_SCHEMA_VERSION = "obs_v2";
 
 export class SchemaError extends Error {
   constructor(code, message, meta = {}) {
@@ -85,20 +85,42 @@ export const INTENT_TYPES = Object.freeze([
 ]);
 
 /**
- * Relationship predicates. Also open, same reasoning.
+ * Relationship predicates. CLOSED — see normalizeRelationship for why this
+ * changed, and what it cost while it was open.
  */
 export const RELATIONSHIP_PREDICATES = Object.freeze([
   "works_at", "knows", "communicated_with", "introduced",
-  "mentions", "associated_with",
+]);
+
+/**
+ * What a message can DISCLOSE about somebody.
+ *
+ * A closed vocabulary, and the same one profile extraction already uses
+ * (`domain/profile-schema.js`), so a fact mined from a résumé by the desk and a
+ * fact observed from an email by the graph land under the same name instead of
+ * being two vocabularies that drift.
+ *
+ * This is the array that replaced `opportunities` and `observations`. Those two
+ * asked the model to speculate ("a concrete business possibility the sources
+ * support") and then to keep going ("anything else worth remembering that the
+ * shapes above do not fit") — an instruction to produce until it runs out of
+ * text, which is exactly what it did. A disclosure has a FIELD and a VALUE, so
+ * there is a shape to fill and a point at which the source has nothing left to
+ * say.
+ */
+export const DISCLOSURE_FIELDS = Object.freeze([
+  "role", "capability", "industry", "employer", "geography",
+  "seniority", "credential", "availability", "stage", "budget",
 ]);
 
 const ENTITY_KIND_SET = new Set(ENTITY_KINDS);
 const INTENT_TYPE_SET = new Set(INTENT_TYPES);
 const PREDICATE_SET = new Set(RELATIONSHIP_PREDICATES);
+const DISCLOSURE_FIELD_SET = new Set(DISCLOSURE_FIELDS);
 
-/** The five claim arrays. `confidence`/`evidenceRefs` are envelope metadata. */
+/** The claim arrays. `confidence`/`evidenceRefs` are envelope metadata. */
 export const CLAIM_GROUPS = Object.freeze([
-  "entities", "intents", "relationships", "opportunities", "observations",
+  "entities", "intents", "relationships", "disclosures",
 ]);
 
 function isPlainObject(value) {
@@ -190,33 +212,58 @@ function normalizeRelationship(raw, index) {
   const label = `relationships[${index}]`;
   if (!isPlainObject(raw)) throw new SchemaError("BAD_CLAIM", `${label} must be an object`);
   const predicate = String(raw.predicate ?? "").trim().toLowerCase().replace(/[\s-]+/g, "_");
-  const known = PREDICATE_SET.has(predicate);
+
+  // CLOSED, like entity kinds — and this used to be open, which was the bug.
+  //
+  // An unrecognised predicate was silently rewritten to `associated_with` and
+  // stored as a real edge, so a relationship the model invented could never
+  // fail validation; it just arrived wearing a vaguer name. That is how the
+  // graph filled with connections nobody could trace to a claim anyone made.
+  //
+  // Rejecting is not the same as discarding: the rejection is counted and
+  // reported with the offending predicate, so a vocabulary that is genuinely
+  // too narrow shows up as a pattern in the rejections rather than as silent
+  // mush in the graph.
+  //
+  // `mentions` and `associated_with` went with it. They are facts about text,
+  // not about people: always true, never meaningful, and the two the fallback
+  // funnelled everything into.
+  if (!PREDICATE_SET.has(predicate)) {
+    throw new SchemaError("UNKNOWN_PREDICATE",
+      `${label}.predicate must be one of ${RELATIONSHIP_PREDICATES.join(", ")}, `
+      + `got ${raw.predicate ?? "(missing)"}`,
+      { predicate: raw.predicate });
+  }
+
   return Object.freeze({
     subjectRef: requireString(raw.subject_ref ?? raw.subjectRef, `${label}.subject_ref`, { max: 128 }),
-    predicate: known ? predicate : "associated_with",
-    rawPredicate: known ? null : String(raw.predicate ?? ""),
+    predicate,
     objectRef: requireString(raw.object_ref ?? raw.objectRef, `${label}.object_ref`, { max: 128 }),
     ...normalizeEvidence(raw, label),
   });
 }
 
-function normalizeOpportunity(raw, index) {
-  const label = `opportunities[${index}]`;
+/**
+ * What this message revealed about somebody: a typed field and its value.
+ *
+ * Replaces `opportunities` (speculation) and `observations` (a catch-all whose
+ * own description invited the model to keep producing). A disclosure has to
+ * name a field from a closed list, so there is a shape to fill and a point at
+ * which the source has nothing left to disclose.
+ */
+function normalizeDisclosure(raw, index) {
+  const label = `disclosures[${index}]`;
   if (!isPlainObject(raw)) throw new SchemaError("BAD_CLAIM", `${label} must be an object`);
+  const field = String(raw.field ?? "").trim().toLowerCase().replace(/[\s-]+/g, "_");
+  if (!DISCLOSURE_FIELD_SET.has(field)) {
+    throw new SchemaError("UNKNOWN_DISCLOSURE_FIELD",
+      `${label}.field must be one of ${DISCLOSURE_FIELDS.join(", ")}, got ${raw.field ?? "(missing)"}`,
+      { field: raw.field });
+  }
   return Object.freeze({
     subjectRef: requireString(raw.subject_ref ?? raw.subjectRef, `${label}.subject_ref`, { max: 128 }),
-    summary: requireString(raw.summary, `${label}.summary`, { max: 1_000 }),
-    ...normalizeEvidence(raw, label),
-  });
-}
-
-function normalizeObservation(raw, index) {
-  const label = `observations[${index}]`;
-  if (!isPlainObject(raw)) throw new SchemaError("BAD_CLAIM", `${label} must be an object`);
-  return Object.freeze({
-    subjectRef: typeof raw.subject_ref === "string" && raw.subject_ref.trim()
-      ? raw.subject_ref.trim() : null,
-    text: requireString(raw.text, `${label}.text`, { max: 1_000 }),
+    field,
+    value: requireString(raw.value, `${label}.value`, { max: 512 }),
     ...normalizeEvidence(raw, label),
   });
 }
@@ -225,8 +272,7 @@ const NORMALIZERS = Object.freeze({
   entities: normalizeEntity,
   intents: normalizeIntent,
   relationships: normalizeRelationship,
-  opportunities: normalizeOpportunity,
-  observations: normalizeObservation,
+  disclosures: normalizeDisclosure,
 });
 
 /**
@@ -282,7 +328,7 @@ export function validateEnvelope(raw, { knownSourceIds = null } = {}) {
   const REF_FIELDS = Object.freeze({
     intents: ["actorRef"],
     relationships: ["subjectRef", "objectRef"],
-    opportunities: ["subjectRef"],
+    disclosures: ["subjectRef"],
   });
 
   for (const [group, fields] of Object.entries(REF_FIELDS)) {
