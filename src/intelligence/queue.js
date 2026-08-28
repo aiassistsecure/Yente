@@ -43,6 +43,7 @@ import { CLAIM_GROUPS } from "./schema.js";
 // exactly the drift that once dropped sixteen verified facts.
 import { addressesIn, subjectForAddress } from "../graph/identity.js";
 import { currentReplyOnly } from "../mail/quoted.js";
+import { isIntakeArtifact } from "../graph/qualification.js";
 
 /**
  * Turn one verified envelope into graph observations.
@@ -77,6 +78,18 @@ export function observationsFrom({
     : null;
 
   for (const entity of entities) {
+    // YENTE IS NEVER A GRAPH ENTITY. The invariant is absolute: she is the
+    // desk, not a member, and a To: header only means the message arrived.
+    //
+    // The model tries this constantly and reasonably — "The sender is
+    // communicating with Yente" is a true sentence about every email we hold.
+    // Until now it was blocked only by ACCIDENT: the model kept emitting
+    // `object_ref: null` for her, which happened to fail requireString. The
+    // day it declares a ref for yente@ccme.network instead, she lands in the
+    // graph, becomes matchable, and the desk starts introducing people to
+    // itself. Protection by coincidence is not protection.
+    if (isYenteIdentity(entity)) continue;
+
     // Identity: prefer the address, because an address is an identifier and a
     // name is not. §7 — "Sarah Chen" is three different people in three
     // different mailboxes; sarah@acme.com is one.
@@ -123,7 +136,10 @@ export function observationsFrom({
   const attach = (group, toClaim) => {
     for (const claim of verified[group] ?? []) {
       const mapped = toClaim(claim);
-      if (!mapped?.subject) continue;   // ref we never declared; already dropped
+      // Null means the mapper refused the claim (a one-ended relationship, a
+      // skipped identity); a missing subject means the ref was never declared.
+      // Both are drops, not errors — validateEnvelope already counted them.
+      if (!mapped?.subject) continue;
       out.push({
         ...mapped,
         evidenceId, quote: claim.evidence,
@@ -146,11 +162,19 @@ export function observationsFrom({
     attributes: { ...claim.attributes, ...(claim.rawType ? { rawType: claim.rawType } : {}) },
   }));
 
-  attach("relationships", (claim) => ({
-    subject: subjectOf.get(claim.subjectRef),
-    predicate: claim.predicate,
-    object: subjectOf.get(claim.objectRef) ?? null,
-  }));
+  attach("relationships", (claim) => {
+    // A relationship needs BOTH ends. When the object ref was never declared —
+    // or was Yente, skipped above — `object` would be null, and a one-ended
+    // edge is exactly the malformed shape that used to arrive as
+    // `communicated_with -> null` and survive into the graph.
+    const object = subjectOf.get(claim.objectRef);
+    if (!object) return null;
+    return {
+      subject: subjectOf.get(claim.subjectRef),
+      predicate: claim.predicate,
+      object,
+    };
+  });
 
   // What the message revealed about somebody. The FIELD is the predicate, so a
   // disclosure is queryable the same way an intent is — `capability` claims are
@@ -159,13 +183,38 @@ export function observationsFrom({
   // This is what documents were always producing and the graph had nowhere to
   // put: a résumé's facts used to arrive as `opportunity` summaries and `note`
   // blobs, which is why matching could see almost nothing in them.
-  attach("disclosures", (claim) => ({
-    subject: subjectOf.get(claim.subjectRef),
-    predicate: claim.field,
-    object: claim.value,
-  }));
+  attach("disclosures", (claim) => {
+    // THE RESUME HOLE, CLOSED ON THE DISCLOSURE PATH TOO. isIntakeArtifact
+    // guards intents — it was written before disclosures existed, so
+    // `capability: "resume"` walked straight through the new door, became a
+    // typed fact, joined the document vocabulary, and was one scoring pass
+    // away from being something two people match on. Observed in a live
+    // reasoning trace: "The sender mentions a resume, which discloses their
+    // capability."
+    //
+    // A résumé is how a profile gets BUILT. It is never what a person IS.
+    if (isIntakeArtifact(claim.value)) return null;
+    return {
+      subject: subjectOf.get(claim.subjectRef),
+      predicate: claim.field,
+      object: claim.value,
+    };
+  });
 
   return out;
+}
+
+/**
+ * Is this entity Yente herself, under any of the shapes the model produces?
+ *
+ * The address is the reliable signal; the name alone matches only when there is
+ * no address to contradict it, so a real member who happens to be named Yente
+ * is not silently erased — her address would differ.
+ */
+function isYenteIdentity(entity) {
+  const address = String(entity?.emailAddress ?? "").trim().toLowerCase();
+  if (address) return address === "yente@ccme.network";
+  return String(entity?.name ?? "").trim().toLowerCase() === "yente";
 }
 
 /** Resolve the deterministic member who owns this evidence, including old rows. */
