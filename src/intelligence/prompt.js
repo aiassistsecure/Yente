@@ -293,6 +293,105 @@ const OUTPUT_CONTRACT = [
  * @param {object}   [input.context]  non-authoritative orientation (e.g. the
  *                                    sender address the MIME parser determined)
  */
+/**
+ * The prompt used when the model looped instead of answering.
+ *
+ * WHAT THE LOOP WAS ACTUALLY SAYING
+ *
+ *   - I will ensure the `confidence` field is between 0 and 1.
+ *   - I will ensure the `source_id` includes the `message:` prefix.
+ *   - I will ensure the `evidence` is a verbatim substring of the source.
+ *   - I will ensure the `explicit` field is set correctly.
+ *
+ * Every one of those is a line from the RULES section of the output contract.
+ * The model was not thinking about the email — it was rehearsing the
+ * constraints. It got captured by the rules and lost the task.
+ *
+ * That diagnosis chooses the fix. A blind retry sends the identical prompt and
+ * invites the identical capture; a stricter deadline just fails faster. What it
+ * needs is waking up and pointing back at the work.
+ *
+ * SO THIS PROMPT DELIBERATELY DOES NOT RESTATE THE RULES.
+ *
+ * They are already in the system message, which is present on every turn. What
+ * gets repeated here is the TASK — read this message, report who it identifies,
+ * what it discloses, what they are asking for — because that is the thing that
+ * fell out of view. Adding the rule list back would re-supply exactly the
+ * material the model was stuck on.
+ *
+ * The repeated line is quoted back so the correction is specific. "You were
+ * repeating yourself" is a scolding; "you wrote this line five times" is
+ * information the model can act on.
+ *
+ * @param {object} input
+ * @param {Array<{id: string, text: string}>} input.sources
+ * @param {string} [input.repeatedLine]  the line it was cycling on
+ * @param {object} [input.context]
+ */
+export function createWakeUpPrompt({ sources, repeatedLine = null, context = null }) {
+  if (!Array.isArray(sources) || sources.length === 0) {
+    throw new TypeError("createWakeUpPrompt requires at least one source");
+  }
+
+  const blocks = [
+    {
+      tag: BLOCK_TAGS.WAKE_UP,
+      content: [
+        repeatedLine
+          ? `Your previous attempt stopped making progress. You wrote this line repeatedly: "${repeatedLine}"`
+          : "Your previous attempt stopped making progress: it repeated itself instead of answering.",
+        "",
+        "You were restating the requirements rather than applying them. The",
+        "requirements are in your instructions and you do not need to recite them —",
+        "you need to use them once, on the message below.",
+        "",
+        "Do not plan. Do not list what you will check. Read the source and answer.",
+      ].join("\n"),
+    },
+    {
+      tag: BLOCK_TAGS.TASK,
+      content: [
+        "Read the SOURCE blocks — one message and anything attached to it —",
+        "and report three things about THIS message: who it identifies, what it",
+        "discloses about them, and what they are asking for. Quote your evidence",
+        "exactly. Report only what these sources support, and stop when they",
+        "have nothing further to say.",
+      ].join(" "),
+    },
+  ];
+
+  if (context && Object.keys(context).length > 0) {
+    blocks.push({ tag: BLOCK_TAGS.META, json: context });
+  }
+
+  for (const source of sources) {
+    blocks.push({ tag: BLOCK_TAGS.SOURCE, argument: source.id, content: source.text });
+  }
+
+  // The vocabulary stays: it is data the answer needs, not a rule to rehearse.
+  blocks.push({
+    tag: BLOCK_TAGS.CONTROLLED_VOCABULARY,
+    json: {
+      entity_kinds: ENTITY_KINDS,
+      intent_types: INTENT_TYPES,
+      relationship_predicates: RELATIONSHIP_PREDICATES,
+      disclosure_fields: DISCLOSURE_FIELDS,
+    },
+  });
+
+  // The SHAPE of the answer, without the list of things to be careful about.
+  blocks.push({
+    tag: BLOCK_TAGS.OUTPUT_CONTRACT,
+    content: [
+      "Answer as exactly one OBSERVATIONS block containing one JSON object with",
+      "these four array fields: entities, intents, relationships, and disclosures.",
+      "Nothing before or after it.",
+    ].join("\n"),
+  });
+
+  return createPromptArtifact(blocks);
+}
+
 export function createObservationPrompt({ sources, context = null }) {
   if (!Array.isArray(sources) || sources.length === 0) {
     throw new TypeError("createObservationPrompt requires at least one source");

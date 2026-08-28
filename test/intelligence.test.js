@@ -601,9 +601,23 @@ test("identical evidence is not re-interpreted", async () => {
   assert.equal(second.verified.entities.length, 2);
 });
 
-test("an empty result is cached too", async () => {
-  // "This evidence supports no claims" is a real and expensive answer. Not
-  // caching it means every replay pays for it again.
+test("an empty result is NOT cached, so a better model can re-derive it", async () => {
+  // This reverses an earlier decision, and the earlier reasoning was sound as
+  // far as it went: "this evidence supports no claims" is a real and expensive
+  // answer, so re-deriving it on every replay is waste.
+  //
+  // What it missed is that we cannot tell that answer apart from a model
+  // failing. A real trace: NuExtract3 reasoned correctly about a message —
+  // identified the sender as a PERSON, correctly refused to invent a disclosure
+  // field for "iPhone", correctly found no intent — and then concluded the right
+  // output was `{}`, discarding the entity it had just found. It cited a rule
+  // ("the single line {} is a good answer") that appears NOWHERE in our prompt.
+  // It invented the rule and obeyed it.
+  //
+  // The cache is keyed on the CONTENT HASH, not the model. Cached, that empty
+  // answer would be served to every better model swapped in afterwards, and the
+  // swap would look like it changed nothing. Replacing the model is the plan, so
+  // caching empties would silently poison the experiment.
   const store = new Map();
   const cache = {
     get: async (k) => store.get(k) ?? null,
@@ -614,8 +628,10 @@ test("an empty result is cached too", async () => {
 
   await p.observe({ sources: SOURCES });
   const again = await p.observe({ sources: SOURCES });
-  assert.equal(client.calls, 1);
-  assert.equal(again.cached, true);
+
+  assert.equal(client.calls, 2, "an empty answer must be re-asked, not remembered");
+  assert.equal(again.cached, false);
+  assert.equal(store.size, 0, "and nothing empty may reach the store");
   assert.equal(claimCount(again.envelope), 0);
 });
 

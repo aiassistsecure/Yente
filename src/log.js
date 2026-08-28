@@ -67,6 +67,7 @@ const EVENT_CHANNEL = {
   mail_uidvalidity_changed: "listen", mail_parse_failed: "listen",
   observe_started: "understand",
   observed: "understand", understood: "understand", observe_failed: "understand",
+  understood_nothing: "understand",
   understand_failed: "understand", job_stuck: "understand",
   job_failed_permanently: "understand", thinking: "understand",
   proposed: "connect", connect_failed: "connect",
@@ -128,7 +129,7 @@ export function createLogger({ pid = process.pid, quiet = false } = {}) {
   // attempt=1 streams must never be braided into one sentence.
   const modelStreamBuffers = new Map();
   const stats = {
-    ingested: 0, documents: 0, observed: 0, claims: 0,
+    ingested: 0, documents: 0, observed: 0, claims: 0, emptyUnderstandings: 0,
     failures: 0, retries: 0, matches: 0, decisions: 0,
     observeMs: [],                 // for the sparkline and the average
   };
@@ -306,7 +307,16 @@ export function createLogger({ pid = process.pid, quiet = false } = {}) {
         return;
       }
 
+      // A MODEL THAT RETURNED NOTHING IS NOT A QUIET MESSAGE.
+      //
+      // This shares the `observed` bookkeeping deliberately — the job did
+      // finish, the time it took is real, and the averages should include it.
+      // What it must NOT share is the wording. `understood 0 claims` printed in
+      // the same shape as `understood 6 claims` is how twenty-six empty answers
+      // drain a queue while the heartbeat reports progress.
+      case "understood_nothing":
       case "observed": {
+        const empty = event === "understood_nothing";
         flushModelStreamsFor(meta.evidence);
         end(meta.evidence);
         stats.observed += 1;
@@ -314,13 +324,17 @@ export function createLogger({ pid = process.pid, quiet = false } = {}) {
         if (Number.isFinite(Number(meta.elapsed_ms))) {
           stats.observeMs.push(Number(meta.elapsed_ms));
         }
-        line("info", "understand",
-          `understood ${c.bold(meta.claims)} claim${meta.claims === 1 ? "" : "s"}`, {
+        if (empty) stats.emptyUnderstandings += 1;
+        line(empty ? "warn" : "info", "understand",
+          empty
+            ? `${c.yellow("understood NOTHING")} — the model returned no usable claims`
+            : `understood ${c.bold(meta.claims)} claim${meta.claims === 1 ? "" : "s"}`, {
             evidence: String(meta.evidence).slice(0, 20),
             took: human(meta.elapsed_ms),
             rejected: meta.rejected || undefined,
             cached: meta.cached ? c.cyan("cache hit") : undefined,
             recovered: meta.recovered ? c.yellow(meta.recovered) : undefined,
+            ...(empty ? { note: "not cached — a better model will re-derive this" } : {}),
           });
         return;
       }
@@ -488,7 +502,9 @@ export function createLogger({ pid = process.pid, quiet = false } = {}) {
     const dashboard = [
       `${stamp()} ${c.dim("┈┈")} ${mailState}`,
       `${c.blue("in")} ${stats.ingested}${stats.documents ? `+${stats.documents}doc` : ""}`,
-      `${c.magenta("understood")} ${stats.observed}${c.grey("/")}${c.bold(stats.claims)}cl`,
+      `${c.magenta("understood")} ${stats.observed}${c.grey("/")}${c.bold(stats.claims)}cl`
+        + (stats.emptyUnderstandings > 0
+          ? c.yellow(` ${stats.emptyUnderstandings}empty`) : ""),
       // RUNNING against its ceiling. Three-in-flight when you asked for one is
       // the difference between a setting you made and a setting that took, and
       // it cost most of an hour to notice from the in-flight list alone.
