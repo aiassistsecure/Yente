@@ -287,7 +287,7 @@ test("the observer constitution closes the forks a reasoner otherwise litigates"
   assert.match(OBSERVER_SYSTEM, /Do not extract[\s\S]*quoted history/i);
   assert.match(OBSERVER_SYSTEM, /phone[\s\S]*not a disclosure field/i);
   assert.match(OBSERVER_SYSTEM, /new guy on the block/i);
-  assert.match(OBSERVER_SYSTEM, /Four empty arrays is a complete, correct answer/i);
+  assert.match(OBSERVER_SYSTEM, /The empty answer \{\} is complete and correct/i);
   assert.match(OBSERVER_SYSTEM, /Inner monologue is not the job/i);
   assert.match(OBSERVER_SYSTEM, /Subject "Help" with no ask is not SEEKING/i);
 });
@@ -707,6 +707,71 @@ test("a malformed block is retried, because models fix shape when told", async (
   assert.equal(calls, 2);
   assert.equal(result.verified.entities.length, 2);
   assert.equal(result.failures[0].transient, true);
+});
+
+test("one broken line costs one claim, not four minutes of extraction", async () => {
+  // The 2026-08-28 resume: ~30 grounded claims over a 4-minute generation,
+  // killed whole by one extra closing brace at position 5325. Under
+  // one-claim-per-line the same slip costs the line it sits on.
+  const lines = [
+    "<<<OBSERVATIONS>>>",
+    `{"claim": "entity", "ref": "p1", "kind": "PERSON", "name": "Sarah Chen", "source_id": "msg-1", "evidence": "Sarah Chen, Founder, Acme Systems.", "explicit": true, "confidence": 0.95}`,
+    // The one-character slip: an extra trailing brace.
+    `{"claim": "intent", "actor_ref": "p1", "type": "HIRING", "object": "backend engineer", "source_id": "msg-1", "evidence": "hiring a backend engineer with Rust experience", "explicit": true, "confidence": 0.9}}`,
+    `{"claim": "disclosure", "subject_ref": "p1", "field": "role", "value": "Founder", "source_id": "msg-1", "evidence": "Sarah Chen, Founder, Acme Systems.", "explicit": true, "confidence": 0.9}`,
+    "<<<END>>>",
+  ].join("\n");
+
+  const client = { async complete() { return { text: lines, finishReason: "stop" }; } };
+  const result = await provider(client).observe({ sources: SOURCES });
+
+  assert.equal(result.verified.entities.length, 1, "the entity line survives");
+  assert.equal(result.verified.disclosures.length, 1, "the disclosure line survives");
+  assert.equal(result.verified.intents.length, 0, "only the broken line is lost");
+  const lineReject = result.rejected.find((r) => r.code === "INVALID_JSON_LINE");
+  assert.ok(lineReject, "and the loss is REPORTED per line, never silent");
+  assert.match(lineReject.message, /line 2/);
+});
+
+test("an unknown claim kind is a counted line rejection, not a silent drop", async () => {
+  const lines = [
+    "<<<OBSERVATIONS>>>",
+    `{"claim": "entity", "ref": "p1", "kind": "PERSON", "name": "Sarah Chen", "source_id": "msg-1", "evidence": "Sarah Chen, Founder, Acme Systems.", "explicit": true, "confidence": 0.95}`,
+    `{"claim": "opportunity", "summary": "something speculative"}`,
+    "<<<END>>>",
+  ].join("\n");
+  const client = { async complete() { return { text: lines, finishReason: "stop" }; } };
+  const result = await provider(client).observe({ sources: SOURCES });
+  assert.equal(result.verified.entities.length, 1);
+  assert.ok(result.rejected.some((r) => r.code === "UNKNOWN_CLAIM_KIND"));
+});
+
+test("the retry carries the parser's error back to the model", async () => {
+  // "Models fix shape when told" — and until now the retry sent the
+  // byte-identical prompt, telling the model nothing. The second attempt must
+  // carry a REPAIR block naming what broke; it must never echo the failed
+  // reply itself, which is derived from untrusted sources.
+  const prompts = [];
+  let calls = 0;
+  const client = {
+    async complete({ prompt }) {
+      prompts.push(prompt);
+      calls += 1;
+      if (calls === 1) return { text: "Sure! Here are the observations:", finishReason: "stop" };
+      return {
+        text: ["<<<OBSERVATIONS>>>", JSON.stringify(goodEnvelope()), "<<<END>>>"].join("\n"),
+        finishReason: "stop",
+      };
+    },
+  };
+  const result = await provider(client).observe({ sources: SOURCES });
+  assert.equal(calls, 2);
+  assert.doesNotMatch(prompts[0], /<<<REPAIR>>>/, "first attempt carries no repair note");
+  assert.match(prompts[1], /<<<REPAIR>>>/, "second attempt is told what broke");
+  assert.match(prompts[1], /MALFORMED_ARTIFACT/, "the parser's own code, verbatim");
+  assert.doesNotMatch(prompts[1], /Sure! Here are the observations/,
+    "the failed reply is never echoed back");
+  assert.equal(result.verified.entities.length, 2, "and the corrected attempt lands");
 });
 
 test("a failed inference never reaches the cache", async () => {

@@ -43,6 +43,13 @@ export const BLOCK_TAGS = Object.freeze({
   MATCH: "MATCH",
   POLICY: "POLICY",
   META: "META",
+  /**
+   * Parser feedback on a retry: what the previous reply broke, in OUR words —
+   * the deterministic error code and message, never the model's own failed
+   * output echoed back (which is derived from untrusted sources and could
+   * carry forged block boundaries). Registered because KNOWN_TAGS is closed.
+   */
+  REPAIR: "REPAIR",
   SUBJECT: "SUBJECT",
   EMAIL_TEXT: "EMAIL_TEXT",
   OUTPUT_CONTRACT: "OUTPUT_CONTRACT",
