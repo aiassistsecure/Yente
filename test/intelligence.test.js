@@ -275,6 +275,23 @@ test("Muse is asked for one OBSERVATIONS envelope, not a multi-block manifest", 
   assert.match(prompt, /COMPLETE id[\s\S]*including its message: or attachment: prefix/i);
 });
 
+test("the observer constitution closes the forks a reasoner otherwise litigates", () => {
+  // Live on muse-local, 2026-08-27: a 32-token "Help / new guy on the block"
+  // email spent ~30 minutes asking whether name is required, whether an email
+  // local-part is a PERSON, whether quoted history is this message, and whether
+  // "new guy" is a disclosure field. Those are closed questions. If they are
+  // not answered in the system message, the model will answer them in thinking
+  // instead of in the envelope.
+  assert.match(OBSERVER_SYSTEM, /CONSTITUTION/);
+  assert.match(OBSERVER_SYSTEM, /email address alone is not a name/i);
+  assert.match(OBSERVER_SYSTEM, /Do not extract[\s\S]*quoted history/i);
+  assert.match(OBSERVER_SYSTEM, /phone[\s\S]*not a disclosure field/i);
+  assert.match(OBSERVER_SYSTEM, /new guy on the block/i);
+  assert.match(OBSERVER_SYSTEM, /Four empty arrays is a complete, correct answer/i);
+  assert.match(OBSERVER_SYSTEM, /Inner monologue is not the job/i);
+  assert.match(OBSERVER_SYSTEM, /Subject "Help" with no ask is not SEEKING/i);
+});
+
 test("untrusted source text cannot forge a block boundary", () => {
   // blocks.js refuses to build a prompt whose content carries a sentinel token.
   // That refusal is what makes the SOURCE block a real container.
