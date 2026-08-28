@@ -45,6 +45,7 @@ export const COMPLEMENTS = Object.freeze({
 
 import { isIntakeArtifact, intakeRefusal } from "./qualification.js";
 import { indexDocumentVocabulary, significantWords, sourceKindOf } from "./provenance.js";
+import { ROLE_LABELS, ROLE_PREDICATE, isSeekingRole, rolesComplement } from "./roles.js";
 
 const STOP = new Set([
   "a", "an", "and", "the", "for", "with", "who", "that", "this", "of", "in", "on",
@@ -246,6 +247,101 @@ function sourceLabel(backing) {
  *                                    matching is inherently cross-subject)
  * @param {number} [input.threshold]
  */
+/**
+ * Introductions from what people DECLARED, not from what a model inferred.
+ *
+ * Two roles that answer each other are already a match; the only question left
+ * is how good it is, which is what the documents answer. A pair with corroborating
+ * evidence on both sides outranks a bare declaration — but a bare declaration
+ * still beats anything mined from prose, because it cannot be a
+ * misinterpretation of a sentence.
+ */
+function proposeFromRoles({ observations, vocabularies }) {
+  const rolesBySubject = new Map();
+  for (const row of observations) {
+    if (row?.predicate !== ROLE_PREDICATE) continue;
+    if (row?.attributes?.retracted) continue;
+    const held = rolesBySubject.get(row.subject) ?? [];
+    if (!held.some((r) => r.object === row.object)) held.push(row);
+    rolesBySubject.set(row.subject, held);
+  }
+
+  const out = [];
+  for (const [seeker, seekerRoles] of rolesBySubject) {
+    for (const [offerer, offererRoles] of rolesBySubject) {
+      if (seeker === offerer) continue;
+
+      for (const mine of seekerRoles) {
+        // ONE introduction per pair, in the direction that reads correctly.
+        // The asking side is the seeker; without this the same meeting appears
+        // twice in the review queue, once from each end.
+        if (!isSeekingRole(mine.object)) continue;
+
+        const answering = offererRoles.find((theirs) => rolesComplement(mine.object, theirs.object));
+        if (!answering) continue;
+
+        // A declaration is worth more than any inferred pairing can reach:
+        // 0.4 (complementary) + 0.3 (same subject) + 0.3 (specifics) tops out
+        // at 1.0 for a perfect inferred match, and a declared one starts at
+        // 0.7 before evidence is considered at all.
+        const reasons = [{
+          id: "declared_roles",
+          weight: 0.7,
+          detail: `${ROLE_LABELS[mine.object]} is answered by ${ROLE_LABELS[answering.object]}`,
+        }];
+        let score = 0.7;
+
+        // The documents rank it. Same asymmetry as the inferred path: what the
+        // OFFERER can evidence is what matters to the seeker.
+        const shared = sharedVocabulary(
+          vocabularies.for(seeker), vocabularies.for(offerer),
+        );
+        if (shared.length > 0) {
+          const weight = Math.min(0.3, 0.06 * shared.length);
+          score += weight;
+          reasons.push({
+            id: "document_corroboration",
+            weight,
+            detail: `both evidence ${shared.slice(0, 5).map((s) => s.word).join(", ")}`,
+            matched: shared.map((s) => s.word),
+            quotes: shared.slice(0, 5).map((s) => ({ quote: s.quote, evidenceId: s.evidenceId })),
+          });
+        }
+
+        out.push(Object.freeze({
+          seeker,
+          offerer,
+          matchType: `${mine.object}_x_${answering.object}`,
+          confidence: Number(Math.min(1, score).toFixed(3)),
+          reasons: Object.freeze(reasons),
+          conflicts: Object.freeze([]),
+          evidence: Object.freeze([
+            {
+              subject: seeker, quote: mine.quote, evidenceId: mine.evidenceId,
+              said: ROLE_LABELS[mine.object],
+            },
+            {
+              subject: offerer, quote: answering.quote, evidenceId: answering.evidenceId,
+              said: ROLE_LABELS[answering.object],
+            },
+          ]),
+        }));
+      }
+    }
+  }
+  return out;
+}
+
+/** Words BOTH sides' documents can vouch for, with a quote from the offerer. */
+function sharedVocabulary(seekerVocab, offererVocab) {
+  if (!seekerVocab?.size || !offererVocab?.size) return [];
+  const shared = [];
+  for (const [word, entry] of offererVocab) {
+    if (seekerVocab.has(word)) shared.push(entry);
+  }
+  return shared.sort((a, b) => a.word.localeCompare(b.word));
+}
+
 export function proposeIntroductions({ observations, threshold = 0.5, limit = 50 }) {
   const intents = observations.filter((row) => String(row.predicate ?? "").startsWith("intent:"));
 
@@ -255,6 +351,21 @@ export function proposeIntroductions({ observations, threshold = 0.5, limit = 50
   const vocabularies = indexDocumentVocabulary(observations);
 
   const proposals = [];
+
+  // DECLARED ROLES FIRST, BECAUSE THEY ARE NOT INFERRED.
+  //
+  // Everything below this block reads intents a model mined out of email prose,
+  // and every bad match we have shipped came from that: "both mention resume",
+  // `capability: "resume"`, `OFFERING: "professional services and expertise"`.
+  // A declared role is the person answering a direct question from a closed
+  // list — no model, no quote to verify, no ambiguity about what they meant.
+  //
+  // So it scores higher than any inferred pairing can, and the documents are
+  // used to RANK within it rather than to establish it. That is the correct
+  // order of authority: the person says what they want, their résumé says what
+  // they can do.
+  proposals.push(...proposeFromRoles({ observations, vocabularies }));
+
   for (const a of intents) {
     for (const b of intents) {
       // Never introduce somebody to themselves. Two intents on one subject are
