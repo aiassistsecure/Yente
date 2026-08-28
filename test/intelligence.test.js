@@ -774,6 +774,58 @@ test("the retry carries the parser's error back to the model", async () => {
   assert.equal(result.verified.entities.length, 2, "and the corrected attempt lands");
 });
 
+test("a dying stream's complete lines are salvaged, marked partial, never cached", async () => {
+  // 2026-08-28, live: eleven minutes of generation streamed dozens of complete
+  // claim lines, the transport died ("error decoding response body"), and
+  // every line was discarded. Salvage keeps what arrived whole — through the
+  // same gates — and the result says plainly that it is not the full answer.
+  const partialText = [
+    "<<<OBSERVATIONS>>>",
+    `{"claim": "entity", "ref": "p1", "kind": "PERSON", "name": "Sarah Chen", "source_id": "msg-1", "evidence": "Sarah Chen, Founder, Acme Systems.", "explicit": true, "confidence": 0.95}`,
+    `{"claim": "disclosure", "subject_ref": "p1", "field": "role", "value": "Founder", "source_id": "msg-1", "evidence": "Sarah Chen, Founder, Acme Systems.", "explicit": true, "confidence": 0.9}`,
+    // The stream died mid-line; this fragment must count as a casualty, not parse.
+    `{"claim": "disclosure", "subject_ref": "p1", "field": "credential", "value": "A.S., Computer`,
+  ].join("\n");
+
+  const store = new Map();
+  const cache = {
+    get: async (k) => store.get(k) ?? null,
+    put: async (k, v) => { store.set(k, v); },
+  };
+  const client = {
+    async complete() {
+      throw new ModelError(ModelErrorCode.UPSTREAM_ERROR,
+        "Upstream: Operator error: OpenAI stream error: error decoding response body",
+        { partial: partialText.slice(0, 500), partialText });
+    },
+  };
+
+  const result = await provider(client, { attempts: 2, cache }).observe({ sources: SOURCES });
+
+  assert.equal(result.partial, true, "a salvaged answer must say it is not the whole answer");
+  assert.equal(result.recovered, "salvaged_lines");
+  assert.equal(result.verified.entities.length, 1, "the complete entity line survives");
+  assert.equal(result.verified.disclosures.length, 1, "the complete disclosure line survives");
+  assert.ok(result.rejected.some((r) => r.code === "INVALID_JSON_LINE"),
+    "the cut-off line is a counted casualty, not silence");
+  assert.equal(result.failures.length, 2, "the transport failures are still on the record");
+  assert.equal(store.size, 0, "a partial answer must NEVER satisfy a replay from cache");
+});
+
+test("salvage with no usable lines still fails loudly", async () => {
+  const client = {
+    async complete() {
+      throw new ModelError(ModelErrorCode.UPSTREAM_ERROR, "Upstream: died early",
+        { partial: "<<<OBSERV", partialText: "<<<OBSERV" });
+    },
+  };
+  await assert.rejects(
+    () => provider(client, { attempts: 1 }).observe({ sources: SOURCES }),
+    /Observation failed/,
+    "nothing salvageable means the failure is reported, not a hollow partial",
+  );
+});
+
 test("a failed inference never reaches the cache", async () => {
   const store = new Map();
   const cache = {

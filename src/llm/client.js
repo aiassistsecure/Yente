@@ -290,7 +290,7 @@ async function streamCompletion({
           throw new ModelError(
             ModelErrorCode.UPSTREAM_ERROR,
             `Upstream: ${upstream}`,
-            { upstream: parsed.error, partial: text.slice(0, 500) },
+            { upstream: parsed.error, partial: text.slice(0, 500), partialText: text },
           );
         }
 
@@ -374,7 +374,7 @@ async function streamCompletion({
             throw new ModelError(
               ModelErrorCode.TOKEN_BUDGET_EXCEEDED,
               `Completion exceeded ${settings.maxCharacters} characters`,
-              { partial: text.slice(0, 1000) },
+              { partial: text.slice(0, 1000), partialText: text },
             );
           }
         }
@@ -438,7 +438,10 @@ function textFromWire(value) {
 }
 
 function translateAbort(reason, error, partial) {
-  const meta = { partial: partial.slice(0, 1000) };
+  // `partial` is the log-friendly excerpt; `partialText` is the whole
+  // accumulated stream, carried so a caller can salvage the complete claim
+  // lines a dying transport already delivered. See provider.js.
+  const meta = { partial: partial.slice(0, 1000), partialText: partial };
   if (reason === "first-token") {
     return new ModelError(ModelErrorCode.FIRST_TOKEN_TIMEOUT, "The model produced no first token in time", meta);
   }

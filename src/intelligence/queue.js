@@ -314,6 +314,29 @@ export async function drainIntelligence({
           if (!duplicate) written += 1;
         }
 
+        // SALVAGED, NOT FINISHED. A partial result carries claims a dying
+        // stream delivered whole — they are stored above (append is content-
+        // keyed, so the eventual complete answer dedupes against them for
+        // free) — but no <<<END>>> ever arrived, so the message is NOT marked
+        // understood. The job goes back to READY and retries; nothing partial
+        // may masquerade as complete.
+        if (result.partial) {
+          graph.jobs.fail(job.evidenceId, {
+            at: now(),
+            error: "stream died mid-generation; complete claim lines salvaged",
+            transient: true,
+          });
+          summary.claims += written;
+          log("warn", "observed_partial", {
+            evidence: job.evidenceId,
+            salvaged: written,
+            rejected: result.rejected.length,
+            note: "claims stored; job stays open — the retry completes the answer "
+              + "and its duplicates cost nothing",
+          });
+          continue;
+        }
+
         graph.jobs.finish(job.evidenceId, {
           at: now(), claims: written,
           promptVersion: result.provenance.promptVersion ?? null,
