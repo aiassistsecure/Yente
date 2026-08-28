@@ -29,6 +29,7 @@
 import { normalizeMessage } from "../mail/source.js";
 import { ingestAttachments } from "./documents.js";
 import { addressesIn, subjectForAddress } from "./identity.js";
+import { AUTHORITY } from "../store/graph.js";
 
 /**
  * One pass of the listener.
@@ -107,6 +108,29 @@ export async function ingestMail({
           });
         }
       }
+      // MINT THE CONTACT. The sender exists — the envelope proved it — so the
+      // graph learns that here, deterministically, before any model runs and
+      // regardless of whether one ever does. This is the anchor every model
+      // fact about the sender attaches to (the reserved "sender" ref), and it
+      // is why an email in the queue can never again yield nothing purely
+      // because its sender did not state a name. The quote is the message's
+      // own From: line, which buildSourceText puts verbatim in the evidence
+      // text, so this row passes the same span check as any model claim.
+      const contactAddress = addressesIn(message.from ?? "")[0]?.normalized ?? null;
+      if (contactAddress) {
+        graph.observations.append({
+          subject: subjectForAddress(contactAddress),
+          predicate: "email_address",
+          object: contactAddress,
+          evidenceId: evidence.id ?? `message:${message.contentHash}`,
+          quote: `From: ${message.from}`,
+          authority: AUTHORITY.DETERMINISTIC,
+          confidence: 1,
+          observedAt: now(),
+          validFrom: message.sentAt ?? now(),
+        });
+      }
+
       // Enqueue only for new evidence. A redelivered message must not pay for
       // inference twice — that is the expensive part of the whole system.
       const { duplicate: jobExisted } = graph.jobs.enqueue({
