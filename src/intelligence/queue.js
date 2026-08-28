@@ -307,10 +307,30 @@ export async function drainIntelligence({
         summary.observed += 1;
         summary.claims += written;
 
+        // "rejected=46" with no why cost a night of guessing at whether the
+        // model was mis-framing sentinels (it wasn't), writing bad JSON (it
+        // wasn't), or quoting spans the source never contained (it was, plus a
+        // schema cascade). Count the codes so the log answers the question the
+        // count raises.
+        const rejectionCodes = {};
+        for (const r of result.rejected) {
+          const code = r?.code ?? "UNKNOWN";
+          rejectionCodes[code] = (rejectionCodes[code] ?? 0) + 1;
+        }
+
         log("info", "observed", {
           evidence: job.evidenceId,
           claims: written,
           rejected: result.rejected.length,
+          ...(result.rejected.length > 0
+            ? {
+              rejected_codes: Object.entries(rejectionCodes)
+                .map(([code, n]) => `${code}x${n}`).join(","),
+              // One concrete example beats a taxonomy: the first rejection's
+              // message names the field or the missing span verbatim.
+              rejected_first: String(result.rejected[0]?.message ?? "").slice(0, 140),
+            }
+            : {}),
           cached: result.cached,
           // Drift worth watching: the model stopped using the block frame.
           ...(result.recovered ? { recovered: result.recovered } : {}),
