@@ -178,7 +178,12 @@ export const PROVIDERS = Object.freeze({
  * instead of a shrug.
  */
 const AIAS_SETTINGS = Object.freeze({
-  firstTokenTimeoutMs: 100_000,
+  // Sit PAST the gateway's idle timeout (now 180s default, PIN_IDLE_TIMEOUT
+  // overridable) so Yente never pre-empts a stream the gateway is still happy
+  // to carry. muse-local reasons in silence for over 90s before first token;
+  // the gateway is the one that used to kill it. Both deadlines are inactivity
+  // only and reset on every delta -- never an absolute wall clock.
+  firstTokenTimeoutMs: 200_000,
   streamTimeoutMs: 300_000,
 });
 

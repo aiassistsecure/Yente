@@ -67,7 +67,7 @@ import {
  * envelope shape still produces different beliefs, and a cache that ignored
  * that would serve stale interpretations forever.
  */
-export const PROMPT_VERSION = "obs_prompt_v7";
+export const PROMPT_VERSION = "obs_prompt_v8";
 
 /** Default attempts. Transient failures are retried; deterministic ones are not. */
 const DEFAULT_ATTEMPTS = 3;
@@ -337,7 +337,16 @@ export function createIntelligenceProvider({
   // llm/client.js — it is a string rather than a flag because the tokens differ
   // per model family, and we would rather try variants from the shell than ship
   // a table of guesses.
-  prefill = process.env.YENTE_LLM_PREFILL || null,
+  //
+  // v8 default: close an empty <think> channel only. The model then continues
+  // straight into its OBSERVATIONS block - it cannot open a fresh reasoning
+  // trace without the opener token, so the worked examples take over and it
+  // completes the JSON. We do NOT prefill the JSON opener: the streamed
+  // response contains only the deltas after the prefill, so a prefill of
+  // {"entities": would arrive at the parser missing its opening brace.
+  // Closing the think channel alone is the lever that both suppresses
+  // narration and preserves the envelope. Override with YENTE_LLM_PREFILL.
+  prefill = process.env.YENTE_LLM_PREFILL ?? "<think></think>",
   attempts: maxAttempts = DEFAULT_ATTEMPTS,
   retryDelayMs = DEFAULT_RETRY_DELAY_MS,
   // Optional live telemetry. The transport still returns only validated text;
