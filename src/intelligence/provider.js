@@ -49,7 +49,9 @@
 
 import { digest } from "../store/keys.js";
 import { isTransient } from "../llm/client.js";
-import { ProtocolError, parseJsonBlock, BLOCK_TAGS } from "../protocol/blocks.js";
+import {
+  ProtocolError, parseJsonBlock, requireSingleBlock, textBlock, BLOCK_TAGS,
+} from "../protocol/blocks.js";
 import { verifyFact } from "../extract/spans.js";
 import { createObservationPrompt, OBSERVER_SYSTEM } from "./prompt.js";
 import { manifestStop, readManifestBlocks } from "./manifest.js";
@@ -67,7 +69,7 @@ import {
  * envelope shape still produces different beliefs, and a cache that ignored
  * that would serve stale interpretations forever.
  */
-export const PROMPT_VERSION = "obs_prompt_v11";
+export const PROMPT_VERSION = "obs_prompt_v12";
 
 /** Default attempts. Transient failures are retried; deterministic ones are not. */
 const DEFAULT_ATTEMPTS = 3;
@@ -192,6 +194,77 @@ export function canonicalizeSourceIds(raw, aliases) {
  * Strict first, so a well-behaved model's output is parsed by the strict path
  * and any drift shows up in `recovered`.
  */
+/** The line discriminator -> envelope group. Closed on purpose. */
+const LINE_GROUPS = Object.freeze({
+  entity: "entities",
+  intent: "intents",
+  relationship: "relationships",
+  disclosure: "disclosures",
+});
+
+/**
+ * Assemble an envelope from one-claim-per-line NDJSON block content.
+ *
+ * WHY LINES, NOT ONE OBJECT (2026-08-28)
+ *
+ * A résumé extraction produced ~30 grounded claims over four minutes of
+ * generation and died whole at the last character: one extra closing brace,
+ * "Unexpected non-whitespace character after JSON at position 5325". A single
+ * envelope object makes the blast radius of ANY one-character slip the entire
+ * answer. One claim per line makes it one line: JSON.parse per line, a line
+ * that fails costs that line, and the failure is REPORTED per line rather
+ * than swallowed — the gate philosophy applied to syntax.
+ *
+ * Returns { raw, malformedLines } — raw is null when NO line parsed, so the
+ * caller can tell "a new-format answer with casualties" from "not this
+ * format at all".
+ */
+export function envelopeFromLines(content) {
+  const raw = { entities: [], intents: [], relationships: [], disclosures: [] };
+  const malformedLines = [];
+  let parsedAny = false;
+
+  const lines = String(content).split("\n");
+  lines.forEach((line, index) => {
+    const trimmed = line.trim();
+    if (trimmed === "") return;
+    let claim;
+    try {
+      claim = JSON.parse(trimmed);
+    } catch (error) {
+      malformedLines.push({
+        group: "lines", index,
+        code: "INVALID_JSON_LINE",
+        message: `line ${index + 1}: ${String(error?.message ?? error).slice(0, 120)}`,
+      });
+      return;
+    }
+    if (typeof claim !== "object" || claim === null || Array.isArray(claim)) {
+      malformedLines.push({
+        group: "lines", index,
+        code: "BAD_LINE",
+        message: `line ${index + 1}: not a claim object`,
+      });
+      return;
+    }
+    const group = LINE_GROUPS[String(claim.claim ?? "").toLowerCase()];
+    if (!group) {
+      malformedLines.push({
+        group: "lines", index,
+        code: "UNKNOWN_CLAIM_KIND",
+        message: `line ${index + 1}: "claim" must be one of ${Object.keys(LINE_GROUPS).join(", ")}, `
+          + `got ${claim.claim ?? "(missing)"}`,
+      });
+      return;
+    }
+    parsedAny = true;
+    const { claim: _discriminator, ...rest } = claim;
+    raw[group].push(rest);
+  });
+
+  return { raw: parsedAny ? raw : null, malformedLines };
+}
+
 export function readEnvelope(text) {
   // 1. THE MANIFEST PROTOCOL. Preferred, because it is the only shape in which a
   //    truncated answer is detectable rather than silently partial.
@@ -226,13 +299,22 @@ export function readEnvelope(text) {
       throw manifestError;   // a real incompleteness, not a shape we failed to read
     }
 
-    // 2. The obs_v1 single envelope, so a run mid-upgrade still works.
+    // 2. One OBSERVATIONS block. Whole-object first (the obs_v1 envelope, and
+    //    the bare {} empty answer, still parse in one bite); when that fails,
+    //    the canonical one-claim-per-line format — where a stray brace costs
+    //    the line it sits on, not the four minutes of extraction around it.
     try {
-      return {
-        raw: parseJsonBlock(text, BLOCK_TAGS.OBSERVATIONS),
-        recovered: "single_block",
-        blocks: null,
-      };
+      const content = requireSingleBlock(text, BLOCK_TAGS.OBSERVATIONS);
+      try {
+        return { raw: JSON.parse(content), recovered: "single_block", blocks: null };
+      } catch {
+        const { raw, malformedLines } = envelopeFromLines(content);
+        if (raw) {
+          return { raw, recovered: null, blocks: null, malformedLines };
+        }
+        throw new ProtocolError("INVALID_JSON",
+          `OBSERVATIONS contains neither a JSON object nor parseable claim lines`);
+      }
     } catch (blockError) {
       // 3. A fenced code block — the most common deviation, and the one the
       //    contract explicitly asks against, which models still do.
@@ -270,6 +352,13 @@ function claimValue(group, claim) {
     case "entities": return claim.name;
     case "intents": return claim.object;
     case "relationships": return claim.predicate;
+    // Added with the group itself on 2026-08-28 — this switch was never
+    // updated when disclosures replaced opportunities, so every disclosure
+    // fell through to `claim.text` (a field disclosures do not have), failed
+    // verifyFact's value requirement as INCOMPLETE_FACT, and died at the gate
+    // no matter how good its quote was. Found by the one-claim-per-line test,
+    // not by the log — the rejection code was buried in a count.
+    case "disclosures": return claim.value;
     case "opportunities": return claim.summary;
     default: return claim.text;
   }
@@ -408,12 +497,20 @@ export function createIntelligenceProvider({
     const failures = [];
     let attempt = 0;
     let lastText = null;
+    // Set after a shape failure, sent with the NEXT attempt. "Models fix shape
+    // when told" was this file's own justification for retrying — and until
+    // 2026-08-28 the retry sent the byte-identical prompt, telling the model
+    // nothing. Feedback is OUR deterministic parser message only: the model's
+    // failed output is derived from untrusted sources and echoing it back
+    // could smuggle forged block boundaries into the prompt, so it stays out.
+    let repairNote = null;
 
     while (attempt < maxAttempts) {
       attempt += 1;
       try {
         const completion = await client.complete({
-          prompt, system: OBSERVER_SYSTEM, prefill, signal,
+          prompt: repairNote ? `${prompt}\n\n${repairNote}` : prompt,
+          system: OBSERVER_SYSTEM, prefill, signal,
           onReasoning: (delta) => onStream?.({
             phase: "reasoning", delta, attempt, evidence, contentHash,
           }),
@@ -430,7 +527,7 @@ export function createIntelligenceProvider({
         // Shape, then meaning. A parse or schema failure is the model answering
         // in the wrong form, which is worth another attempt; an ungrounded claim
         // is the model inventing, which is not.
-        const { raw: receivedRaw, recovered } = readEnvelope(completion.text);
+        const { raw: receivedRaw, recovered, malformedLines = [] } = readEnvelope(completion.text);
         const raw = canonicalizeSourceIds(receivedRaw, aliases);
         const { envelope, rejected: schemaRejected, discrepancies } =
           validateEnvelope(raw, { knownSourceIds, providedRefs });
@@ -440,7 +537,7 @@ export function createIntelligenceProvider({
         const result = {
           envelope,
           verified,
-          rejected: Object.freeze([...schemaRejected, ...groundingRejected]),
+          rejected: Object.freeze([...malformedLines, ...schemaRejected, ...groundingRejected]),
           discrepancies,
           failures: Object.freeze(failures),
           attempts: attempt,
@@ -484,6 +581,21 @@ export function createIntelligenceProvider({
         };
         failures.push(failure);
         onStream?.({ phase: "rejected", ...failure, evidence, contentHash });
+
+        // Tell the next attempt what broke. Sentinel tokens are stripped from
+        // the message defensively — a REPAIR block must never be able to draw
+        // block boundaries of its own, whatever an error message quotes.
+        if (error instanceof ProtocolError || error instanceof SchemaError) {
+          const said = `${error.code}: ${String(error.message)}`
+            .replace(/<<<|>>>/g, "")
+            .slice(0, 400);
+          repairNote = textBlock(BLOCK_TAGS.REPAIR, [
+            `Your previous reply could not be used. The parser said: ${said}.`,
+            "Re-emit the complete OBSERVATIONS block from the beginning,",
+            "one claim per line, exactly as the examples show. Do not",
+            "apologise, do not explain — just the corrected block.",
+          ].join(" "));
+        }
 
         if (!retryable || attempt >= maxAttempts) {
           throw new IntelligenceError(
