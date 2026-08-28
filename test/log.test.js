@@ -174,6 +174,31 @@ test("a failed observation counts as a retry, and the heartbeat says so", () => 
   assert.match(out, /retries 1/);
 });
 
+test("a rejection COUNT is always shown with its reason", () => {
+  // "rejected=37" with no why is the bug, not the feature. queue.js already
+  // tallies the codes and keeps the first message precisely so the count can
+  // answer the question it raises — and this renderer used to build its own
+  // field list and drop both, so the diagnosis was computed and then discarded
+  // on the way to the terminal.
+  //
+  // Same failure as the reasoning deltas the client used to throw away. A
+  // number you cannot act on is not observability.
+  const logger = createLogger();
+  const out = capture(() => logger.log("info", "observed", {
+    evidence: "attachment:eea45b7e8",
+    claims: 26,
+    rejected: 37,
+    rejected_codes: "SPAN_NOT_FOUND x31,FIELD_MISSING x6",
+    rejected_first: "disclosures[3].evidence not found in attachment:eea45b7e8",
+    elapsed_ms: 353_000,
+  }));
+
+  assert.match(out, /understood.*26/);
+  assert.match(out, /37/, "the count must still be there");
+  assert.match(out, /SPAN_NOT_FOUND/, "and so must the reason");
+  assert.match(out, /not found in/, "one concrete example beats a taxonomy");
+});
+
 test("network-wide proposals are not worded as matches for the operator", () => {
   const logger = createLogger();
   const out = capture(() => logger.log("info", "proposed", { queued: 4, pending: 7 }));

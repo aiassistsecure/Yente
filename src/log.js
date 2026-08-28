@@ -332,6 +332,22 @@ export function createLogger({ pid = process.pid, quiet = false } = {}) {
             evidence: String(meta.evidence).slice(0, 20),
             took: human(meta.elapsed_ms),
             rejected: meta.rejected || undefined,
+            // THE COUNT WITHOUT THE REASON IS THE BUG, NOT THE FEATURE.
+            //
+            // queue.js already tallies these codes and keeps the first
+            // rejection's message, precisely so "rejected=37" can answer the
+            // question it raises. This renderer built its own field list and
+            // dropped both — so the diagnosis was computed and then discarded on
+            // the way to the terminal.
+            //
+            // That is the same failure as the reasoning deltas the client used
+            // to throw away, and the third time in this codebase a failure was
+            // really a reason nobody was shown. A number you cannot act on is
+            // not observability.
+            why: meta.rejected_codes ? c.yellow(meta.rejected_codes) : undefined,
+            first: meta.rejected_first
+              ? String(meta.rejected_first).replace(/\s+/g, " ").slice(0, 120)
+              : undefined,
             cached: meta.cached ? c.cyan("cache hit") : undefined,
             recovered: meta.recovered ? c.yellow(meta.recovered) : undefined,
             ...(empty ? { note: "not cached — a better model will re-derive this" } : {}),
