@@ -37,6 +37,18 @@ export const ModelErrorCode = Object.freeze({
   FIRST_TOKEN_TIMEOUT: "FIRST_TOKEN_TIMEOUT",
   STREAM_TIMEOUT: "STREAM_TIMEOUT",
   TOKEN_BUDGET_EXCEEDED: "TOKEN_BUDGET_EXCEEDED",
+  /**
+   * The model is alive and saying the same thing over and over.
+   *
+   * A reasoning loop defeats every other guard here BY DESIGN: reasoning deltas
+   * clear the first-token deadline and reset the stream deadline, and they are
+   * never appended to `text`, so neither the character budget nor the token
+   * budget sees them. Liveness is exactly what a loop is best at.
+   *
+   * Retryable, and deliberately so — the caller answers it by waking the model
+   * up rather than by failing the job. See provider.js.
+   */
+  REASONING_LOOP: "REASONING_LOOP",
   EMPTY_COMPLETION: "EMPTY_COMPLETION",
   // The upstream explained itself INSIDE the stream, and we threw it away.
   //
@@ -75,6 +87,7 @@ export function isTransient(error) {
   return code === ModelErrorCode.NETWORK_ERROR
     || code === ModelErrorCode.FIRST_TOKEN_TIMEOUT
     || code === ModelErrorCode.STREAM_TIMEOUT
+    || code === ModelErrorCode.REASONING_LOOP
     || code === ModelErrorCode.EMPTY_COMPLETION
     || code === ModelErrorCode.UPSTREAM_ERROR;
 }
@@ -96,6 +109,15 @@ const DEFAULTS = Object.freeze({
   // 16384, so 8192 out leaves ample room for a long email plus an attachment).
   maxTokens: Number(process.env.YENTE_LLM_MAX_TOKENS || 8192),
   firstTokenTimeoutMs: 60_000,
+  // How many times one reasoning line may repeat before we treat the stream as
+  // going nowhere. Counted per DISTINCT line, so a model that cycles a list of
+  // four constraints trips it on the fourth pass rather than the fourth delta.
+  //
+  // Not a total-repetition budget: legitimate reasoning restates things, and a
+  // model working through a long attachment may echo a phrase several times
+  // while genuinely progressing. What is never legitimate is the same line
+  // arriving over and over with nothing new between.
+  maxReasoningRepeats: Number(process.env.YENTE_LLM_MAX_REASONING_REPEATS || 4),
   streamTimeoutMs: 300_000,
   maxCharacters: 64_000,
 });
@@ -195,6 +217,13 @@ async function streamCompletion({
   // Two deadlines rather than one: a model loading 21 GB of weights is slow
   // before the first token and fast after it, and a single timeout either kills
   // the cold start or fails to notice a mid-stream stall.
+  // Loop detection state. `reasoningLine` buffers the partial line currently
+  // arriving, because deltas do not respect line boundaries.
+  const reasoningLines = new Map();
+  let reasoningLine = "";
+  let loopedLine = null;
+  let loopedCount = 0;
+
   const firstTokenTimer = setTimeout(() => {
     if (!sawToken) abort("first-token");
   }, settings.firstTokenTimeoutMs);
@@ -255,7 +284,13 @@ async function streamCompletion({
         signal: controller.signal,
       });
     } catch (error) {
-      if (controller.signal.aborted) throw translateAbort(controller.signal.reason, error, text);
+      // The repeated line IS the diagnosis, and it is what the wake-up turn
+      // quotes back to the model. An error that only said "it looped" would
+      // leave the caller nothing to correct with.
+      if (controller.signal.aborted) {
+        throw translateAbort(controller.signal.reason, error, text,
+          loopedLine ? { line: loopedLine, count: loopedCount } : null);
+      }
       throw new ModelError(ModelErrorCode.NETWORK_ERROR, `Cannot reach the model at ${endpoint}: ${error.message}`);
     }
 
@@ -342,6 +377,45 @@ async function streamCompletion({
           }
           resetStreamTimer();
           onReasoning?.(reasoning);
+
+          // IS IT GETTING ANYWHERE, AS OPPOSED TO STILL BEING ALIVE?
+          //
+          // Two different questions, and until now only the first was asked. A
+          // real trace: four lines cycling for six and a half minutes, one every
+          // 1.5s, every guard satisfied — the deadline reset on each delta, the
+          // character budget never saw them, and the log read `~142tok 6m30s`,
+          // which looks slow rather than stuck.
+          //
+          // Deltas do not arrive on line boundaries (a sentence can be split
+          // across three of them), so repetition is counted over COMPLETED
+          // lines assembled from the stream, not over deltas.
+          reasoningLine += reasoning;
+          let cut = reasoningLine.indexOf("\n");
+          while (cut !== -1) {
+            const line = normaliseLine(reasoningLine.slice(0, cut));
+            reasoningLine = reasoningLine.slice(cut + 1);
+            cut = reasoningLine.indexOf("\n");
+
+            // Short fragments repeat innocently — a bare "-" or "**2.**" is
+            // punctuation, not an argument going in circles.
+            if (line.length < 12) continue;
+
+            const seen = (reasoningLines.get(line) ?? 0) + 1;
+            reasoningLines.set(line, seen);
+            if (seen >= settings.maxReasoningRepeats) {
+              loopedLine = line;
+              loopedCount = seen;
+              abort("loop");
+              break;
+            }
+
+            // Bounded, so a genuinely long trace cannot grow this without
+            // limit. Evicting the oldest entry is safe: a loop repeats within a
+            // few lines of itself, so the line it is cycling on stays resident.
+            if (reasoningLines.size > 512) {
+              reasoningLines.delete(reasoningLines.keys().next().value);
+            }
+          }
         }
 
         const delta = textFromWire(
@@ -397,7 +471,12 @@ async function streamCompletion({
       }
     } catch (error) {
       if (error instanceof ModelError) throw error;
-      throw translateAbort(controller.signal.reason, error, text);
+      // The loop info travels here too. `abort("loop")` makes the reader throw
+      // from inside the iteration, so THIS is the catch that actually converts
+      // it — the earlier site handles the pre-iteration case. Passing it in one
+      // place and not the other is why the repeated line arrived empty.
+      throw translateAbort(controller.signal.reason, error, text,
+        loopedLine ? { line: loopedLine, count: loopedCount } : null);
     }
 
     if (text.trim() === "") {
@@ -437,16 +516,44 @@ function textFromWire(value) {
   return "";
 }
 
-function translateAbort(reason, error, partial) {
+/**
+ * Two lines are the same line if they differ only in whitespace or list marker.
+ *
+ * The observed loop alternated between "- I will ensure the `explicit` field is
+ * set correctly." and the same sentence arriving without its leading dash,
+ * because the dash landed in the previous delta. Comparing raw strings would
+ * have called those two different lines and never tripped.
+ */
+function normaliseLine(line) {
+  return String(line ?? "")
+    .replace(/^[\s\-*\d.)#]+/, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function translateAbort(reason, error, partial, loop = null) {
   // `partial` is the log-friendly excerpt; `partialText` is the whole
   // accumulated stream, carried so a caller can salvage the complete claim
   // lines a dying transport already delivered. See provider.js.
-  const meta = { partial: partial.slice(0, 1000), partialText: partial };
+  //
+  // The loop detail is passed IN rather than attached afterwards: ModelError
+  // freezes its meta, so a post-construction assignment is dropped silently —
+  // which is how the repeated line went missing while the code read as correct.
+  const meta = {
+    partial: partial.slice(0, 1000),
+    partialText: partial,
+    ...(loop?.line ? { repeatedLine: loop.line, repeats: loop.count } : {}),
+  };
   if (reason === "first-token") {
     return new ModelError(ModelErrorCode.FIRST_TOKEN_TIMEOUT, "The model produced no first token in time", meta);
   }
   if (reason === "stream") {
     return new ModelError(ModelErrorCode.STREAM_TIMEOUT, "The model stream stopped making progress", meta);
+  }
+  if (reason === "loop") {
+    return new ModelError(ModelErrorCode.REASONING_LOOP,
+      "The model repeated itself instead of answering", meta);
   }
   if (reason === "caller") {
     return new ModelError(ModelErrorCode.ABORTED, "The caller aborted the completion", meta);

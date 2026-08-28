@@ -355,7 +355,19 @@ export async function drainIntelligence({
           rejectionCodes[code] = (rejectionCodes[code] ?? 0) + 1;
         }
 
-        log("info", "observed", {
+        // AN EMPTY UNDERSTANDING IS NOT A SUCCESSFUL ONE.
+        //
+        // The job still finishes — a message that genuinely supports no claims
+        // exists, and retrying it forever would wedge the queue on it. But it
+        // must not READ like success. With 26 messages and a model returning
+        // `{}` for each, the queue drains, the heartbeat prints "understood 26",
+        // and the graph is empty: the dashboard reports work that produced
+        // nothing. That is the same failure class as the two days of IMAP
+        // silence — not that something broke, but that nothing said so.
+        //
+        // Logged at WARN with its own event so it is countable and visible,
+        // rather than as an `observed` line whose claim count happens to be 0.
+        log(written === 0 ? "warn" : "info", written === 0 ? "understood_nothing" : "observed", {
           evidence: job.evidenceId,
           claims: written,
           rejected: result.rejected.length,

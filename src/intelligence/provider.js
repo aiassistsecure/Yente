@@ -48,12 +48,12 @@
  */
 
 import { digest } from "../store/keys.js";
-import { isTransient } from "../llm/client.js";
+import { isTransient, ModelErrorCode } from "../llm/client.js";
 import {
   ProtocolError, parseJsonBlock, requireSingleBlock, textBlock, BLOCK_TAGS,
 } from "../protocol/blocks.js";
 import { verifyFact } from "../extract/spans.js";
-import { createObservationPrompt, OBSERVER_SYSTEM } from "./prompt.js";
+import { createObservationPrompt, createWakeUpPrompt, OBSERVER_SYSTEM } from "./prompt.js";
 import { manifestStop, readManifestBlocks } from "./manifest.js";
 import {
   OBSERVATION_SCHEMA_VERSION,
@@ -526,7 +526,9 @@ export function createIntelligenceProvider({
     // Stable identity for stream telemetry. Concurrency means several attempt=1
     // streams coexist; attempt alone cannot keep their token buffers separate.
     const evidence = sources.map((source) => source.id).sort().join(",");
-    const prompt = createObservationPrompt({ sources, context });
+    const basePrompt = createObservationPrompt({ sources, context });
+    // Set when an attempt aborts on a reasoning loop; consumed by the next one.
+    let wokenFrom = null;
 
     const failures = [];
     let attempt = 0;
@@ -546,6 +548,14 @@ export function createIntelligenceProvider({
     while (attempt < maxAttempts) {
       attempt += 1;
       try {
+        // A retry after a loop does NOT resend the prompt that caused it. It
+        // names the loop, quotes the line, and points back at the task — the
+        // rules stay in the system message rather than being re-supplied, since
+        // rehearsing the rules is what the model was stuck doing.
+        const prompt = wokenFrom
+          ? createWakeUpPrompt({ sources, repeatedLine: wokenFrom, context })
+          : basePrompt;
+
         const completion = await client.complete({
           prompt: repairNote ? `${prompt}\n\n${repairNote}` : prompt,
           system: OBSERVER_SYSTEM, prefill, signal,
@@ -595,16 +605,46 @@ export function createIntelligenceProvider({
           }),
         };
 
-        // Cache the OUTCOME, including an empty one. "This evidence supports no
-        // claims" is a real and expensive answer, and re-deriving it on every
-        // replay is exactly the waste the cache exists to prevent.
-        if (cache) await cache.put(contentHash, result);
+        // CACHE THE OUTCOME — BUT NOT AN EMPTY ONE.
+        //
+        // This reverses an earlier decision in this file, and the earlier
+        // reasoning was sound as far as it went: "this evidence supports no
+        // claims" is a real and expensive answer, so re-deriving it on every
+        // replay is waste.
+        //
+        // What it missed is that we cannot tell that answer apart from a model
+        // failing. A real trace: NuExtract3 reasoned correctly about a message —
+        // identified the sender as a PERSON, correctly refused to invent a
+        // disclosure field for "iPhone", correctly found no intent — and then
+        // concluded that the right output was `{}`, discarding the entity it had
+        // just found. It cited a rule ("the single line {} is a good answer")
+        // that appears NOWHERE in our prompt. It invented the rule and obeyed it.
+        //
+        // Cached, that becomes permanent. The cache is keyed on the content
+        // hash, not on the model — so an empty answer from a bad model would be
+        // served to every better model we swap in afterwards, and the swap would
+        // look like it changed nothing. Since replacing the model is exactly the
+        // plan, caching empties would silently poison the experiment.
+        //
+        // An empty answer is cheap to re-derive and expensive to be wrong about.
+        // So: keep the result, do not persist it.
+        // claimCount, not `verified.length` — `verified` is an object of claim
+        // groups, so `.length` is undefined and the guard would have cached
+        // NOTHING. The existing test for cache hits caught that immediately,
+        // which is the argument for having it.
+        if (cache && claimCount(verified) > 0) await cache.put(contentHash, result);
         return Object.freeze(result);
       } catch (error) {
         const retryable =
           isTransient(error) ||
           error instanceof ProtocolError ||
           error instanceof SchemaError;
+
+        // Carry the loop forward so the NEXT attempt is a wake-up rather than a
+        // repeat of the prompt that caused it.
+        wokenFrom = error?.code === ModelErrorCode.REASONING_LOOP
+          ? (error?.meta?.repeatedLine ?? "(unrecorded)")
+          : null;
 
         const failure = {
           code: error?.code ?? "OBSERVE_FAILED",

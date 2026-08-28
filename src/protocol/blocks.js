@@ -38,6 +38,11 @@ export const BLOCK_TAGS = Object.freeze({
   RELATIONSHIPS: "RELATIONSHIPS",
   OPPORTUNITIES: "OPPORTUNITIES",
   DISCLOSURES: "DISCLOSURES",
+  /**
+   * Sent only on a retry after the model looped. Names what happened and points
+   * back at the task — see createWakeUpPrompt in intelligence/prompt.js.
+   */
+  WAKE_UP: "WAKE_UP",
   MISSING_FIELDS: "MISSING_FIELDS",
   INTERVIEW_PLAN: "INTERVIEW_PLAN",
   MATCH: "MATCH",
