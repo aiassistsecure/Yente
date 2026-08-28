@@ -555,6 +555,108 @@ test("observationsFrom keys people by address, because a name is not an identity
   assert.equal(intent.observedAt, T1);
 });
 
+/* --- sender-anchored facts ------------------------------------------------ */
+
+test("a nameless sender's intent lands on the transport-given subject", () => {
+  // The redesign of 2026-08-28: identity from transport, attributes from the
+  // model. The sender never stated a name, so there is no entity — and the
+  // intent still reaches the graph, attached to the ref Yente supplied.
+  const claims = observationsFrom({
+    verified: {
+      entities: [],
+      intents: [{
+        actorRef: "sender", type: "SEEKING", object: "confirmation of resume receipt",
+        attributes: {}, evidence: "Did you get my resume?", confidence: 0.9,
+      }],
+      relationships: [], disclosures: [],
+    },
+    evidenceId: "ev-msg",
+    provenance: { model: "m", schemaVersion: "obs_v2", contentHash: "c" },
+    observedAt: T1,
+    sentAt: "2026-08-28T00:00:00.000Z",
+    senderSubject: "person:founders@vibecode-101.com",
+  });
+
+  const intent = claims.find((c) => c.predicate === "intent:SEEKING");
+  assert.ok(intent, "the fact must reach the graph despite no entity being declared");
+  assert.equal(intent.subject, "person:founders@vibecode-101.com");
+});
+
+test("without a sender subject, a 'sender' ref still attaches nothing", () => {
+  // Back-compat and honesty: if Yente could not resolve who sent it, the
+  // reserved ref maps to nobody, and the claim is dropped here the same way a
+  // dangling ref always was — not attached to a guess.
+  const claims = observationsFrom({
+    verified: {
+      entities: [],
+      intents: [{
+        actorRef: "sender", type: "SEEKING", object: "anything",
+        attributes: {}, evidence: "quote", confidence: 0.9,
+      }],
+      relationships: [], disclosures: [],
+    },
+    evidenceId: "ev-msg",
+    provenance: { model: "m", schemaVersion: "obs_v2", contentHash: "c" },
+    observedAt: T1,
+    sentAt: null,
+  });
+  assert.equal(claims.length, 0);
+});
+
+test("a model entity reusing the sender ref keys to the transport identity", () => {
+  // The sender later states their name. The model may now declare a PERSON
+  // reusing the reserved ref — the name becomes a fact — but the subject KEY
+  // stays the transport identity, so the contact accumulates rather than
+  // forking into a name-keyed twin.
+  const claims = observationsFrom({
+    verified: {
+      entities: [{
+        ref: "sender", kind: "PERSON", name: "Mark Evans",
+        emailAddress: null, title: null,
+        evidence: "I am Mark Evans", confidence: 0.95,
+      }],
+      intents: [], relationships: [], disclosures: [],
+    },
+    evidenceId: "ev-msg2",
+    provenance: { model: "m", schemaVersion: "obs_v2", contentHash: "c" },
+    observedAt: T1,
+    sentAt: null,
+    senderSubject: "person:founders@vibecode-101.com",
+  });
+  const person = claims.find((c) => c.predicate === "is_person");
+  assert.equal(person.subject, "person:founders@vibecode-101.com",
+    "transport identity wins the key; the stated name is the fact, not the key");
+  assert.equal(person.object, "Mark Evans");
+});
+
+test("ingesting a message mints a deterministic contact for its sender", async () => {
+  const { graph } = fresh();
+  const source = {
+    async fetchNew() {
+      return {
+        messages: [normalizeMessage({
+          uid: 9, raw: "raw", receivedAt: T0,
+          parsed: { messageId: "<mint@t>", text: "Did you get my resume?",
+            from: "founders@vibecode-101.com" },
+        })],
+        uidValidity: 3, resynced: false,
+      };
+    },
+    commit: () => {},
+  };
+
+  const { ingestMail } = await import("../src/graph/ingest.js");
+  await ingestMail({ source, graph, now: () => T1 });
+
+  const rows = graph.observations.forSubject("person:founders@vibecode-101.com");
+  const contact = rows.find((r) => r.predicate === "email_address");
+  assert.ok(contact, "the contact exists before any model has run");
+  assert.equal(contact.object, "founders@vibecode-101.com");
+  assert.equal(contact.authority, AUTHORITY.DETERMINISTIC);
+  assert.match(contact.quote, /^From: /,
+    "the quote is the message's own From line, findable in the evidence text");
+});
+
 /* --- matching ------------------------------------------------------------ */
 
 const HIRING = {

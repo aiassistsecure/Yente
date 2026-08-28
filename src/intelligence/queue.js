@@ -57,10 +57,16 @@ import { currentReplyOnly } from "../mail/quoted.js";
  */
 export function observationsFrom({
   verified, evidenceId, provenance, observedAt, sentAt,
-  subjectHint = null, evidenceKind = null,
+  subjectHint = null, evidenceKind = null, senderSubject = null,
 }) {
   const out = [];
   const subjectOf = new Map();
+  // The reserved ref. Identity from transport: the sender exists because the
+  // MIME parser said so, keyed by their email address — the model attaches
+  // facts to this ref without ever asserting the person exists. This is what
+  // ended the era of bare-address emails producing zero claims: the claims
+  // were always fine; the existence gate they cascaded through is gone.
+  if (senderSubject) subjectOf.set("sender", senderSubject);
   const entities = verified.entities ?? [];
   // A covering message's From header is deterministic ownership for its résumé.
   // Anchor only the unambiguous case: one person entity in attachment evidence.
@@ -77,7 +83,9 @@ export function observationsFrom({
     const naturalSubject = entity.emailAddress
       ? subjectForAddress(entity.emailAddress)
       : `${entity.kind === "ORGANIZATION" ? "org" : "person"}:name:${entity.name.toLowerCase()}`;
-    const subject = entity.ref === anchoredRef ? subjectHint : naturalSubject;
+    const subject = entity.ref === "sender" && senderSubject
+      ? senderSubject                       // transport identity wins the key
+      : entity.ref === anchoredRef ? subjectHint : naturalSubject;
     subjectOf.set(entity.ref, subject);
 
     out.push({
@@ -274,9 +282,14 @@ export async function drainIntelligence({
           context: {
             sender: evidence.meta?.from
               ?? (subjectHint?.startsWith("person:") ? subjectHint.slice("person:".length) : null),
+            // The contract: the sender exists, keyed by email, and the model
+            // attaches their facts to this ref instead of asserting them into
+            // existence. Only offered when we actually resolved a sender.
+            ...(subjectHint ? { sender_ref: "sender" } : {}),
             subject: evidence.meta?.subject ?? evidence.meta?.filename ?? null,
             sent_at: evidence.meta?.sentAt ?? null,
           },
+          providedRefs: subjectHint ? ["sender"] : null,
           signal,
         });
 
@@ -292,6 +305,7 @@ export async function drainIntelligence({
           sentAt: evidence.meta?.sentAt ?? null,
           subjectHint,
           evidenceKind: evidence.kind,
+          senderSubject: subjectHint,
         });
 
         let written = 0;

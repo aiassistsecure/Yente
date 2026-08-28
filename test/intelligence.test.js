@@ -470,6 +470,42 @@ test("genuinely unparseable output still fails — and carries what was sent", a
 
 /* --- schema-level integrity --------------------------------------------- */
 
+test("a provided ref is not dangling — the sender exists because Yente said so", () => {
+  const { envelope, rejected } = validateEnvelope({
+    entities: [],
+    intents: [{
+      actor_ref: "sender", type: "SEEKING", object: "confirmation of resume receipt",
+      source_id: "msg-1", evidence: "Did you get my resume?",
+      explicit: true, confidence: 0.9,
+    }],
+  }, { providedRefs: ["sender"] });
+
+  assert.equal(rejected.length, 0);
+  assert.equal(envelope.intents.length, 1,
+    "the bare-address email's fact survives: identity from transport, not from the model");
+});
+
+test("without providedRefs the sender ref dangles like any other invention", () => {
+  const { envelope, rejected } = validateEnvelope({
+    entities: [],
+    intents: [{
+      actor_ref: "sender", type: "SEEKING", object: "anything",
+      source_id: "msg-1", evidence: "Did you get my resume?",
+      explicit: true, confidence: 0.9,
+    }],
+  });
+  assert.equal(envelope.intents.length, 0);
+  assert.equal(rejected[0].code, "DANGLING_REF",
+    "the contract must be offered by the caller, never assumed by the model");
+});
+
+test("the system prompt teaches the sender-given contract", () => {
+  assert.match(OBSERVER_SYSTEM, /THE SENDER IS GIVEN/);
+  assert.match(OBSERVER_SYSTEM, /sender_ref/);
+  assert.match(OBSERVER_SYSTEM, /Did you get my resume\?/,
+    "the bare-address shape is taught by worked example, not by argument");
+});
+
 test("an intent referring to an entity that was never declared is dropped", () => {
   const { envelope, rejected } = validateEnvelope({
     entities: [

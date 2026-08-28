@@ -287,8 +287,13 @@ const NORMALIZERS = Object.freeze({
  * @param {object} raw            parsed JSON from the model's block
  * @param {object} [options]
  * @param {Set<string>} [options.knownSourceIds]  source ids that actually exist
+ * @param {Iterable<string>} [options.providedRefs]  refs the CALLER declared —
+ *        identities Yente established deterministically (the message sender,
+ *        keyed by their email address) and handed to the model as given. A
+ *        claim referencing a provided ref is not dangling: the entity exists
+ *        because the transport says so, not because the model asserted it.
  */
-export function validateEnvelope(raw, { knownSourceIds = null } = {}) {
+export function validateEnvelope(raw, { knownSourceIds = null, providedRefs = null } = {}) {
   if (!isPlainObject(raw)) {
     throw new SchemaError("BAD_ENVELOPE", "Observation envelope must be a JSON object");
   }
@@ -324,7 +329,15 @@ export function validateEnvelope(raw, { knownSourceIds = null } = {}) {
   // Referential integrity. An intent whose actor names no declared entity
   // cannot be attached to anybody, so it is not a usable claim — and this is
   // the check that catches a model inventing a reference rather than a quote.
+  //
+  // Provided refs count as declared. The sender of a message EXISTS — the
+  // MIME parser proved it before the model ever ran — and requiring the model
+  // to re-assert that existence (with a name it may not have) was how every
+  // bare-address email produced zero claims by construction: name missing →
+  // entity rejected → every fact about the sender cascaded out with it.
+  // Identity comes from transport; the model only attaches facts to it.
   const declaredRefs = new Set(envelope.entities.map((entity) => entity.ref));
+  for (const ref of providedRefs ?? []) declaredRefs.add(ref);
   const REF_FIELDS = Object.freeze({
     intents: ["actorRef"],
     relationships: ["subjectRef", "objectRef"],

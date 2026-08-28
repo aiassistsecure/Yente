@@ -67,7 +67,7 @@ import {
  * envelope shape still produces different beliefs, and a cache that ignored
  * that would serve stale interpretations forever.
  */
-export const PROMPT_VERSION = "obs_prompt_v10";
+export const PROMPT_VERSION = "obs_prompt_v11";
 
 /** Default attempts. Transient failures are retried; deterministic ones are not. */
 const DEFAULT_ATTEMPTS = 3;
@@ -89,7 +89,10 @@ export class IntelligenceError extends Error {
  * Sources are hashed in a canonical order with an explicit separator, so
  * `[{id:"a",text:"xy"}]` and `[{id:"ax",text:"y"}]` cannot collide.
  */
-export function inferenceKey({ sources, provider, model, schemaVersion, promptVersion, context = null }) {
+export function inferenceKey({
+  sources, provider, model, schemaVersion, promptVersion,
+  context = null, providedRefs = null,
+}) {
   const canonical = [...sources]
     .map((source) => `${source.id}${source.text}`)
     .sort()
@@ -97,6 +100,10 @@ export function inferenceKey({ sources, provider, model, schemaVersion, promptVe
   return digest([
     provider, model, schemaVersion, promptVersion,
     context ? JSON.stringify(context, Object.keys(context).sort()) : "",
+    // Part of the key: the same evidence under a different ref contract is a
+    // different inference — an envelope produced when "sender" was a given
+    // ref does not mean the same thing as one produced without it.
+    providedRefs ? [...providedRefs].sort().join(",") : "",
     canonical,
   ].join(""));
 }
@@ -373,13 +380,14 @@ export function createIntelligenceProvider({
     });
   }
 
-  async function observe({ sources, context = null, signal } = {}) {
+  async function observe({ sources, context = null, providedRefs = null, signal } = {}) {
     if (!Array.isArray(sources) || sources.length === 0) {
       throw new TypeError("observe requires at least one source");
     }
 
     const contentHash = inferenceKey({
       sources, provider, model, context,
+      providedRefs: providedRefs ? [...providedRefs].sort() : null,
       schemaVersion: OBSERVATION_SCHEMA_VERSION,
       promptVersion: PROMPT_VERSION,
     });
@@ -425,7 +433,7 @@ export function createIntelligenceProvider({
         const { raw: receivedRaw, recovered } = readEnvelope(completion.text);
         const raw = canonicalizeSourceIds(receivedRaw, aliases);
         const { envelope, rejected: schemaRejected, discrepancies } =
-          validateEnvelope(raw, { knownSourceIds });
+          validateEnvelope(raw, { knownSourceIds, providedRefs });
         const { verified, rejected: groundingRejected } =
           verifyEnvelope(envelope, sourceTextById);
 
