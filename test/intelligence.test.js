@@ -29,6 +29,7 @@ import {
   resolveIntelligenceConfig,
   PROMPT_VERSION,
   IntelligenceError,
+  readEnvelope,
 } from "../src/intelligence/provider.js";
 import { createObservationPrompt, OBSERVER_SYSTEM } from "../src/intelligence/prompt.js";
 import { EXTRACTION_SYSTEM } from "../src/extract/profile.js";
@@ -579,6 +580,39 @@ test("claimCount counts every group, so an empty answer is distinguishable from 
   const { envelope } = validateEnvelope({});
   assert.equal(claimCount(envelope), 0);
   assert.equal(claimCount(validateEnvelope(goodEnvelope()).envelope), 4);
+});
+
+test("a SINGLE claim line is not mistaken for an envelope", () => {
+  // Found live 2026-08-28: every short message stored NOTHING while a résumé
+  // producing 63 claim lines extracted perfectly. Same model, same prompt, same
+  // minute — the difference was the claim COUNT.
+  //
+  // One claim line is itself valid JSON. The reader tried JSON.parse first and
+  // fell back to the line reader only when it threw, which works for many
+  // claims (line two breaks the parse) and fails silently for exactly one.
+  // validateEnvelope then looked for `entities` on
+  // `{"claim":"entity","ref":"sender",...}`, found no groups, and reported an
+  // empty understanding while a perfectly valid claim was discarded.
+  //
+  // The fingerprint in the log was `recovered=single_block` on every drop.
+  const oneClaim = '<<<OBSERVATIONS>>>\n'
+    + '{"claim":"entity","ref":"sender","kind":"PERSON","name":"Mark",'
+    + '"source_id":"message:abc","evidence":"I am Mark","explicit":true,"confidence":0.95}\n'
+    + '<<<END>>>';
+
+  const { raw, recovered } = readEnvelope(oneClaim);
+  assert.equal(recovered, null, "a claim line must take the LINE path, not the object path");
+  assert.equal(raw.entities.length, 1, "the claim must survive");
+  assert.equal(raw.entities[0].name, "Mark");
+});
+
+test("a bare {} and an obs_v1 envelope still take the object path", () => {
+  // The fix must not break the two shapes that legitimately arrive as one
+  // object: the empty answer, and the original envelope form.
+  assert.equal(readEnvelope("<<<OBSERVATIONS>>>\n{}\n<<<END>>>").recovered, "single_block");
+  const env = readEnvelope('<<<OBSERVATIONS>>>\n{"entities":[],"intents":[]}\n<<<END>>>');
+  assert.equal(env.recovered, "single_block");
+  assert.deepEqual(env.raw.entities, []);
 });
 
 /* --- caching and reprocessing ------------------------------------------- */
