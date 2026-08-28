@@ -339,16 +339,44 @@ export function readEnvelope(text) {
     //    the line it sits on, not the four minutes of extraction around it.
     try {
       const content = requireSingleBlock(text, BLOCK_TAGS.OBSERVATIONS);
+
+      // A SINGLE CLAIM LINE IS ITSELF VALID JSON, AND THAT WAS THE BUG.
+      //
+      // The reader used to try JSON.parse first and fall back to the line
+      // reader only when it threw. That works for many claims — line two breaks
+      // the parse — and fails silently for exactly one, because one line parses
+      // cleanly as an object. `validateEnvelope` then looked for `entities` and
+      // `intents` on `{"claim":"entity","ref":"sender",...}`, found no groups,
+      // and reported an empty understanding.
+      //
+      // Observed live: every short message stored NOTHING while a résumé
+      // producing 63 lines extracted perfectly. Same model, same prompt, same
+      // minute. The difference was the claim COUNT, and the fingerprint in the
+      // log was `recovered=single_block` on every dropped one.
+      //
+      // So the question is not "does this parse" but "is this an ENVELOPE or a
+      // CLAIM", and the two are distinguishable by shape.
+      const looksLikeClaim = (value) => value
+        && typeof value === "object"
+        && !Array.isArray(value)
+        && typeof value.claim === "string"
+        && !CLAIM_GROUPS.some((group) => Array.isArray(value[group]));
+
       try {
-        return { raw: JSON.parse(content), recovered: "single_block", blocks: null };
-      } catch {
-        const { raw, malformedLines } = envelopeFromLines(content);
-        if (raw) {
-          return { raw, recovered: null, blocks: null, malformedLines };
+        const parsed = JSON.parse(content);
+        if (!looksLikeClaim(parsed)) {
+          return { raw: parsed, recovered: "single_block", blocks: null };
         }
-        throw new ProtocolError("INVALID_JSON",
-          `OBSERVATIONS contains neither a JSON object nor parseable claim lines`);
+        // Fall through to the line reader, which knows how to route a claim's
+        // `claim` discriminator into its group.
+      } catch { /* not one object; the line reader is the right path */ }
+
+      const { raw, malformedLines } = envelopeFromLines(content);
+      if (raw) {
+        return { raw, recovered: null, blocks: null, malformedLines };
       }
+      throw new ProtocolError("INVALID_JSON",
+        `OBSERVATIONS contains neither a JSON object nor parseable claim lines`);
     } catch (blockError) {
       // 3. A fenced code block — the most common deviation, and the one the
       //    contract explicitly asks against, which models still do.
