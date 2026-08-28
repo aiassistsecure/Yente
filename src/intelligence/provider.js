@@ -67,7 +67,7 @@ import {
  * envelope shape still produces different beliefs, and a cache that ignored
  * that would serve stale interpretations forever.
  */
-export const PROMPT_VERSION = "obs_prompt_v8";
+export const PROMPT_VERSION = "obs_prompt_v9";
 
 /** Default attempts. Transient failures are retried; deterministic ones are not. */
 const DEFAULT_ATTEMPTS = 3;
