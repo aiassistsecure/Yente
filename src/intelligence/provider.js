@@ -60,6 +60,7 @@ import {
   SchemaError,
   validateEnvelope,
   claimsForVerification,
+  claimCount,
   CLAIM_GROUPS,
 } from "./schema.js";
 
@@ -263,6 +264,39 @@ export function envelopeFromLines(content) {
   });
 
   return { raw: parsedAny ? raw : null, malformedLines };
+}
+
+/**
+ * Salvage the complete claim lines a dying transport already delivered.
+ *
+ * 2026-08-28: eleven minutes of generation streamed dozens of complete,
+ * individually-parseable claim lines, then the hop between the operator and
+ * the gateway failed ("error decoding response body") — and every one of
+ * those lines was discarded, to be re-paid in full on retry.
+ *
+ * One claim per line makes salvage SAFE where it previously was not: a
+ * complete line is a finished claim, judged by the same schema and grounding
+ * gates as any other. Two rules keep this honest:
+ *
+ *   1. A salvaged result is marked `partial: true` and is NEVER cached — a
+ *      partial answer must never satisfy a replay. The caller keeps the job
+ *      open and retries; the graph's content-keyed append makes the overlap
+ *      between salvage and retry free instead of duplicated.
+ *   2. Salvage never invents completion: no <<<END>>> arrived, so nothing
+ *      here claims the message was fully understood. The lines are stored
+ *      because they are true; the job stays open because it is unfinished.
+ */
+export function salvageLines(partialText) {
+  if (typeof partialText !== "string") return null;
+  const opener = partialText.lastIndexOf("<<<OBSERVATIONS>>>");
+  if (opener === -1) return null;
+  let content = partialText.slice(opener + "<<<OBSERVATIONS>>>".length);
+  const end = content.indexOf("<<<END>>>");
+  if (end !== -1) content = content.slice(0, end);
+  // The final line is where the stream died; if it is incomplete it fails
+  // JSON.parse and is counted malformed by envelopeFromLines — which is
+  // correct, not noise: the count says how much the cut cost.
+  return envelopeFromLines(content);
 }
 
 export function readEnvelope(text) {
@@ -497,6 +531,10 @@ export function createIntelligenceProvider({
     const failures = [];
     let attempt = 0;
     let lastText = null;
+    // The full accumulated stream from the most recent mid-generation
+    // failure, held OUTSIDE the failure records so result.failures stays
+    // log-sized. Used for salvage at exhaustion.
+    let lastPartialText = null;
     // Set after a shape failure, sent with the NEXT attempt. "Models fix shape
     // when told" was this file's own justification for retrying — and until
     // 2026-08-28 the retry sent the byte-identical prompt, telling the model
@@ -580,6 +618,9 @@ export function createIntelligenceProvider({
           sample: typeof lastText === "string" ? lastText.slice(0, 1_200) : null,
         };
         failures.push(failure);
+        if (typeof error?.meta?.partialText === "string" && error.meta.partialText.length > 0) {
+          lastPartialText = error.meta.partialText;
+        }
         onStream?.({ phase: "rejected", ...failure, evidence, contentHash });
 
         // Tell the next attempt what broke. Sentinel tokens are stripped from
@@ -598,6 +639,41 @@ export function createIntelligenceProvider({
         }
 
         if (!retryable || attempt >= maxAttempts) {
+          // Last resort before reporting failure: keep what the dying stream
+          // already delivered whole. Same gates as any answer; never cached;
+          // the caller sees partial: true and keeps the job open.
+          const salvage = lastPartialText ? salvageLines(lastPartialText) : null;
+          if (salvage?.raw) {
+            const canonical = canonicalizeSourceIds(salvage.raw, aliases);
+            const { envelope, rejected: schemaRejected } =
+              validateEnvelope(canonical, { knownSourceIds, providedRefs });
+            const { verified, rejected: groundingRejected } =
+              verifyEnvelope(envelope, sourceTextById);
+            if (claimCount(verified) > 0) {
+              return Object.freeze({
+                envelope,
+                verified,
+                rejected: Object.freeze([
+                  ...salvage.malformedLines, ...schemaRejected, ...groundingRejected,
+                ]),
+                discrepancies: Object.freeze([]),
+                failures: Object.freeze(failures),
+                attempts: attempt,
+                cached: false,
+                partial: true,
+                recovered: "salvaged_lines",
+                provenance: Object.freeze({
+                  contentHash,
+                  provider,
+                  model,
+                  schemaVersion: OBSERVATION_SCHEMA_VERSION,
+                  promptVersion: PROMPT_VERSION,
+                  inferenceTimestamp: now(),
+                  elapsedMs: null,
+                }),
+              });
+            }
+          }
           throw new IntelligenceError(
             error?.code ?? "OBSERVE_FAILED",
             `Observation failed after ${attempt} attempt(s): ${error?.message ?? error}`,
