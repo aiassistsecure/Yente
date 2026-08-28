@@ -84,6 +84,55 @@ export function createGraphManager({
       }));
   }
 
+  function coveringMessageId(evidenceId, row) {
+    if (!evidenceId) return null;
+    if (String(evidenceId).startsWith("message:")) return evidenceId;
+    return row?.meta?.messageEvidenceId ?? null;
+  }
+
+  function threadHrefFor(evidenceId, row = null) {
+    const messageId = coveringMessageId(evidenceId, row ?? graph.evidence.get(evidenceId));
+    return messageId ? `/thread?id=${encodeURIComponent(messageId)}` : null;
+  }
+
+  /**
+   * One conversation: covering message, siblings that share threadId, attachments,
+   * and every claim mined from that mail. The overseer's way into the inbox from
+   * a graph belief.
+   */
+  function thread(id) {
+    const root = graph.evidence.get(id);
+    if (!root) return null;
+    const coveringId = coveringMessageId(id, root) ?? id;
+    const covering = graph.evidence.get(coveringId) ?? root;
+    const threadKey = covering.meta?.threadId ?? covering.meta?.rfcMessageId ?? coveringId;
+    const messages = graph.evidence.all()
+      .filter((row) => {
+        if (row.kind !== "message") return false;
+        const key = row.meta?.threadId ?? row.meta?.rfcMessageId ?? row.id ?? row._id;
+        return key === threadKey || (row.id ?? row._id) === coveringId;
+      })
+      .sort((a, b) => String(a.meta?.sentAt ?? a.receivedAt ?? "")
+        .localeCompare(String(b.meta?.sentAt ?? b.receivedAt ?? "")));
+    const messageIds = new Set(messages.map((m) => m.id ?? m._id));
+    const attachments = graph.evidence.all().filter((row) =>
+      row.kind === "attachment" && messageIds.has(row.meta?.messageEvidenceId));
+    const evidenceIds = [...messageIds, ...attachments.map((a) => a.id ?? a._id)];
+    const claims = graph.observations.all().filter((row) => evidenceIds.includes(row.evidenceId));
+    return {
+      id: coveringId,
+      threadId: threadKey,
+      rfcMessageId: covering.meta?.rfcMessageId ?? null,
+      subject: covering.meta?.subject ?? "(no subject)",
+      from: covering.meta?.from ?? null,
+      to: covering.meta?.to ?? [],
+      sentAt: covering.meta?.sentAt ?? covering.receivedAt ?? null,
+      messages: messages.map((m) => ({ id: m.id ?? m._id, ...m })),
+      attachments: attachments.map((a) => ({ id: a.id ?? a._id, ...a })),
+      claims,
+    };
+  }
+
   /**
    * The profile. Everything known about one person or organisation.
    *
@@ -153,6 +202,7 @@ export function createGraphManager({
             sourceKind: sourceKindOf(eid),
             claimCount: claims.length,
             claims,
+            threadHref: threadHrefFor(eid, row),
           };
         })
         .filter(Boolean)
@@ -509,6 +559,43 @@ export function createGraphManager({
     return profileState(graph.observations.project(id));
   }
 
+  /**
+   * Profile state transitions are append-only and enforced. "When did they
+   * qualify, and on the strength of what" is answerable by TRACE. An illegal
+   * move throws: a lifecycle that silently accepts any transition is a
+   * lifecycle that is not enforcing anything.
+   */
+  function setProfileState({ subject: id, state, evidenceId = null, quote = null, by = null }) {
+    const current = profileState(graph.observations.project(id));
+    if (!isLegalTransition(current, state)) {
+      throw new Error(`cannot move ${id} from ${current} to ${state}`);
+    }
+    const at = now();
+    const observation = graph.observations.append({
+      subject: id,
+      predicate: PROFILE_STATE_PREDICATE,
+      object: state,
+      evidenceId,
+      quote: quote || `${current} -> ${state}`,
+      // The person's own approval is a correction in the strongest sense: it
+      // outranks every inference the pipeline made about them.
+      authority: state === PROFILE_STATES.QUALIFIED || by
+        ? AUTHORITY.USER_CORRECTION
+        : AUTHORITY.DETERMINISTIC,
+      confidence: 1,
+      observedAt: at,
+    });
+    graph.decisions.record({
+      kind: "profile", target: id, verdict: state,
+      by: by || actor, at, detail: { from: current, evidenceId },
+    });
+    return observation;
+  }
+
+  function profileStateOf(id) {
+    return profileState(graph.observations.project(id));
+  }
+
   /** Counts for the header, so the operator can see the loop moving. */
   function summary() {
     const matches = graph.matches.all();
@@ -529,7 +616,7 @@ export function createGraphManager({
   }
 
   return Object.freeze({
-    pendingMatches, pendingIdentities, subject, subjects, summary,
+    pendingMatches, pendingIdentities, subject, subjects, thread, threadHrefFor, summary,
     confirmMatch, rejectMatch, createMatch,
     samePerson, differentPeople, wrongClaim, excludeSubject, isEligible,
     // Matchability is deliberately separate from eligibility: one is the

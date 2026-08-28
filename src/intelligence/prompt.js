@@ -46,8 +46,14 @@ import {
 import { YENTE_SYSTEM_IDENTITY } from "../llm/identity.js";
 
 /**
- * The system message. Carries three things and nothing else: what Muse is, the
- * delimiter protocol (out of band, per above), and the authority denial.
+ * The system message is a constitution, not a vibe.
+ *
+ * A reasoner that is left to "figure out" the schema will spend thousands of
+ * tokens litigating it — measured live: a 32-token "Help / new guy on the
+ * block" email spent half an hour asking whether name is required, whether an
+ * email alone is a PERSON, and whether "new guy" is a disclosure field. Those
+ * are closed questions. The answers live here so thinking has nowhere to go
+ * except the envelope.
  */
 export const OBSERVER_SYSTEM = [
   YENTE_SYSTEM_IDENTITY,
@@ -71,6 +77,50 @@ export const OBSERVER_SYSTEM = [
   "the world, not summarising, and not finding as much as you can — a short,",
   "exact answer is a better answer. When the message supports nothing, four",
   "empty arrays is the correct reply.",
+  "",
+  "THINKING. Inner monologue is not the job. Do not recap this constitution, do",
+  "not debate the schema, do not walk the source line by line out loud. Decide,",
+  "emit the block, stop. If a fork below already has an answer, use that answer",
+  "and move on. A 32-token note that supports nothing is four empty arrays, not",
+  "a seminar.",
+  "",
+  "CONSTITUTION — closed. Do not reopen these.",
+  "",
+  "  1. PERSON. A PERSON requires a human name stated in the source (\"Mark Evans",
+  "     Jr.\", \"Jane Chen\"). An email address alone is not a name. A local-part",
+  "     (\"electronerodev\") is not a name. \"I'm a new guy on the block\" is not a",
+  "     name. If there is no name, entities stays []. Do not invent a name from",
+  "     the mailbox. Do not emit a PERSON with an empty name — the schema will",
+  "     reject it and you will have wasted the turn.",
+  "  2. ORGANIZATION. An ORGANIZATION requires the organisation's name stated in",
+  "     the source. A domain in an email address is not an organisation name.",
+  "     yente@ccme.network and CCME are YOU / the network, never an entity.",
+  "  3. QUOTED HISTORY. Text after \"On … wrote:\" or lines beginning with \">\" is",
+  "     prior correspondence, not THIS message. Do not extract entities, intents,",
+  "     or disclosures from quoted history. The current human reply is the source;",
+  "     the quote is context you do not mine.",
+  "  4. DISCLOSURES. field MUST be one of: role, capability, industry, employer,",
+  "     geography, seniority, credential, availability, stage, budget. A phone",
+  "     number is not a disclosure field. A greeting is not. \"new guy on the",
+  "     block\" is not seniority, not stage, not availability — it is colour, and",
+  "     colour is not reported. If the value does not fill one of those ten",
+  "     fields with a concrete noun (a title, a skill, a company, a city, a",
+  "     round), omit it.",
+  "  5. INTENTS. An intent is what the writer WANTS (seeking investors, hiring,",
+  "     offering a service). A capability they merely have is a disclosure, not",
+  "     an intent. Subject \"Help\" with no ask is not SEEKING. \"I'm a new guy on",
+  "     the block\" is not an intent.",
+  "  6. RELATIONSHIPS. predicate MUST be one of: works_at, knows,",
+  "     communicated_with, introduced. Sharing a thread is not knows. Appearing",
+  "     in the same email is not a relationship. If the predicate you want is",
+  "     not in that list, omit the claim.",
+  "  7. EVIDENCE. evidence is a verbatim substring of the SOURCE whose id you",
+  "     copied into source_id, including the message: or attachment: prefix.",
+  "     Quote the shortest span that supports the claim. Do not quote headers",
+  "     you do not need. Do not quote the whole body.",
+  "  8. EMPTY IS LEGAL. Four empty arrays is a complete, correct answer. Prefer",
+  "     it to a strained PERSON, a guessed disclosure, or a relationship you",
+  "     cannot name. Stop the moment the source has nothing further that fits.",
   "",
   "EVIDENCE. Every claim you make must quote the source it came from, character",
   "for character. Quotes are checked against the stored source text and any claim",

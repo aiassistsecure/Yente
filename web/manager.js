@@ -60,6 +60,19 @@ export async function handleManagerRequest({ req, res, manager, graph, health, o
     return true;
   }
 
+  // The inbox view the overseer asked for: from any graph belief, open the
+  // conversation it was mined from — covering message, attachments, every
+  // claim Yente extracted from that thread. Verbatim source, not a summary.
+  if (url.pathname === "/thread" && req.method === "GET") {
+    const id = url.searchParams.get("id");
+    if (!id) { res.writeHead(400).end("missing id"); return true; }
+    const thread = manager.thread(id);
+    if (!thread) { res.writeHead(404).end("thread not found"); return true; }
+    res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    res.end(renderThread({ thread }));
+    return true;
+  }
+
   if (req.method !== "POST") return false;
 
   const body = await readBody(req);
@@ -198,7 +211,7 @@ function matchCard(match) {
 
   ${(match.evidence ?? []).filter((e) => e.quote).map((e) => `
   <blockquote>“${esc(e.quote)}”
-    <cite>${esc(shortSubject(e.subject))}${e.evidenceId ? ` · <code>${esc(String(e.evidenceId).slice(0, 12))}</code>` : ""}</cite>
+    <cite>${esc(shortSubject(e.subject))}${e.evidenceId ? ` · <a href="/thread?id=${encodeURIComponent(e.evidenceId)}"><code>${esc(String(e.evidenceId).slice(0, 12))}</code></a>` : ""}</cite>
   </blockquote>`).join("")}
 
   <form class="row" method="post" action="/">
@@ -297,7 +310,9 @@ ${profile.evidence.length === 0 ? `<p class="empty">None.</p>`
     : `<table><tr><th>kind</th><th>what</th><th>received</th></tr>
   ${profile.evidence.map((e) => `<tr>
     <td>${esc(e.kind)}</td>
-    <td>${esc(e.meta?.subject ?? e.meta?.filename ?? "—")}
+    <td>${e.threadHref
+      ? `<a href="${esc(e.threadHref)}">${esc(e.meta?.subject ?? e.meta?.filename ?? e.id)}</a>`
+      : esc(e.meta?.subject ?? e.meta?.filename ?? "—")}
       ${e.meta?.structure && Object.keys(e.meta.structure).length
         ? `<span class="empty">${esc(JSON.stringify(e.meta.structure))}</span>` : ""}</td>
     <td>${esc(String(e.receivedAt ?? "").slice(0, 16).replace("T", " "))}</td>
@@ -318,6 +333,51 @@ ${profile.evidence.length === 0 ? `<p class="empty">None.</p>`
   </form>
 </div>
 
+</div></body></html>`;
+}
+
+export function renderThread({ thread }) {
+  const when = (iso) => esc(String(iso ?? "").slice(0, 16).replace("T", " "));
+  const messageCard = (m) => `
+  <div class="card">
+    <div><b>${esc(m.meta?.subject ?? thread.subject)}</b>
+      <span class="badge">${esc(m.kind ?? "message")}</span></div>
+    <div class="empty">${esc(m.meta?.from ?? "")} → ${(m.meta?.to ?? []).map(esc).join(", ")}
+      · ${when(m.meta?.sentAt ?? m.receivedAt)}</div>
+    <pre style="white-space:pre-wrap;font:inherit">${esc(m.text ?? "")}</pre>
+  </div>`;
+  const attachmentCard = (a) => `
+  <div class="card">
+    <div><b>${esc(a.meta?.filename ?? a.id)}</b>
+      <span class="badge">attachment</span></div>
+    <div class="empty">${esc(a.meta?.mimeType ?? "")} · ${a.meta?.bytes ?? "?"} bytes</div>
+    <pre style="white-space:pre-wrap;font:inherit">${esc(String(a.text ?? "").slice(0, 4000))}</pre>
+  </div>`;
+  const claimCard = (c) => `
+  <div class="card">
+    <div><b>${esc(c.predicate)}</b>${c.object ? ` → ${esc(c.object)}` : ""}
+      · <a href="/subject?id=${encodeURIComponent(c.subject)}">${esc(c.subject)}</a></div>
+    ${c.quote ? `<blockquote>“${esc(c.quote)}”</blockquote>` : ""}
+  </div>`;
+
+  return `<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${esc(thread.subject)} · thread · Yente</title><style>${STYLE}</style>
+</head><body><div class="wrap">
+<header>
+  <h1>${esc(thread.subject)}</h1>
+  <div class="stats"><a href="/">← manager</a>
+    · ${esc(thread.from ?? "")}
+    · ${when(thread.sentAt)}
+    ${thread.rfcMessageId ? `· <code>${esc(thread.rfcMessageId)}</code>` : ""}</div>
+</header>
+<h2>Conversation</h2>
+${thread.messages.map(messageCard).join("") || `<p class="empty">No messages in this thread.</p>`}
+<h2>Attachments</h2>
+${thread.attachments.map(attachmentCard).join("") || `<p class="empty">None.</p>`}
+<h2>What Yente extracted</h2>
+${thread.claims.map(claimCard).join("") || `<p class="empty">No claims mined from this thread yet.</p>`}
 </div></body></html>`;
 }
 
