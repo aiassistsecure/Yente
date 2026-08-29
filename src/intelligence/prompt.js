@@ -399,12 +399,22 @@ export function createWakeUpPrompt({ sources, repeatedLine = null, context = nul
   });
 
   // The SHAPE of the answer, without the list of things to be careful about.
+  //
+  // THE SAME SHAPE AS THE MAIN CONTRACT, WORD FOR WORD WHERE IT COUNTS. This
+  // used to say "one JSON object with four array fields" — the obs_v2 wording
+  // — while the main contract and its worked examples say ONE CLAIM PER LINE.
+  // Attempt 2 after a loop IS the wake-up, so every recovery run was handed a
+  // contract that contradicted everything it had already read, and spent its
+  // budget reconciling the two: "Wait: the output contract says..." — a real
+  // trace. A wake-up must never introduce a second opinion about the format.
   blocks.push({
     tag: BLOCK_TAGS.OUTPUT_CONTRACT,
     content: [
-      "Answer as exactly one OBSERVATIONS block containing one JSON object with",
-      "these four array fields: entities, intents, relationships, and disclosures.",
-      "Nothing before or after it.",
+      "Answer as exactly one OBSERVATIONS block containing ONE CLAIM PER LINE —",
+      "each line a complete JSON object that parses alone and is judged alone.",
+      "The \"claim\" field names its kind: \"entity\", \"intent\",",
+      "\"relationship\", or \"disclosure\". Emit the single line {} when there",
+      "are no supported claims. Nothing before or after the block.",
     ].join("\n"),
   });
 

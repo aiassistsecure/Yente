@@ -80,7 +80,7 @@ import {
 // false, capped confidence — and never about the document itself. Mark's
 // direction, verbatim in spirit: "if a resume speaks loudly about tech work,
 // we can infer the intent of the submitter."
-export const PROMPT_VERSION = "obs_prompt_v14";
+export const PROMPT_VERSION = "obs_prompt_v15";
 
 /** Default attempts. Transient failures are retried; deterministic ones are not. */
 const DEFAULT_ATTEMPTS = 3;

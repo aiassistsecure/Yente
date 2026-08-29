@@ -259,3 +259,23 @@ test("a retired attachment job stays retired through every requeue", () => {
   assert.equal(graph.jobs.requeueForPrompt("obs_prompt_v99", at), 0, "no version bump may either");
   assert.equal(graph.jobs.retireAttachmentJobs(at), 0, "and retirement itself is idempotent");
 });
+
+test("the wake-up and the main contract agree on the answer's shape", async () => {
+  // Attempt 2 after a loop IS the wake-up. Its contract said "one JSON object
+  // with four array fields" while the main contract says ONE CLAIM PER LINE —
+  // so every recovery run reconciled two contradictory formats instead of
+  // answering: "Wait: the output contract says..." — a real trace, and the
+  // checklist loop that preceded it was the same collision.
+  const { createObservationPrompt, createWakeUpPrompt } =
+    await import("../src/intelligence/prompt.js");
+  const sources = [{ id: "message:x", text: "hi" }];
+
+  for (const prompt of [
+    createObservationPrompt({ sources }),
+    createWakeUpPrompt({ sources, repeatedLine: "x" }),
+  ]) {
+    assert.match(prompt, /ONE CLAIM PER LINE/);
+    assert.doesNotMatch(prompt, /four array fields/,
+      "exactly one opinion about the format, everywhere");
+  }
+});
