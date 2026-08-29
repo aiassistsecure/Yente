@@ -150,7 +150,15 @@ test("a résumé produces a letter, not silence", async () => {
   assert.equal(result.facts, 3, "the facts were stored");
   assert.notEqual(jobs(store).length, 0,
     "THE BUG: three verified facts and not one queued letter");
-  assert.deepEqual(purposes(store), ["interview_question"]);
+  // Two letters now, both deliberate: the interview question, and the ONE-TIME
+  // LinkedIn ask — ask 2 of the intake pipeline, sent at the natural moment (a
+  // reply the member already expects) because their mail has never carried a
+  // linkedin.com/in URL. Sorted, because outbox order is not part of the
+  // contract; the SET of purposes is.
+  assert.deepEqual(purposes(store).sort(), ["interview_question", "linkedin_request"]);
+  const linkedInAsk = jobs(store).find((j) => j.idempotencyKey.startsWith("linkedin:"));
+  assert.ok(linkedInAsk, "the LinkedIn ask carries its own purpose");
+  assert.match(linkedInAsk.email.text, /linkedin\.com\/in/);
   assert.equal(result.outcome, "interviewing");
 });
 
@@ -189,8 +197,9 @@ test("a member who qualifies is told what she has — the second silence", async
   const [result] = await runtime.ingest(T(1));
 
   assert.equal(result.outcome, "qualified");
-  assert.deepEqual(purposes(store), ["profile_confirmation"],
-    "a qualified member hears back, and is not sent an interview question");
+  assert.deepEqual(purposes(store).sort(), ["linkedin_request", "profile_confirmation"],
+    "a qualified member hears back (plus the one-time LinkedIn ask), "
+    + "and is not sent an interview question");
 
   const letter = jobs(store).find((j) => j.purpose === "profile_confirmation").email;
   assert.match(letter.text, /Role: Founder & Systems Architect/);
@@ -216,7 +225,12 @@ test("re-sending the same résumé does not send a second letter — INV-10", as
   sendResume(transport, "<r2@sender.test>");
   await runtime.ingest(T(2));
 
-  assert.equal(jobs(store).length, 1, "the outbox key is per-member and per-question");
+  // Two letters TOTAL across both sends — the interview question and the
+  // one-time LinkedIn ask — and, the point of this test, NOT four. Both keys
+  // are per-member and per-question, so the second résumé adds nothing.
+  assert.equal(jobs(store).length, 2, "the outbox key is per-member and per-question");
+  const keys = jobs(store).map((j) => j.idempotencyKey).sort();
+  assert.equal(new Set(keys).size, keys.length, "no duplicate letters, ever");
 });
 
 test("an extraction that fails is reported, not swallowed", async () => {
