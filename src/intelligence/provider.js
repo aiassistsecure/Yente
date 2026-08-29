@@ -614,6 +614,22 @@ export function createIntelligenceProvider({
         // Shape, then meaning. A parse or schema failure is the model answering
         // in the wrong form, which is worth another attempt; an ungrounded claim
         // is the model inventing, which is not.
+        // THE GATEWAY'S OWN BUDGET APOLOGY IS NOT A MALFORMED ANSWER. When a
+        // reasoning model spends its whole budget thinking, AiAS substitutes a
+        // literal placeholder — "_(the model spent its whole token budget
+        // reasoning and produced no answer — try raising max tokens)_" — and
+        // that string used to reach the parser, fail as MALFORMED_ARTIFACT,
+        // and burn a retry on a diagnosis that misnames the problem. Name it:
+        // the fix is budget (YENTE_LLM_MAX_TOKENS, or a lighter model), not
+        // shape, and the error says so.
+        if (/spent its whole token budget/i.test(completion.text)) {
+          throw new IntelligenceError("TOKEN_BUDGET_UPSTREAM",
+            "the model reasoned through its entire token budget and never "
+            + "answered — raise YENTE_LLM_MAX_TOKENS or use a lighter model "
+            + "for this evidence kind (YENTE_MODEL_MESSAGE/_DOCUMENT)",
+            { transient: true });
+        }
+
         const { raw: receivedRaw, recovered, malformedLines = [] } = readEnvelope(completion.text);
         const raw = canonicalizeSourceIds(receivedRaw, aliases);
         const { envelope, rejected: schemaRejected, discrepancies } =
@@ -677,7 +693,12 @@ export function createIntelligenceProvider({
         const retryable =
           isTransient(error) ||
           error instanceof ProtocolError ||
-          error instanceof SchemaError;
+          error instanceof SchemaError ||
+          // Budget exhaustion IS worth one more try — reasoning length varies
+          // run to run, and the retry may land under the cap. The error still
+          // names the real fix (raise the cap or split the models) so a
+          // pattern of these reads as configuration, not flakiness.
+          error?.code === "TOKEN_BUDGET_UPSTREAM";
 
         // Carry the loop forward so the NEXT attempt is a wake-up rather than a
         // repeat of the prompt that caused it.
