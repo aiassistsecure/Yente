@@ -240,3 +240,54 @@ test("a quote with no foothold in the source says so plainly", () => {
     assert.match(error.message, /no prefix of the quote occurs/);
   }
 });
+
+/* --- the value, quoted as itself ------------------------------------------ */
+
+// EVIDENCE_TOO_SHORTx4 on a live resume, 2026-08-29: the model disclosed
+// capability "Rust" and quoted "Rust" — the shortest honest quote of a
+// skills-list item IS the item, and the floor ate it as invention. The rule:
+// when the evidence IS the value, shortness is not paraphrase (you cannot
+// reword a single word into itself), but it must occur as a WHOLE WORD.
+
+test("a skill quoted as itself grounds against the skills line", () => {
+  const source = "Skills: Rust, Python, distributed systems, PostgreSQL.";
+  for (const value of ["Rust", "Python"]) {
+    const fact = verifyFact({
+      field: "capability", value, source_id: "attachment:cv",
+      evidence: value, explicit: true,
+    }, { "attachment:cv": source });
+    assert.equal(fact.value, value);
+  }
+});
+
+test("a short word only grounds as a whole word — Rust is not trust", () => {
+  const source = "I have deep trust issues with dependency managers.";
+  assert.throws(() => verifyFact({
+    field: "capability", value: "Rust", source_id: "m",
+    evidence: "Rust", explicit: true,
+  }, { m: source }), (error) => {
+    assert.equal(error.code, "SPAN_NOT_FOUND");
+    assert.match(error.message, /whole word/);
+    return true;
+  });
+});
+
+test("a short quote that is NOT the value stays too short", () => {
+  const source = "Skills: Rust, Python.";
+  assert.throws(() => verifyFact({
+    field: "capability", value: "distributed systems", source_id: "m",
+    evidence: "systems", explicit: true,
+  }, { m: source }), (error) => {
+    assert.equal(error.code, "EVIDENCE_TOO_SHORT");
+    return true;
+  }, "a truncated fragment supports nothing — the exemption is for identity, not brevity");
+});
+
+test("punctuation inside a short value survives the word-boundary check", () => {
+  const source = "Focus areas: AI & ML, developer tooling, infrastructure.";
+  const fact = verifyFact({
+    field: "capability", value: "AI & ML", source_id: "m",
+    evidence: "AI & ML", explicit: true,
+  }, { m: source });
+  assert.equal(fact.value, "AI & ML");
+});

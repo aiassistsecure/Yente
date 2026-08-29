@@ -128,14 +128,46 @@ export function verifyFact(fact, sources, { minEvidenceChars = MIN_EVIDENCE_CHAR
   }
 
   const evidence = String(fact.evidence);
-  if (normaliseForGrounding(evidence).length < minEvidenceChars) {
-    throw new GroundingError("EVIDENCE_TOO_SHORT", `Evidence must be at least ${minEvidenceChars} characters`, {
+  const haystack = normaliseForGrounding(sourceText);
+  const needle = normaliseForGrounding(evidence);
+
+  if (needle.length < minEvidenceChars) {
+    // THE VALUE, QUOTED AS ITSELF. A skills-list résumé discloses capability
+    // "Rust", and the shortest honest quote of it IS the word — no
+    // twelve-character span supports "Rust" better than "Rust". Observed
+    // live as EVIDENCE_TOO_SHORTx4 eating Rust, Python, AI & ML and Founder
+    // off a real résumé, 2026-08-29. You cannot paraphrase a single word
+    // into itself, so shortness here is not the invention the floor guards
+    // against — but a short string finds footholds everywhere, so it must
+    // occur as a WHOLE WORD: "Rust" does not ground against "trust". A
+    // short quote that is NOT simply the value stays rejected: a truncated
+    // fragment supports nothing.
+    if (needle !== normaliseForGrounding(String(fact.value ?? ""))) {
+      throw new GroundingError("EVIDENCE_TOO_SHORT",
+        `Evidence must be at least ${minEvidenceChars} characters`, { evidence });
+    }
+    const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const wordHit = new RegExp(
+      `(?<![\\p{L}\\p{N}])${escaped}(?![\\p{L}\\p{N}])`, "u",
+    ).exec(haystack);
+    if (!wordHit) {
+      throw new GroundingError("SPAN_NOT_FOUND",
+        "The cited evidence does not occur in the source as a whole word", {
+          sourceId: fact.source_id,
+          evidence: evidence.slice(0, 120),
+        });
+    }
+    return Object.freeze({
+      field: fact.field,
+      value: fact.value,
+      sourceId: fact.source_id,
       evidence,
+      offset: wordHit.index,
+      explicit: fact.explicit === true,
+      confidence: fact.confidence ?? "unstated",
     });
   }
 
-  const haystack = normaliseForGrounding(sourceText);
-  const needle = normaliseForGrounding(evidence);
   const offset = haystack.indexOf(needle);
   if (offset === -1) {
     const divergence = divergenceOf(haystack, needle);
