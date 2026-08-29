@@ -70,7 +70,12 @@ import {
  * envelope shape still produces different beliefs, and a cache that ignored
  * that would serve stale interpretations forever.
  */
-export const PROMPT_VERSION = "obs_prompt_v12";
+// v13: the whole-letter change (#74). Not a wording edit — the SHAPE of what
+// a message job reads changed (its attachments now ride along as SOURCE
+// blocks), so every envelope produced under v12 understood half a letter.
+// Bumping here is what makes the boot requeue re-read them whole, once,
+// automatically — the same lever the version exists for.
+export const PROMPT_VERSION = "obs_prompt_v13";
 
 /** Default attempts. Transient failures are retried; deterministic ones are not. */
 const DEFAULT_ATTEMPTS = 3;
