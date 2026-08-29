@@ -48,9 +48,54 @@ export function normaliseForGrounding(value) {
     .replace(/[‘’‛ʼ]/g, "'")
     .replace(/[“”‟]/g, '"')
     .replace(/[   ]/g, " ")
+    // A hyphen BETWEEN LETTERS is typography, not content: a PDF extractor
+    // breaks "engineering" into "engineer-\ning" at the wrap point, and a
+    // model that reads the word whole has not invented anything. Folded on
+    // BOTH sides (the optional whitespace makes the wrapped source and the
+    // unwrapped quote normalise identically), and only between letters —
+    // "2023-present", "e-2", "C-3" keep their hyphens, because a digit next
+    // to a hyphen is content. Observed live as SPAN_NOT_FOUND on honest
+    // quotes from a wrapped résumé line, 2026-08-29.
+    .replace(/(?<=\p{L})-\s*(?=\p{L})/gu, "")
     .replace(/\s+/g, " ")
     .trim()
     .toLowerCase();
+}
+
+/**
+ * Where an evidence quote stops matching the source — the debuggable half of
+ * a rejection. Binary search over prefix lengths (presence of a prefix is
+ * monotone), then report the fork: what the quote says next, and what the
+ * source says next at the last place they agreed.
+ *
+ * Thirteen rejections logged as SPAN_NOT_FOUNDx13 cost a debugging session;
+ * one rejection that says 'diverges after "…npm, PyPI, " — the quote
+ * continues "and crates.io" but the source continues "crates.io"' is its own
+ * diagnosis: that one is the model quoting from memory and drifting a word,
+ * which is exactly what INV-5 rejects on purpose.
+ */
+export function divergenceOf(haystack, needle) {
+  let lo = 0;
+  let hi = needle.length;
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    if (haystack.includes(needle.slice(0, mid))) lo = mid;
+    else hi = mid - 1;
+  }
+  // A prefix shorter than the evidence floor is coincidence, not a foothold
+  // ("d" matches practically any source). Report it as no match at all.
+  if (lo < MIN_EVIDENCE_CHARS) {
+    return { matchedChars: lo, detail: "no prefix of the quote occurs in the source" };
+  }
+  const at = haystack.indexOf(needle.slice(0, lo));
+  return {
+    matchedChars: lo,
+    agreed: needle.slice(Math.max(0, lo - 30), lo),
+    quoteContinues: needle.slice(lo, lo + 30),
+    sourceContinues: haystack.slice(at + lo, at + lo + 30),
+    detail: `diverges after "…${needle.slice(Math.max(0, lo - 30), lo)}" — the quote continues `
+      + `"${needle.slice(lo, lo + 30)}" but the source continues "${haystack.slice(at + lo, at + lo + 30)}"`,
+  };
 }
 
 /**
@@ -93,10 +138,13 @@ export function verifyFact(fact, sources, { minEvidenceChars = MIN_EVIDENCE_CHAR
   const needle = normaliseForGrounding(evidence);
   const offset = haystack.indexOf(needle);
   if (offset === -1) {
-    throw new GroundingError("SPAN_NOT_FOUND", "The cited evidence does not occur in the source", {
-      sourceId: fact.source_id,
-      evidence: evidence.slice(0, 120),
-    });
+    const divergence = divergenceOf(haystack, needle);
+    throw new GroundingError("SPAN_NOT_FOUND",
+      `The cited evidence does not occur in the source (${divergence.detail})`, {
+        sourceId: fact.source_id,
+        evidence: evidence.slice(0, 120),
+        divergence,
+      });
   }
 
   return Object.freeze({
