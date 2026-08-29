@@ -119,7 +119,16 @@ const DEFAULTS = Object.freeze({
   // model working through a long attachment may echo a phrase several times
   // while genuinely progressing. What is never legitimate is the same line
   // arriving over and over with nothing new between.
-  maxReasoningRepeats: Number(process.env.YENTE_LLM_MAX_REASONING_REPEATS || 4),
+  //
+  // TEN TIMES, PERFECTLY. Mark's bar, verbatim: "it has to loop at least 10
+  // times perfectly or let it complete its thoughts." Four was tuned when an
+  // abort cost the whole derivation; now the harvest banks the claims, the
+  // wake-up resumes from the model's own thoughts, and the cancel frees the
+  // GPU — a rare trip is cheap, so the detector can afford patience. Every
+  // observed TRUE loop (the "Good." checklist, the alternating Founder pair,
+  // "...separately. Yes." rows) ran far past ten identical lines; nothing
+  // methodical does.
+  maxReasoningRepeats: Number(process.env.YENTE_LLM_MAX_REASONING_REPEATS || 10),
   // REPETITION IS LOCAL. The window of recent phrases a repeat is counted
   // against — Mark's design, from the false positive it fixes: a model
   // walking a per-claim pre-commit checklist ("do we include source_id?
@@ -131,7 +140,12 @@ const DEFAULTS = Object.freeze({
   // window is going in circles, four hits spread over forty lines is a
   // methodical model. Rolling, not cleared in batches — a clear every N
   // would let a tight loop straddle the boundary and never trip.
-  loopWindow: Number(process.env.YENTE_LLM_LOOP_WINDOW || 20),
+  //
+  // Sized for the ten-repeat bar: an alternating two-line loop needs ~2x10
+  // slots to show ten of each, the observed four-line cycle needs 4x10.
+  // Forty covers pairs and threes; the honest per-claim checklist (same
+  // phrase every ~9 lines) still tops out near four in the window.
+  loopWindow: Number(process.env.YENTE_LLM_LOOP_WINDOW || 40),
   streamTimeoutMs: 300_000,
   maxCharacters: 64_000,
   // How much of the reasoning channel is retained for harvest on failure.

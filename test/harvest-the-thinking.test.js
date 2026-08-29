@@ -125,7 +125,7 @@ test("a loop abort carries the whole reasoning trace, claims included", async ()
     "The resume names the person clearly.",
     `1. ${CLAIM_ENTITY}`,
   ];
-  for (let i = 0; i < 8; i += 1) {
+  for (let i = 0; i < 12; i += 1) {
     lines.push("Now we need to ensure the fields are all from the controlled vocabulary. Good.");
   }
 
@@ -151,7 +151,7 @@ test("the reasoning capture is bounded from the front, keeping the tail", async 
   // loop detector on the filler itself. (Found by this test failing.)
   for (let i = 0; i < 30; i += 1) lines.push(`line ${i} ${filler}`);
   lines.push(`FINAL ${CLAIM_RUST}`);
-  for (let i = 0; i < 8; i += 1) {
+  for (let i = 0; i < 12; i += 1) {
     lines.push("Now we need to ensure the fields are all from the controlled vocabulary. Good.");
   }
 
