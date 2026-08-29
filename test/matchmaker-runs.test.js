@@ -224,3 +224,22 @@ test("a claim quoting the resume cites the RESUME, even under the message's job"
   assert.ok(anchor, "the resume's person IS the sender, recorded as same_as");
   assert.equal(anchor.object, "person:mark@x.test");
 });
+
+test("the prompt teaches intent from a career's shape, bounded and honest", async () => {
+  // Mark: "if a resume speaks loudly about tech work, we can infer that the
+  // intent of the submitter is to work for a tech company or meet investors...
+  // founder -> lean investments for their company; engineer -> seeking
+  // employment in those fields." The live trace without this showed the model
+  // groping toward "OFFERING: resume" — discarded downstream, a wasted read.
+  const { createObservationPrompt } = await import("../src/intelligence/prompt.js");
+  const prompt = createObservationPrompt({ sources: [{ id: "message:x", text: "hi" }] });
+
+  assert.match(prompt, /INFER INTENT FROM A CAREER'S SHAPE/);
+  assert.match(prompt, /founder.*SEEKING investment/is, "a founder's resume leans toward their raise");
+  assert.match(prompt, /employment IN THE\s+FIELDS the document evidences/i,
+    "an employee's resume leans toward work in the evidenced fields");
+  assert.match(prompt, /explicit: false, confidence at most 0\.6/,
+    "an inferred want must never wear the certainty of a stated one");
+  assert.match(prompt, /NEVER an intent about the document itself/i,
+    "the resume-as-intent bug stays dead in the instruction, not just the guard");
+});
