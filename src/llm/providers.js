@@ -256,8 +256,14 @@ export function createLlmClients({ provider, log } = {}) {
   const upstream = name === "pin" ? "pin" : (process.env.YENTE_LLM_UPSTREAM || "");
   const FAMILIES = [
     [/^claude/i, "anthropic"],
-    [/^gpt-|^o[0-9]/i, "openai"],
-    [/^llama-|^mixtral|^gemma-?[0-9]*b/i, "groq"],
+    // gpt-oss is OPEN-WEIGHTS — a gpt-prefixed model that legitimately runs on
+    // anybody's hardware, PIN included. The first version of this heuristic
+    // matched /^gpt-/ and warned twice per boot about a perfectly valid
+    // config, and a warning that fires on correct setups teaches the operator
+    // to ignore warnings — which un-catches the real AiAS fallback bug this
+    // exists for. Hosted names only: the vendor families no local box serves.
+    [/^gpt-[45]|^gpt-3\.5|^o[0-9]\b/i, "openai"],
+    [/^llama-|^mixtral/i, "groq"],
     [/^pin:/i, "pin"],
   ];
   const family = (FAMILIES.find(([re]) => re.test(model)) || [])[1];

@@ -926,3 +926,26 @@ test("the provider describes itself, so an observation can record what made it",
     promptVersion: PROMPT_VERSION,
   });
 });
+
+test("the gateway's budget apology is named as a budget problem, not a malformed answer", async () => {
+  // AiAS substitutes a literal placeholder when a reasoning model spends its
+  // whole budget thinking. That string used to reach the parser, fail as
+  // MALFORMED_ARTIFACT, and burn a retry on a diagnosis that misnames the
+  // problem — observed live with gpt-oss:20b on a résumé.
+  const client = clientReturning(
+    "_(the model spent its whole token budget reasoning and produced no answer — try raising max tokens)_",
+  );
+  const p = provider(client, { attempts: 1 });
+
+  await assert.rejects(
+    p.observe({ sources: SOURCES }),
+    (error) => {
+      const failure = error?.meta?.failures?.[0] ?? {};
+      assert.equal(failure.code, "TOKEN_BUDGET_UPSTREAM",
+        "the code must name the budget, not the shape");
+      assert.match(failure.message, /YENTE_LLM_MAX_TOKENS/,
+        "and the message must name the fix");
+      return true;
+    },
+  );
+});
