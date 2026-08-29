@@ -120,6 +120,10 @@ const DEFAULTS = Object.freeze({
   maxReasoningRepeats: Number(process.env.YENTE_LLM_MAX_REASONING_REPEATS || 4),
   streamTimeoutMs: 300_000,
   maxCharacters: 64_000,
+  // How much of the reasoning channel is retained for harvest on failure.
+  // Generous by design: the observed worst case (19k tokens of deliberation
+  // over one résumé) is ~76 KB, so 256 KB means the whole trace in practice.
+  maxReasoningCapture: Number(process.env.YENTE_LLM_MAX_REASONING_CAPTURE || 262_144),
 });
 
 /**
@@ -224,6 +228,27 @@ async function streamCompletion({
   let loopedLine = null;
   let loopedCount = 0;
 
+  // THE THINKING IS KEPT, NOT JUST COUNTED.
+  //
+  // 2026-08-29: ten minutes of reasoning produced ~48 complete, numbered,
+  // individually-parseable claims — then the model slid into its compliance
+  // checklist, the loop detector fired (correctly), and the abort threw away
+  // every one of them, because the only things this client retained about the
+  // reasoning channel were a repeat-count map and the current partial line.
+  // The work was done; we kept the evidence that it stalled and discarded the
+  // work itself.
+  //
+  // So the trace is accumulated and travels on EVERY mid-stream error, the
+  // same way `partialText` already carries the content channel: the caller
+  // can harvest claims from it and show the model its own thoughts on the
+  // next attempt instead of paying for the derivation twice.
+  //
+  // Bounded from the FRONT: past the cap the oldest thinking goes first,
+  // because the claims nearest completion — and the loop the wake-up must
+  // name — live at the tail. The cap is far above any observed trace (a 19k
+  // token generation is ~76 KB) so eviction is a guard rail, not a policy.
+  let reasoningText = "";
+
   const firstTokenTimer = setTimeout(() => {
     if (!sawToken) abort("first-token");
   }, settings.firstTokenTimeoutMs);
@@ -289,9 +314,13 @@ async function streamCompletion({
       // leave the caller nothing to correct with.
       if (controller.signal.aborted) {
         throw translateAbort(controller.signal.reason, error, text,
-          loopedLine ? { line: loopedLine, count: loopedCount } : null);
+          loopedLine ? { line: loopedLine, count: loopedCount } : null,
+          reasoningText);
       }
-      throw new ModelError(ModelErrorCode.NETWORK_ERROR, `Cannot reach the model at ${endpoint}: ${error.message}`);
+      throw new ModelError(ModelErrorCode.NETWORK_ERROR,
+        `Cannot reach the model at ${endpoint}: ${error.message}`,
+        { partial: text.slice(0, 1000), partialText: text,
+          ...(reasoningText ? { reasoningText } : {}) });
     }
 
     if (!response.ok) {
@@ -325,7 +354,8 @@ async function streamCompletion({
           throw new ModelError(
             ModelErrorCode.UPSTREAM_ERROR,
             `Upstream: ${upstream}`,
-            { upstream: parsed.error, partial: text.slice(0, 500), partialText: text },
+            { upstream: parsed.error, partial: text.slice(0, 500), partialText: text,
+              ...(reasoningText ? { reasoningText } : {}) },
           );
         }
 
@@ -377,6 +407,12 @@ async function streamCompletion({
           }
           resetStreamTimer();
           onReasoning?.(reasoning);
+
+          reasoningText += reasoning;
+          if (reasoningText.length > settings.maxReasoningCapture) {
+            reasoningText = reasoningText.slice(
+              reasoningText.length - settings.maxReasoningCapture);
+          }
 
           // IS IT GETTING ANYWHERE, AS OPPOSED TO STILL BEING ALIVE?
           //
@@ -448,7 +484,8 @@ async function streamCompletion({
             throw new ModelError(
               ModelErrorCode.TOKEN_BUDGET_EXCEEDED,
               `Completion exceeded ${settings.maxCharacters} characters`,
-              { partial: text.slice(0, 1000), partialText: text },
+              { partial: text.slice(0, 1000), partialText: text,
+                ...(reasoningText ? { reasoningText } : {}) },
             );
           }
         }
@@ -476,7 +513,8 @@ async function streamCompletion({
       // it — the earlier site handles the pre-iteration case. Passing it in one
       // place and not the other is why the repeated line arrived empty.
       throw translateAbort(controller.signal.reason, error, text,
-        loopedLine ? { line: loopedLine, count: loopedCount } : null);
+        loopedLine ? { line: loopedLine, count: loopedCount } : null,
+        reasoningText);
     }
 
     if (text.trim() === "") {
@@ -532,7 +570,7 @@ function normaliseLine(line) {
     .toLowerCase();
 }
 
-function translateAbort(reason, error, partial, loop = null) {
+function translateAbort(reason, error, partial, loop = null, reasoningText = "") {
   // `partial` is the log-friendly excerpt; `partialText` is the whole
   // accumulated stream, carried so a caller can salvage the complete claim
   // lines a dying transport already delivered. See provider.js.
@@ -544,6 +582,11 @@ function translateAbort(reason, error, partial, loop = null) {
     partial: partial.slice(0, 1000),
     partialText: partial,
     ...(loop?.line ? { repeatedLine: loop.line, repeats: loop.count } : {}),
+    // The thinking that preceded the failure. Aborting a stalled stream is
+    // only cheap if the work it already did survives the abort — the caller
+    // harvests claims from this and shows the model its own thoughts on the
+    // wake-up attempt. Empty when the model never reasoned.
+    ...(reasoningText ? { reasoningText } : {}),
   };
   if (reason === "first-token") {
     return new ModelError(ModelErrorCode.FIRST_TOKEN_TIMEOUT, "The model produced no first token in time", meta);
