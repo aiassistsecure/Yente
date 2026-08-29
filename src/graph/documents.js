@@ -223,12 +223,12 @@ export async function ingestAttachments({
     summary.extracted += 1;
     const evidenceId = evidence.id ?? `attachment:${result.contentHash}`;
     if (!duplicate) {
-      const { duplicate: jobExisted } = graph.jobs.enqueue({
-        evidenceId,
-        subjectHint,
-        at: now(),
-      });
-      if (!jobExisted) summary.enqueued += 1;
+      // NO SEPARATE INFERENCE JOB. The covering message's job now carries this
+      // attachment as an additional SOURCE block — the model reads the whole
+      // letter — so a second job here would pay for the same comprehension
+      // twice. The evidence row stays: dedupe, TRACE and the span verifier all
+      // key on it, and claims quoting this document cite ITS id.
+      summary.enqueued += 0;
     } else {
       // THE SAME DOCUMENT, A LATER COVERING MESSAGE. Evidence meta kept only
       // the FIRST messageEvidenceId, so every later email carrying this file

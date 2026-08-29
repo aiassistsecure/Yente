@@ -72,9 +72,15 @@ export function observationsFrom({
   // A covering message's From header is deterministic ownership for its résumé.
   // Anchor only the unambiguous case: one person entity in attachment evidence.
   // Multi-person decks and arbitrary documents keep their own identities.
-  const anchoredRef = evidenceKind === "attachment" && subjectHint
-    && entities.filter((entity) => entity.kind === "PERSON").length === 1
-    ? entities.find((entity) => entity.kind === "PERSON")?.ref
+  // WHO A DOCUMENT IS ABOUT. One PERSON entity without an address, in evidence
+  // whose owner transport already established: that person IS the owner, and
+  // same_as records it. Was gated on kind === "attachment"; letter jobs carry
+  // the résumé under a MESSAGE job now, and the ownership logic is about the
+  // shape of the entities, not the kind of the evidence.
+  const anchorCandidates = entities.filter((entity) =>
+    entity.kind === "PERSON" && entity.ref !== "sender" && !entity.emailAddress);
+  const anchoredRef = subjectHint && anchorCandidates.length === 1
+    ? anchorCandidates[0].ref
     : null;
 
   for (const entity of entities) {
@@ -106,7 +112,12 @@ export function observationsFrom({
       predicate: entity.kind === "ORGANIZATION" ? "is_organization" : "is_person",
       object: entity.name,
       attributes: entity.title ? { title: entity.title } : {},
-      evidenceId, quote: entity.evidence,
+      // The source the claim QUOTED, not the job that ran it. A letter job
+      // carries message + attachments as separate SOURCE blocks; a claim
+      // grounded in the résumé must cite the résumé, or TRACE walks to the
+      // wrong document. The job id is the fallback for older envelopes.
+      evidenceId: entity.sourceId ?? evidenceId,
+      quote: entity.evidence,
       authority: AUTHORITY.MODEL_VERIFIED,
       confidence: entity.confidence,
       observedAt,
@@ -142,7 +153,8 @@ export function observationsFrom({
       if (!mapped?.subject) continue;
       out.push({
         ...mapped,
-        evidenceId, quote: claim.evidence,
+        evidenceId: claim.sourceId ?? evidenceId,
+        quote: claim.evidence,
         authority: AUTHORITY.MODEL_VERIFIED,
         confidence: claim.confidence,
         observedAt,
@@ -308,9 +320,32 @@ export async function drainIntelligence({
       const analysisText = evidence.kind === "message"
         ? currentReplyOnly(evidence.text)
         : evidence.text;
-      const { sources, report } = boundSources([
-        { id: job.evidenceId, text: analysisText },
-      ]);
+
+      // THE WHOLE LETTER, NOT ITS HALVES. An email IS its message plus its
+      // attachments — one act of communication — and this drain used to hand
+      // the model the halves as separate sequences: the message job saw a body
+      // saying "attached is my resume" with no resume, and the attachment job
+      // saw a resume with no idea who sent it or why. Mark: "Yente doesnt
+      // recognize when an attachment BELONGS to a message."
+      //
+      // A message job now carries its attachments as ADDITIONAL SOURCE blocks.
+      // Nothing about grounding changes: every claim still quotes ONE source
+      // by id and the span verifier checks it there, so provenance stays
+      // per-document even though comprehension is per-letter. Evidence rows
+      // stay separate (dedupe and TRACE depend on that); only the PROMPT is
+      // assembled whole.
+      const letterSources = [{ id: job.evidenceId, text: analysisText }];
+      if (evidence.kind === "message") {
+        const messageId = job.evidenceId;
+        for (const row of graph.evidence.all()) {
+          if (row.kind !== "attachment") continue;
+          const carriers = [row.meta?.messageEvidenceId, ...(row.meta?.coveringMessages ?? [])];
+          if (!carriers.includes(messageId)) continue;
+          if (!row.text) continue;
+          letterSources.push({ id: row.id ?? row._id, text: row.text });
+        }
+      }
+      const { sources, report } = boundSources(letterSources);
 
       // Announced BEFORE the await, because the whole point is the 40-75s in
       // between. A job reported only on completion is invisible for exactly as
