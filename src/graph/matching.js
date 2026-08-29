@@ -89,7 +89,7 @@ function attributeValues(attributes) {
  * tuned weight is a guess wearing a decimal point. What matters for now is that
  * the breakdown is legible: every point has a name and a quote behind it.
  */
-function scorePair(seeker, offerer, documents = EMPTY_DOCUMENTS) {
+function scorePair(seeker, offerer, documents = EMPTY_DOCUMENTS, seekerProposals = null) {
   const reasons = [];
   const conflicts = [];
   let score = 0;
@@ -192,6 +192,19 @@ function scorePair(seeker, offerer, documents = EMPTY_DOCUMENTS) {
     });
   }
 
+  // 5. YENTE'S OWN GRADED READ of the seeker's documents, family-gated and
+  //    target-checked against the offerer's ask. Positive-only by schema:
+  //    this arm can add weight or stay silent; a negative branch is
+  //    unrepresentable. It deliberately does not count as a shared specific
+  //    below — a proposal RANKS a match, it never establishes one.
+  const offerWords = new Set(significantWords(offerer.object));
+  const endorsed = proposalSupport(
+    seekerProposals, PROPOSAL_FAMILY[seekType], offerWords);
+  if (endorsed && (objectOverlap.length > 0 || attrOverlap.length > 0 || backing.length > 0)) {
+    score += endorsed.weight;
+    reasons.push(endorsed);
+  }
+
   // A pair that only shares a predicate shape and nothing else is the "both
   // mentioned AI" case. Recorded as a conflict so the reason survives into the
   // output instead of being silently filtered — a match we refuse is worth
@@ -240,6 +253,76 @@ function sourceLabel(backing) {
 }
 
 /**
+ * Which proposal kind vouches for which side of a pair.
+ *
+ * A hire_for proposal is about a CANDIDATE, so it speaks when that person is
+ * the one seeking employment (declared) or SEEKING/OFFERING against a HIRING
+ * counterpart (inferred). invest_in speaks for a founder seeking funding. A
+ * proposal of the wrong family says nothing about this pair — an exceptional
+ * engineering candidate is not thereby an investment.
+ */
+const PROPOSAL_FAMILY = Object.freeze({
+  seeking_employment: "hire_for",
+  seeking_funding: "invest_in",
+  SEEKING: "hire_for",
+  OFFERING: "hire_for",
+  FUNDRAISING: "invest_in",
+});
+
+/** Grade-scaled weight. Below document corroboration on purpose: the grade is
+ * the model's judgment of a document, one inference further from a quote than
+ * the document itself. It ranks; it never establishes. */
+const PROPOSAL_WEIGHTS = Object.freeze({ good: 0.05, strong: 0.1, exceptional: 0.15 });
+
+/** Every graded proposal in the graph, by subject. */
+export function gradedProposals(observations) {
+  const bySubject = new Map();
+  for (const row of observations) {
+    const predicate = String(row?.predicate ?? "");
+    if (!predicate.startsWith("proposal:")) continue;
+    if (row?.attributes?.retracted) continue;
+    const held = bySubject.get(row.subject) ?? [];
+    held.push({
+      kind: predicate.slice("proposal:".length),
+      target: row.object,
+      grade: row.attributes?.grade ?? "good",
+      quote: row.quote,
+      evidenceId: row.evidenceId,
+    });
+    bySubject.set(row.subject, held);
+  }
+  return bySubject;
+}
+
+/**
+ * The graded-proposal arm, shared by the declared and inferred paths.
+ *
+ * Positive-only by inheritance: the schema can only store what someone is
+ * GOOD for, so this arm can only add. There is no negative branch to write.
+ */
+function proposalSupport(candidateProposals, family, counterpartWords) {
+  if (!family || !candidateProposals?.length) return null;
+  for (const proposal of candidateProposals) {
+    if (proposal.kind !== family) continue;
+    const targetWords = new Set(significantWords(proposal.target));
+    const matched = [...counterpartWords].filter((word) => targetWords.has(word)).sort();
+    // The target must touch what the counterpart actually wants — an
+    // endorsement for embedded firmware says nothing to a desk hiring
+    // designers, however strong.
+    if (matched.length === 0 && counterpartWords.size > 0) continue;
+    const weight = PROPOSAL_WEIGHTS[proposal.grade] ?? PROPOSAL_WEIGHTS.good;
+    return {
+      id: "graded_proposal",
+      weight,
+      detail: `Yente's read: ${proposal.grade} candidate for ${proposal.target}`,
+      matched,
+      quotes: [{ quote: proposal.quote, evidenceId: proposal.evidenceId }],
+    };
+  }
+  return null;
+}
+
+/**
  * Propose matches over every observation in the graph.
  *
  * @param {object} input
@@ -256,7 +339,7 @@ function sourceLabel(backing) {
  * still beats anything mined from prose, because it cannot be a
  * misinterpretation of a sentence.
  */
-function proposeFromRoles({ observations, vocabularies }) {
+function proposeFromRoles({ observations, vocabularies, proposals = new Map() }) {
   const rolesBySubject = new Map();
   for (const row of observations) {
     if (row?.predicate !== ROLE_PREDICATE) continue;
@@ -308,6 +391,18 @@ function proposeFromRoles({ observations, vocabularies }) {
           });
         }
 
+        // Yente's own graded read of the seeker's documents, when its family
+        // matches this pair and its target touches what the offerer evidences.
+        // Ranking only — the declaration established the match; the proposal
+        // says how warmly to write the introduction.
+        const offererWords = new Set((vocabularies.for(offerer) ?? new Map()).keys());
+        const endorsed = proposalSupport(
+          proposals.get(seeker), PROPOSAL_FAMILY[mine.object], offererWords);
+        if (endorsed) {
+          score += endorsed.weight;
+          reasons.push(endorsed);
+        }
+
         out.push(Object.freeze({
           seeker,
           offerer,
@@ -349,6 +444,7 @@ export function proposeIntroductions({ observations, threshold = 0.5, limit = 50
   // every pair needs both sides' documents; re-deriving a subject's vocabulary
   // inside that loop would compute the same answer once per partner.
   const vocabularies = indexDocumentVocabulary(observations);
+  const endorsements = gradedProposals(observations);
 
   const proposals = [];
 
@@ -364,7 +460,7 @@ export function proposeIntroductions({ observations, threshold = 0.5, limit = 50
   // used to RANK within it rather than to establish it. That is the correct
   // order of authority: the person says what they want, their résumé says what
   // they can do.
-  proposals.push(...proposeFromRoles({ observations, vocabularies }));
+  proposals.push(...proposeFromRoles({ observations, vocabularies, proposals: endorsements }));
 
   for (const a of intents) {
     for (const b of intents) {
@@ -376,7 +472,7 @@ export function proposeIntroductions({ observations, threshold = 0.5, limit = 50
       const scored = scorePair(a, b, {
         seeker: vocabularies.for(a.subject),
         offerer: vocabularies.for(b.subject),
-      });
+      }, endorsements.get(a.subject));
       if (!scored || scored.score < threshold) continue;
 
       proposals.push(Object.freeze({

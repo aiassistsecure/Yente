@@ -113,14 +113,37 @@ export const DISCLOSURE_FIELDS = Object.freeze([
   "seniority", "credential", "availability", "stage", "budget",
 ]);
 
+/**
+ * What a proposal may propose someone FOR, and how well they fit.
+ *
+ * A proposal is Yente's graded read of a résumé: "strong candidate for
+ * backend engineering roles", "good candidate for investment in their
+ * venture". Two kinds, mirroring the two declared-role pairs the desk
+ * actually brokers: hire_for answers HIRING <-> SEEKING_EMPLOYMENT, and
+ * invest_in answers SEEKING_FUNDING <-> FUNDING_STARTUPS.
+ *
+ * THE GRADES ONLY GO UP. The floor of the scale is "good": there is no
+ * "weak", no "poor", no numeric score that can be low, and the normalizer
+ * below copies no field in which a weakness could ride. This is positivity
+ * enforced the way this schema enforces everything — by making the negative
+ * UNREPRESENTABLE rather than discouraged. Determining what is wrong with a
+ * résumé is expensive, slow, and none of the desk's business; judging the
+ * cover is one pass. A person a résumé does not support proposing is simply
+ * not proposed, and that absence costs nothing and defames nobody.
+ */
+export const PROPOSAL_KINDS = Object.freeze(["hire_for", "invest_in"]);
+export const PROPOSAL_GRADES = Object.freeze(["good", "strong", "exceptional"]);
+
 const ENTITY_KIND_SET = new Set(ENTITY_KINDS);
 const INTENT_TYPE_SET = new Set(INTENT_TYPES);
 const PREDICATE_SET = new Set(RELATIONSHIP_PREDICATES);
 const DISCLOSURE_FIELD_SET = new Set(DISCLOSURE_FIELDS);
+const PROPOSAL_KIND_SET = new Set(PROPOSAL_KINDS);
+const PROPOSAL_GRADE_SET = new Set(PROPOSAL_GRADES);
 
 /** The claim arrays. `confidence`/`evidenceRefs` are envelope metadata. */
 export const CLAIM_GROUPS = Object.freeze([
-  "entities", "intents", "relationships", "disclosures",
+  "entities", "intents", "relationships", "disclosures", "proposals",
 ]);
 
 function isPlainObject(value) {
@@ -268,11 +291,40 @@ function normalizeDisclosure(raw, index) {
   });
 }
 
+function normalizeProposal(raw, index) {
+  const label = `proposals[${index}]`;
+  if (!isPlainObject(raw)) throw new SchemaError("BAD_CLAIM", `${label} must be an object`);
+  const kind = String(raw.kind ?? "").trim().toLowerCase().replace(/[\s-]+/g, "_");
+  if (!PROPOSAL_KIND_SET.has(kind)) {
+    throw new SchemaError("UNKNOWN_PROPOSAL_KIND",
+      `${label}.kind must be one of ${PROPOSAL_KINDS.join(", ")}, got ${raw.kind ?? "(missing)"}`,
+      { kind: raw.kind });
+  }
+  const grade = String(raw.grade ?? "").trim().toLowerCase();
+  if (!PROPOSAL_GRADE_SET.has(grade)) {
+    throw new SchemaError("UNKNOWN_PROPOSAL_GRADE",
+      `${label}.grade must be one of ${PROPOSAL_GRADES.join(", ")} — the scale has no `
+      + `bottom below "good", by design — got ${raw.grade ?? "(missing)"}`,
+      { grade: raw.grade });
+  }
+  // ONLY these fields survive. A model that volunteers "weaknesses",
+  // "concerns", "risks" or a score finds them dropped here by construction:
+  // the object is built from named fields, never spread from the input.
+  return Object.freeze({
+    subjectRef: requireString(raw.subject_ref ?? raw.subjectRef, `${label}.subject_ref`, { max: 128 }),
+    kind,
+    target: requireString(raw.target, `${label}.target`, { max: 512 }),
+    grade,
+    ...normalizeEvidence(raw, label),
+  });
+}
+
 const NORMALIZERS = Object.freeze({
   entities: normalizeEntity,
   intents: normalizeIntent,
   relationships: normalizeRelationship,
   disclosures: normalizeDisclosure,
+  proposals: normalizeProposal,
 });
 
 /**
@@ -342,6 +394,7 @@ export function validateEnvelope(raw, { knownSourceIds = null, providedRefs = nu
     intents: ["actorRef"],
     relationships: ["subjectRef", "objectRef"],
     disclosures: ["subjectRef"],
+    proposals: ["subjectRef"],
   });
 
   for (const [group, fields] of Object.entries(REF_FIELDS)) {

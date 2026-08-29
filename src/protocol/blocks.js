@@ -39,6 +39,11 @@ export const BLOCK_TAGS = Object.freeze({
   OPPORTUNITIES: "OPPORTUNITIES",
   DISCLOSURES: "DISCLOSURES",
   /**
+   * Yente's graded, positive-only read of a resume: what this person is a
+   * good/strong/exceptional candidate FOR. See PROPOSAL_KINDS in schema.js.
+   */
+  PROPOSALS: "PROPOSALS",
+  /**
    * Sent only on a retry after the model looped. Names what happened and points
    * back at the task — see createWakeUpPrompt in intelligence/prompt.js.
    */

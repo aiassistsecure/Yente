@@ -150,6 +150,19 @@ function describe(id, rows, wanted) {
   const name = rows.find((row) => row.predicate === "is_person"
     || row.predicate === "is_organization")?.object ?? null;
 
+  // Yente's graded read, spoken alongside the match: "strong candidate for
+  // Rust backend roles". Positive-only by schema — there is nothing negative
+  // in the graph for this card to leak.
+  const proposals = rows
+    .filter((row) => String(row.predicate ?? "").startsWith("proposal:")
+      && !isIntakeArtifact(row.object))
+    .map((row) => ({
+      kind: String(row.predicate).slice("proposal:".length),
+      grade: row.attributes?.grade ?? "good",
+      target: row.object,
+    }))
+    .slice(0, 3);
+
   return Object.freeze({
     // The graph id, so the operator can open the profile and so a later
     // introduction can be proposed on the same subject. It is not an address.
@@ -168,6 +181,7 @@ function describe(id, rows, wanted) {
         .filter((row) => row.predicate === field)
         .map((row) => ({ field, value: row.object })))
       .slice(0, 6),
+    proposals,
     overlap: shared,
     // Why this person is being mentioned, in a form the reply can use directly.
     because: `matches your interest in ${shared.slice(0, 3).join(", ")}`,
@@ -182,4 +196,6 @@ function describe(id, rows, wanted) {
  * reach the model composing the reply", and that is a property of the whole
  * set of keys, not of any one line that produces them.
  */
-export const CARD_KEYS = Object.freeze(["id", "name", "links", "intents", "facts", "overlap", "because"]);
+export const CARD_KEYS = Object.freeze([
+  "id", "name", "links", "intents", "facts", "proposals", "overlap", "because",
+]);
