@@ -481,6 +481,7 @@ export class IntelligenceJobRepository {
     let count = 0;
     for (const job of this.store.query(`FROM ${GRAPH_COLLECTIONS.INTELLIGENCE_JOBS}`)) {
       if (job.state !== JOB_STATES.DONE) continue;
+      if (job.retiredAt) continue;   // retired stays retired
       if (Number(job.claims ?? 0) > 0) continue;
       if (job.emptyRequeuedAt) continue;
       this.store.put(GRAPH_COLLECTIONS.INTELLIGENCE_JOBS, job.evidenceId, {
@@ -499,10 +500,39 @@ export class IntelligenceJobRepository {
     return count;
   }
 
+  /**
+   * Standalone attachment jobs are RETIRED — the letter reads the document.
+   *
+   * #74 stopped creating them, but the version-bump requeues faithfully
+   * re-opened the HISTORICAL ones, so every résumé was read twice: once
+   * inside its letter (with its sender and context) and once alone — the
+   * context-free run that reliably wanders, and the one the loop detector
+   * caught doing laps around "Founder & Technical Advisor appears again".
+   * Marked DONE with a retirement stamp rather than deleted: the job row is
+   * history, and history is never rewritten here.
+   */
+  retireAttachmentJobs(at) {
+    let count = 0;
+    for (const job of this.store.query(`FROM ${GRAPH_COLLECTIONS.INTELLIGENCE_JOBS}`)) {
+      if (!String(job.evidenceId ?? "").startsWith("attachment:")) continue;
+      if (job.state === JOB_STATES.DONE && job.retiredAt) continue;
+      this.store.put(GRAPH_COLLECTIONS.INTELLIGENCE_JOBS, job.evidenceId, {
+        ...job,
+        state: JOB_STATES.DONE,
+        finishedAt: job.finishedAt ?? at,
+        retiredAt: at,
+        lastError: null,
+      });
+      count += 1;
+    }
+    return count;
+  }
+
   requeueForPrompt(promptVersion, at) {
     let count = 0;
     for (const job of this.store.query(`FROM ${GRAPH_COLLECTIONS.INTELLIGENCE_JOBS}`)) {
       if (job.state !== JOB_STATES.DONE || job.promptVersion === promptVersion) continue;
+      if (job.retiredAt) continue;   // retired stays retired, whatever the version
       this.store.put(GRAPH_COLLECTIONS.INTELLIGENCE_JOBS, job.evidenceId, {
         ...job,
         state: JOB_STATES.READY,
