@@ -213,6 +213,23 @@ export function observationsFrom({
     };
   });
 
+  // Yente's graded read of a resume: what this person is a good candidate FOR.
+  // Namespaced like intents so matching and the manager can find every
+  // proposal with one prefix test, and the grade rides as an attribute — it is
+  // judgment about the fit, not part of the fit's identity. The intake guard
+  // applies to the TARGET for the same reason it applies everywhere: "strong
+  // candidate for sending a resume" is the onboarding conversation dressed as
+  // an endorsement.
+  attach("proposals", (claim) => {
+    if (isIntakeArtifact(claim.target)) return null;
+    return {
+      subject: subjectOf.get(claim.subjectRef),
+      predicate: `proposal:${claim.kind}`,
+      object: claim.target,
+      attributes: { grade: claim.grade },
+    };
+  });
+
   return out;
 }
 

@@ -51,6 +51,7 @@ export const GROUP_BLOCKS = Object.freeze([
   { tag: BLOCK_TAGS.INTENTS, group: "intents" },
   { tag: BLOCK_TAGS.RELATIONSHIPS, group: "relationships" },
   { tag: BLOCK_TAGS.DISCLOSURES, group: "disclosures" },
+  { tag: BLOCK_TAGS.PROPOSALS, group: "proposals" },
 ]);
 
 const CLOSING = /<<<END>>>/g;

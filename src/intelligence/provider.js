@@ -80,7 +80,12 @@ import {
 // false, capped confidence — and never about the document itself. Mark's
 // direction, verbatim in spirit: "if a resume speaks loudly about tech work,
 // we can infer the intent of the submitter."
-export const PROMPT_VERSION = "obs_prompt_v15";
+// v16: proposals — Yente's graded, positive-only read of a resume ("strong
+// candidate for Rust backend roles", "good candidate for investment in their
+// venture"). The bump is the retroactive lever: the boot requeue re-reads
+// every letter under v16 once, so EVERY participant who ever sent a resume
+// gets proposals, not just the ones who arrive after the deploy.
+export const PROMPT_VERSION = "obs_prompt_v16";
 
 /** Default attempts. Transient failures are retried; deterministic ones are not. */
 const DEFAULT_ATTEMPTS = 3;
@@ -211,6 +216,7 @@ const LINE_GROUPS = Object.freeze({
   intent: "intents",
   relationship: "relationships",
   disclosure: "disclosures",
+  proposal: "proposals",
 });
 
 /**
@@ -231,7 +237,7 @@ const LINE_GROUPS = Object.freeze({
  * format at all".
  */
 export function envelopeFromLines(content) {
-  const raw = { entities: [], intents: [], relationships: [], disclosures: [] };
+  const raw = { entities: [], intents: [], relationships: [], disclosures: [], proposals: [] };
   const malformedLines = [];
   // Verdicts on previously-banked claims, from a wake-up review turn:
   // {"claim":"approve","n":12} / {"claim":"reject","n":12}, with the bare-text
@@ -391,6 +397,7 @@ const GROUP_DISCRIMINATOR = Object.freeze({
   intents: "intent",
   relationships: "relationship",
   disclosures: "disclosure",
+  proposals: "proposal",
 });
 
 /**
@@ -587,6 +594,10 @@ function claimValue(group, claim) {
     // no matter how good its quote was. Found by the one-claim-per-line test,
     // not by the log — the rejection code was buried in a count.
     case "disclosures": return claim.value;
+    // The TARGET is the substance a proposal must ground: "backend
+    // engineering roles" has to trace to quoted evidence the same way a
+    // disclosure's value does. The grade is judgment; the target is fact.
+    case "proposals": return claim.target;
     case "opportunities": return claim.summary;
     default: return claim.text;
   }

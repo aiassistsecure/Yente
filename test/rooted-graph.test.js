@@ -45,7 +45,13 @@ const PERSON = { ref: "p1", kind: "PERSON", name: "Dana Reed", ...evidence("Dana
 /* --- the catch-alls are gone -------------------------------------------- */
 
 test("the speculative and catch-all arrays no longer exist", () => {
-  assert.deepEqual([...CLAIM_GROUPS], ["entities", "intents", "relationships", "disclosures"]);
+  // `proposals` joined 2026-08-29 and does NOT violate this test's doctrine:
+  // it has a closed kind, a closed grade whose scale has no bottom, and a
+  // target with a shape to fill — a point at which the source has nothing
+  // left to say. What must stay gone is the open-ended instruction to keep
+  // producing: speculation without a vocabulary, notes without a shape.
+  assert.deepEqual([...CLAIM_GROUPS],
+    ["entities", "intents", "relationships", "disclosures", "proposals"]);
   assert.ok(!CLAIM_GROUPS.includes("opportunities"), "the model is not asked to speculate");
   assert.ok(!CLAIM_GROUPS.includes("observations"), "the model is not asked to keep going");
 });

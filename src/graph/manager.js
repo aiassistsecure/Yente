@@ -184,6 +184,7 @@ export function createGraphManager({
       relationships: current.filter((row) =>
         ["works_at", "knows", "communicated_with", "introduced", "associated_with"]
           .includes(row.predicate)),
+      proposals: current.filter((row) => String(row.predicate).startsWith("proposal:")),
       opportunities: current.filter((row) => row.predicate === "opportunity"),
       notes: current.filter((row) => row.predicate === "note"),
       // §8: the memory, not the row. A reviewer wants to see what a claim
