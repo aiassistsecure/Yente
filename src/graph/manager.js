@@ -42,7 +42,7 @@ import {
 import {
   buildIdentityIndex, resolveObservations, proposeIdentityMerges,
 } from "./identity.js";
-import { documentVocabulary, groupBySource, sourceKindOf } from "./provenance.js";
+import { documentVocabulary, groupBySource, significantWords, sourceKindOf } from "./provenance.js";
 import { searchMatches } from "./discovery.js";
 
 export const CORRECTION = Object.freeze({
@@ -606,6 +606,225 @@ export function createGraphManager({
   }
 
   /** Counts for the header, so the operator can see the loop moving. */
+  /**
+   * SEARCH THE WHOLE GRAPH — the gap Mark named: every belief Yente holds was
+   * findable only by knowing which profile page it lived on. Now one query
+   * sweeps subjects, claims, and evidence in a single pass, identity-resolved
+   * so a claim that arrived under an alias is found on the profile that owns
+   * it, and every hit links to where it lives (/subject, /thread).
+   *
+   * Word-matched with the SAME tokenizer matching uses (significantWords —
+   * keeps c#, c++, node.js), so "what search finds" and "what matching sees"
+   * cannot drift apart. Filters compose with the words:
+   *
+   *   kind    a predicate or namespace: "capability", "intent" (any intent:*),
+   *           "proposal" (any proposal:*), "role_declared", "proposal:hire_for"
+   *   grade   proposals only: good | strong | exceptional
+   *   source  where the claim came from: message | attachment | link | vendor
+   *
+   * Returns {subjects, claims, evidence, total, query}. Never an email
+   * address on a claim or evidence hit beyond what the subject id itself is —
+   * this surface is the OPERATOR's, unlike discovery cards, so subject ids
+   * (which are addresses by design) do appear, exactly as they do on every
+   * other manager page.
+   */
+  function searchGraph({ query = null, kind = null, grade = null, source = null, limit = 20 } = {}) {
+    const words = new Set(significantWords(String(query ?? "")));
+    const wantKind = kind ? String(kind).toLowerCase() : null;
+    const wantGrade = grade ? String(grade).toLowerCase() : null;
+    const wantSource = source ? String(source).toLowerCase() : null;
+    const hasFilters = Boolean(wantKind || wantGrade || wantSource);
+    if (words.size === 0 && !hasFilters) {
+      return { query: query ?? "", subjects: [], claims: [], evidence: [], total: 0 };
+    }
+
+    const matchWords = (text) => {
+      if (words.size === 0) return [];
+      const found = [];
+      for (const word of significantWords(String(text ?? ""))) {
+        if (words.has(word)) found.push(word);
+      }
+      return [...new Set(found)];
+    };
+
+    const kindMatches = (predicate) => {
+      if (!wantKind) return true;
+      const p = String(predicate).toLowerCase();
+      // "intent" and "proposal" sweep their namespaces; an exact predicate
+      // (or exact namespaced form) matches itself.
+      if (wantKind === "intent") return p.startsWith("intent:");
+      if (wantKind === "proposal") return p.startsWith("proposal:");
+      return p === wantKind || p === `intent:${wantKind}` || p === `proposal:${wantKind}`;
+    };
+
+    const resolved = resolveObservations(graph.observations.all())
+      .filter((row) => !row?.attributes?.retracted);
+
+    // Claims: every filter must agree, and when there ARE query words at
+    // least one must appear in the claim's own text.
+    const claimHits = [];
+    for (const row of resolved) {
+      if (!kindMatches(row.predicate)) continue;
+      if (wantGrade && String(row.attributes?.grade ?? "").toLowerCase() !== wantGrade) continue;
+      if (wantSource && sourceKindOf(row.evidenceId) !== wantSource) continue;
+      const matched = matchWords(`${row.predicate} ${row.object ?? ""} ${row.quote ?? ""}`);
+      if (words.size > 0 && matched.length === 0) continue;
+      claimHits.push({
+        subject: row.subject,
+        predicate: row.predicate,
+        object: row.object,
+        grade: row.attributes?.grade ?? null,
+        quote: row.quote ?? null,
+        confidence: row.confidence ?? null,
+        authority: row.authority ?? null,
+        sourceKind: sourceKindOf(row.evidenceId),
+        evidenceId: row.evidenceId ?? null,
+        observedAt: row.observedAt ?? null,
+        matched,
+        subjectHref: `/subject?id=${encodeURIComponent(row.subject)}`,
+        threadHref: row.evidenceId ? threadHrefFor(row.evidenceId) : null,
+      });
+    }
+    claimHits.sort((a, b) => b.matched.length - a.matched.length
+      || String(b.observedAt).localeCompare(String(a.observedAt)));
+
+    // Subjects: matched by name/id words, or swept in via their claim hits so
+    // a filter-only search ("every strong hire_for proposal") still says WHO.
+    const claimSubjects = new Set(claimHits.map((hit) => hit.subject));
+    const subjectHits = subjects()
+      .map((entry) => {
+        const matched = matchWords(`${entry.name ?? ""} ${entry.id}`);
+        const viaClaims = claimSubjects.has(entry.id);
+        if (matched.length === 0 && !viaClaims) return null;
+        return {
+          ...entry,
+          matched,
+          viaClaims,
+          href: `/subject?id=${encodeURIComponent(entry.id)}`,
+        };
+      })
+      .filter(Boolean)
+      .sort((a, b) => b.matched.length - a.matched.length || b.claims - a.claims);
+
+    // Evidence: subject lines, senders, filenames — the operator's "which
+    // email was that" question, answered without opening profiles.
+    const evidenceHits = [];
+    if (words.size > 0) {
+      for (const row of graph.evidence.all()) {
+        const meta = row.meta ?? {};
+        const matched = matchWords(
+          `${meta.subject ?? ""} ${meta.from ?? ""} ${meta.filename ?? ""} ${meta.name ?? ""}`);
+        if (matched.length === 0) continue;
+        if (wantSource && sourceKindOf(row.id ?? row._id) !== wantSource) continue;
+        evidenceHits.push({
+          id: row.id ?? row._id,
+          kind: row.kind ?? sourceKindOf(row.id ?? row._id),
+          subject: meta.subject ?? null,
+          from: meta.from ?? null,
+          filename: meta.filename ?? null,
+          receivedAt: row.receivedAt ?? null,
+          matched,
+          threadHref: threadHrefFor(row.id ?? row._id, row),
+        });
+      }
+      evidenceHits.sort((a, b) => b.matched.length - a.matched.length
+        || String(b.receivedAt).localeCompare(String(a.receivedAt)));
+    }
+
+    return {
+      query: query ?? "",
+      filters: { kind: wantKind, grade: wantGrade, source: wantSource },
+      subjects: subjectHits.slice(0, limit),
+      claims: claimHits.slice(0, limit),
+      evidence: evidenceHits.slice(0, limit),
+      total: subjectHits.length + claimHits.length + evidenceHits.length,
+    };
+  }
+
+  /**
+   * THE NUMBERS BEHIND THE DESK — summary() says how much; this says what,
+   * from where, how good, and how it is moving. Everything is counted from
+   * rows that exist, no estimation anywhere, so every number here can be
+   * clicked through to the rows it counts via /search.
+   */
+  function stats() {
+    const all = graph.observations.all();
+    const live = resolveObservations(all).filter((row) => !row?.attributes?.retracted);
+    const count = (rows, keyOf) => {
+      const held = new Map();
+      for (const row of rows) {
+        const key = keyOf(row);
+        if (key === null || key === undefined || key === "") continue;
+        held.set(key, (held.get(key) ?? 0) + 1);
+      }
+      return [...held.entries()].sort((a, b) => b[1] - a[1])
+        .map(([key, n]) => ({ key, n }));
+    };
+
+    const confidences = live.map((r) => Number(r.confidence)).filter(Number.isFinite);
+    const proposalsRows = live.filter((r) => String(r.predicate).startsWith("proposal:"));
+    const roster = subjects();
+    const matches = graph.matches.all();
+
+    // Fourteen days of arrival, so "is it moving" is a glance and a stall is
+    // a visible flat line rather than a feeling.
+    const days = [];
+    for (let back = 13; back >= 0; back -= 1) {
+      const day = new Date(Date.now() - back * 86_400_000).toISOString().slice(0, 10);
+      days.push({
+        day,
+        claims: live.filter((r) => String(r.observedAt ?? "").startsWith(day)).length,
+        evidence: graph.evidence.all()
+          .filter((r) => String(r.receivedAt ?? "").startsWith(day)).length,
+      });
+    }
+
+    return {
+      ...summary(),
+      people: {
+        total: roster.length,
+        byState: count(roster, (s) => profileStateOf(s.id)),
+        matchable: roster.filter((s) => isMatchable(s.id)).length,
+        organizations: roster.filter((s) => s.kind === "organization").length,
+      },
+      claims: {
+        total: live.length,
+        stored: all.length,
+        byPredicate: count(live, (r) => r.predicate).slice(0, 25),
+        bySourceKind: count(live, (r) => sourceKindOf(r.evidenceId)),
+        byAuthority: count(live, (r) => r.authority),
+        byModel: count(live, (r) => r.model ?? r.provenance?.model ?? null),
+        averageConfidence: confidences.length
+          ? Number((confidences.reduce((a, b) => a + b, 0) / confidences.length).toFixed(3))
+          : null,
+      },
+      proposals: {
+        total: proposalsRows.length,
+        byKind: count(proposalsRows, (r) => String(r.predicate).slice("proposal:".length)),
+        byGrade: count(proposalsRows, (r) => r.attributes?.grade ?? "good"),
+        graded: [...new Set(proposalsRows.map((r) => r.subject))].length,
+      },
+      evidence: {
+        total: graph.evidence.all().length,
+        byKind: count(graph.evidence.all(), (r) => r.kind ?? sourceKindOf(r.id ?? r._id)),
+      },
+      vocabulary: count(
+        live.flatMap((r) => ["attachment", "link", "vendor"]
+          .includes(sourceKindOf(r.evidenceId))
+          ? significantWords(String(r.object ?? "")) : []),
+        (word) => word,
+      ).slice(0, 25),
+      matchQuality: {
+        averageConfidence: matches.length
+          ? Number((matches.reduce((a, b) => a + Number(b.confidence ?? 0), 0)
+              / matches.length).toFixed(3))
+          : null,
+        byType: count(matches, (m) => m.matchType).slice(0, 10),
+      },
+      activity: days,
+    };
+  }
+
   function summary() {
     const matches = graph.matches.all();
     return {
@@ -626,6 +845,7 @@ export function createGraphManager({
 
   return Object.freeze({
     pendingMatches, pendingIdentities, subject, subjects, thread, threadHrefFor, summary,
+    searchGraph, stats,
     // search_matches_or_return_false — the discovery search, bound to this
     // graph. Named for what a caller must handle: false means there is nobody,
     // say so or say nothing; never an empty list rendered enthusiastically.

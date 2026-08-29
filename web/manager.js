@@ -70,6 +70,41 @@ export async function handleManagerRequest({ req, res, manager, graph, health, o
     return true;
   }
 
+  // THE WHOLE GRAPH, SEARCHABLE. One query sweeps subjects, claims, and
+  // evidence; filters (kind/grade/source) compose with the words. HTML for
+  // the operator, ?format=json for anything programmatic.
+  if (url.pathname === "/search" && req.method === "GET") {
+    const results = manager.searchGraph({
+      query: url.searchParams.get("q") || null,
+      kind: url.searchParams.get("kind") || null,
+      grade: url.searchParams.get("grade") || null,
+      source: url.searchParams.get("source") || null,
+      limit: Number(url.searchParams.get("limit") || 20),
+    });
+    if (url.searchParams.get("format") === "json") {
+      res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify(results, null, 2));
+      return true;
+    }
+    res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    res.end(renderSearch({ results }));
+    return true;
+  }
+
+  // The numbers behind the desk. Every count is clickable through to /search,
+  // so a statistic is a doorway rather than a dead end.
+  if (url.pathname === "/stats" && req.method === "GET") {
+    const stats = manager.stats();
+    if (url.searchParams.get("format") === "json") {
+      res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify(stats, null, 2));
+      return true;
+    }
+    res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    res.end(renderStats({ stats }));
+    return true;
+  }
+
   if (url.pathname === "/subject" && req.method === "GET") {
     const id = url.searchParams.get("id");
     if (!id) { res.writeHead(400).end("missing id"); return true; }
@@ -434,8 +469,14 @@ export function renderManager({ manager, health = {}, mailSilenceMinutes = null 
     <span><b>${summary.jobs.READY ?? 0}</b> queued</span>
     <span><b>${summary.matches.proposed}</b> to review</span>
     <span><b>${summary.matches.confirmed}</b> introduced</span>
+    <span><a href="/stats">stats</a></span>
   </div>
 </header>
+
+<form class="row" method="get" action="/search" style="margin-bottom:22px">
+  <input type="text" name="q" placeholder="search everything Yente knows — people, claims, evidence, quotes">
+  <button class="yes">Search</button>
+</form>
 
 ${mailAlert}
 
@@ -515,6 +556,212 @@ ${subjects.length === 0
     deleted state to reconstruct.
   </p>
 </div>
+
+</div></body></html>`;
+}
+
+
+/**
+ * The graph, searched. Three result sections — who, what, and where it came
+ * from — every hit a link to the page that owns it, and the form re-renders
+ * with its own query so refinement is one keystroke, not a back-button.
+ */
+export function renderSearch({ results }) {
+  const f = results.filters ?? {};
+  const gradeBadge = (grade) => grade
+    ? `<span class="badge curated">${esc(grade)}</span>` : "";
+  const matchedBadge = (matched) => (matched?.length
+    ? `<span class="badge">${esc(matched.join(", "))}</span>` : "");
+
+  return `<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Yente · search</title><style>${STYLE}</style>
+</head><body><div class="wrap">
+
+<header>
+  <h1><a href="/" style="text-decoration:none">Yente</a>
+    <span style="color:var(--dim);font-weight:400">· search</span></h1>
+  <div class="stats">
+    <span><b>${results.total}</b> hits</span>
+    <span><a href="/stats">stats</a></span>
+  </div>
+</header>
+
+<form class="row" method="get" action="/search" style="margin-bottom:8px">
+  <input type="text" name="q" value="${esc(results.query)}" placeholder="words — c++, kubernetes, a name, a quote fragment">
+  <button class="yes">Search</button>
+</form>
+<form class="row" method="get" action="/search" style="margin-bottom:22px">
+  <input type="hidden" name="q" value="${esc(results.query)}">
+  <input type="text" name="kind" value="${esc(f.kind ?? "")}" placeholder="kind: capability · intent · proposal · role_declared">
+  <input type="text" name="grade" value="${esc(f.grade ?? "")}" placeholder="grade: good · strong · exceptional">
+  <input type="text" name="source" value="${esc(f.source ?? "")}" placeholder="source: message · attachment · link · vendor">
+  <button>Filter</button>
+</form>
+
+<h2>People &amp; organisations</h2>
+${results.subjects.length === 0 ? '<p class="empty">Nobody matched.</p>' : `<table>
+  <tr><th>subject</th><th>name</th><th>claims</th><th>matched</th></tr>
+  ${results.subjects.map((s2) => `<tr>
+    <td><a href="${esc(s2.href)}"><code>${esc(s2.id)}</code></a></td>
+    <td>${esc(s2.name ?? "—")}</td>
+    <td>${s2.claims}</td>
+    <td>${esc(s2.matched.join(", ") || (s2.viaClaims ? "via their claims" : ""))}</td>
+  </tr>`).join("")}
+</table>`}
+
+<h2>Claims</h2>
+${results.claims.length === 0 ? '<p class="empty">No claims matched.</p>'
+    : results.claims.map((c) => `
+<div class="card">
+  <div>
+    <a href="${esc(c.subjectHref)}"><span class="pair">${esc(String(c.subject).replace(/^person:/, ""))}</span></a>
+    <span class="type">${esc(c.predicate)}</span>
+    ${gradeBadge(c.grade)}
+    <span class="badge">${esc(c.sourceKind ?? "?")}</span>
+    ${matchedBadge(c.matched)}
+  </div>
+  <div style="margin-top:6px">${esc(c.object ?? "")}</div>
+  ${c.quote ? `<blockquote>"${esc(c.quote)}"
+    <cite>${c.threadHref ? `<a href="${esc(c.threadHref)}">open the thread</a>` : esc(String(c.evidenceId ?? "").slice(0, 16))}</cite>
+  </blockquote>` : ""}
+</div>`).join("")}
+
+<h2>Evidence</h2>
+${results.evidence.length === 0 ? '<p class="empty">No messages or documents matched.</p>' : `<table>
+  <tr><th>kind</th><th>subject / file</th><th>from</th><th>received</th><th></th></tr>
+  ${results.evidence.map((e) => `<tr>
+    <td>${esc(e.kind ?? "?")}</td>
+    <td>${esc(e.subject ?? e.filename ?? "—")}</td>
+    <td>${esc(String(e.from ?? "—"))}</td>
+    <td>${esc(String(e.receivedAt ?? "").slice(0, 16).replace("T", " "))}</td>
+    <td>${e.threadHref ? `<a href="${esc(e.threadHref)}">open</a>` : ""}</td>
+  </tr>`).join("")}
+</table>`}
+
+</div></body></html>`;
+}
+
+/**
+ * The numbers behind the desk — and every number is a doorway: counts link
+ * into /search with the filter that produces them, so "37 capability claims"
+ * is one click from the 37 rows themselves.
+ */
+export function renderStats({ stats }) {
+  const bar = (n, max) => `<div style="background:#e0e7ff;height:8px;border-radius:4px;width:${Math.max(2, Math.round((n / Math.max(1, max)) * 100))}%"></div>`;
+  const countTable = (rows, { hrefFor = null, label = "key" } = {}) => {
+    if (!rows?.length) return '<p class="empty">Nothing yet.</p>';
+    const max = rows[0]?.n ?? 1;
+    return `<table>
+  <tr><th>${esc(label)}</th><th>count</th><th></th></tr>
+  ${rows.map((r) => `<tr>
+    <td>${hrefFor ? `<a href="${esc(hrefFor(r.key))}">${esc(String(r.key))}</a>` : esc(String(r.key))}</td>
+    <td>${r.n}</td>
+    <td style="width:40%">${bar(r.n, max)}</td>
+  </tr>`).join("")}
+</table>`;
+  };
+  const spark = (days, field) => {
+    const max = Math.max(1, ...days.map((d) => d[field]));
+    return days.map((d) =>
+      `<div title="${esc(d.day)}: ${d[field]}" style="flex:1;background:#c7d2fe;border-radius:2px 2px 0 0;height:${Math.max(2, Math.round((d[field] / max) * 44))}px"></div>`)
+      .join("");
+  };
+
+  return `<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Yente · stats</title><style>${STYLE}</style>
+</head><body><div class="wrap">
+
+<header>
+  <h1><a href="/" style="text-decoration:none">Yente</a>
+    <span style="color:var(--dim);font-weight:400">· stats</span></h1>
+  <div class="stats">
+    <span><b>${stats.subjects}</b> people</span>
+    <span><b>${stats.claims.total}</b> live claims</span>
+    <span><b>${stats.proposals.total}</b> proposals</span>
+    <span><b>${stats.matches.confirmed}</b> introduced</span>
+    <span><a href="/search">search</a></span>
+  </div>
+</header>
+
+<h2>Fourteen days of arrival</h2>
+<div class="card">
+  <div style="display:flex;align-items:flex-end;gap:2px;height:48px">${spark(stats.activity, "claims")}</div>
+  <p class="empty" style="padding-bottom:0">claims per day — a flat line is a stalled pipeline, not a quiet world</p>
+</div>
+
+<h2>People</h2>
+<div class="card">
+  <div class="stats" style="margin-bottom:10px">
+    <span><b>${stats.people.total}</b> total</span>
+    <span><b>${stats.people.matchable}</b> matchable</span>
+    <span><b>${stats.people.organizations}</b> organisations</span>
+  </div>
+  ${countTable(stats.people.byState, { label: "profile state" })}
+</div>
+
+<h2>Claims — what Yente believes, and on whose word</h2>
+<div class="card">
+  <div class="stats" style="margin-bottom:10px">
+    <span><b>${stats.claims.total}</b> live</span>
+    <span><b>${stats.claims.stored}</b> stored</span>
+    <span>avg confidence <b>${stats.claims.averageConfidence ?? "—"}</b></span>
+  </div>
+  ${countTable(stats.claims.byPredicate, {
+    label: "predicate",
+    hrefFor: (k) => `/search?kind=${encodeURIComponent(String(k))}`,
+  })}
+</div>
+<div class="card">${countTable(stats.claims.bySourceKind, {
+  label: "source kind",
+  hrefFor: (k) => `/search?source=${encodeURIComponent(String(k))}`,
+})}</div>
+<div class="card">${countTable(stats.claims.byModel, { label: "model" })}</div>
+
+<h2>Proposals — Yente's graded reads</h2>
+<div class="card">
+  <div class="stats" style="margin-bottom:10px">
+    <span><b>${stats.proposals.total}</b> proposals</span>
+    <span><b>${stats.proposals.graded}</b> people graded</span>
+  </div>
+  ${countTable(stats.proposals.byGrade, {
+    label: "grade",
+    hrefFor: (k) => `/search?kind=proposal&grade=${encodeURIComponent(String(k))}`,
+  })}
+  ${countTable(stats.proposals.byKind, {
+    label: "kind",
+    hrefFor: (k) => `/search?kind=${encodeURIComponent(`proposal:${k}`)}`,
+  })}
+</div>
+
+<h2>Vocabulary the documents can vouch for</h2>
+<div class="card">${countTable(stats.vocabulary, {
+  label: "word",
+  hrefFor: (k) => `/search?q=${encodeURIComponent(String(k))}`,
+})}</div>
+
+<h2>Matches</h2>
+<div class="card">
+  <div class="stats" style="margin-bottom:10px">
+    <span><b>${stats.matches.proposed}</b> proposed</span>
+    <span><b>${stats.matches.confirmed}</b> confirmed</span>
+    <span><b>${stats.matches.introduced}</b> introduced</span>
+    <span><b>${stats.matches.rejected}</b> rejected</span>
+    <span>avg confidence <b>${stats.matchQuality.averageConfidence ?? "—"}</b></span>
+  </div>
+  ${countTable(stats.matchQuality.byType, { label: "match type" })}
+</div>
+
+<h2>Evidence &amp; work</h2>
+<div class="card">${countTable(stats.evidence.byKind, { label: "evidence kind" })}</div>
+<div class="card">${countTable(
+    Object.entries(stats.jobs ?? {}).map(([key, n]) => ({ key, n }))
+      .sort((a, b) => b.n - a.n),
+    { label: "job state" },
+  )}</div>
 
 </div></body></html>`;
 }
