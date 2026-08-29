@@ -139,3 +139,28 @@ test("a failed extraction is an outcome with a reason, never a throw", async () 
   assert.equal(result.outcome, "failed");
   assert.equal(result.skipped, "fetch timed out");
 });
+
+test("three copies of one URL in the same tick pay ONE credit", async () => {
+  // Observed live: enriched claims=18, three times in two seconds — three
+  // messages carrying the same LinkedIn URL, all past the check before any
+  // had recorded. The graph deduped the claims; the credits were spent.
+  const graph = harness();
+  let fetches = 0;
+  const fetchImpl = async (...args) => {
+    fetches += 1;
+    await new Promise((r) => setTimeout(r, 20));   // hold the window open
+    return (jsonResponse({ data: { fullName: "Mark E." } }))(...args);
+  };
+  const env = { NETROWS_API_KEY: "k" };
+  const url = "https://www.linkedin.com/in/globalvapor";
+
+  const results = await Promise.all([
+    enrichLink({ url, subject: "person:a@x.test", graph, env, fetchImpl }),
+    enrichLink({ url, subject: "person:b@x.test", graph, env, fetchImpl }),
+    enrichLink({ url, subject: "person:c@x.test", graph, env, fetchImpl }),
+  ]);
+
+  assert.equal(fetches, 1, "one profile, one credit, whatever the burst");
+  assert.equal(results.filter((r) => r.outcome === "enriched").length, 1);
+  assert.equal(results.filter((r) => r.outcome === "already_enriched").length, 2);
+});
