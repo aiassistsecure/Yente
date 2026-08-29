@@ -218,3 +218,93 @@ test("the wake-up still carries the sources and the vocabulary", async () => {
   assert.match(prompt, /a@b\.com/);
   assert.match(prompt, /one OBSERVATIONS block/, "the shape is still required");
 });
+
+/* --- repetition is LOCAL: the pre-commit checklist false positive -------- */
+
+// 2026-08-29, 20:40, message:600d48e26373. The model was not looping — it was
+// walking a field checklist once per claim it was about to commit:
+//
+//   We need to check if we need to include "ref". Yes.
+//   We need to check if we need to include "kind". Yes.
+//   ... nine fields ...
+//   We need to check if we need to include "ref". Yes.     <- NEXT claim
+//
+// The same sentence legitimately recurs every ~9 lines. The old detector
+// counted phrases for the WHOLE stream, so a structural phrase hit four
+// lifetime occurrences by the fourth claim and the attempt was evicted while
+// the model was preparing its final commit. Mark's design: sha the phrase,
+// compare against a ROLLING window of recent phrase hashes — repetition
+// means "again, recently", never "again, ever".
+
+const CHECKLIST_FIELDS = [
+  "claim", "ref", "kind", "name", "email_address",
+  "source_id", "evidence", "explicit", "confidence",
+];
+
+test("a per-claim commit checklist is method, not repetition", async () => {
+  const lines = ["We are ready to write the block. Checking each claim now."];
+  // Five claims, nine structurally identical check lines each: every phrase
+  // occurs five times in the stream — but never twice within nine lines.
+  for (let claim = 1; claim <= 5; claim += 1) {
+    lines.push(`Now claim ${claim}: the ${claim} entity from the source.`);
+    for (const field of CHECKLIST_FIELDS) {
+      lines.push(`We need to check if we need to include "${field}". Yes.`);
+    }
+  }
+  lines.push('{"claim":"entity","ref":"p1","kind":"PERSON","name":"Mark"}');
+
+  const result = await client(streamOf(lines, "<<<OBSERVATIONS>>>\n{}\n<<<END>>>"))
+    .complete({ prompt: "p", system: "s" });
+  assert.equal(result.text.includes("OBSERVATIONS"), true,
+    "the stream survives to the answer — the model was committing, not cycling");
+});
+
+test("the same checklist INSIDE the window is still a loop", async () => {
+  // The counter-case that keeps the guard honest: the identical sentence
+  // four times with nothing between is going in circles, whatever it says.
+  const lines = ["Preparing the block now, checking the fields."];
+  for (let i = 0; i < 6; i += 1) {
+    lines.push('We need to check if we need to include "source_id". Yes.');
+  }
+
+  await assert.rejects(
+    client(streamOf(lines)).complete({ prompt: "p", system: "s" }),
+    (error) => {
+      assert.equal(error.code, ModelErrorCode.REASONING_LOOP);
+      assert.match(error.meta.repeatedLine, /source_id/);
+      return true;
+    },
+  );
+});
+
+test("the window rolls — a tight loop cannot straddle a boundary and hide", async () => {
+  // 18 distinct lines of real progress, THEN a tight loop. A batch-cleared
+  // buffer could dump its state mid-loop and lose the count; a rolling
+  // window cannot.
+  const lines = [];
+  for (let i = 0; i < 18; i += 1) lines.push(`step ${i} of the real analysis of the letter`);
+  for (let i = 0; i < 6; i += 1) lines.push("And we must double check the whole plan again now.");
+
+  await assert.rejects(
+    client(streamOf(lines)).complete({ prompt: "p", system: "s" }),
+    (error) => {
+      assert.equal(error.code, ModelErrorCode.REASONING_LOOP);
+      return true;
+    },
+  );
+});
+
+test("the sha is the WHOLE phrase — a differing tail is a different phrase", async () => {
+  // Mark's exact worry: "then we know for sure — not the tail or something,
+  // the phrase itself." Long lines sharing a 60-char prefix but differing at
+  // the end must never be conflated into one repeated phrase.
+  const prefix = "We need to verify the evidence span is a verbatim quote from the source for field";
+  const lines = [];
+  for (let i = 0; i < 8; i += 1) lines.push(`${prefix} number ${i} of the envelope.`);
+  lines.push("Done with the distinct checks.");
+
+  const result = await client(streamOf(lines, "<<<OBSERVATIONS>>>\n{}\n<<<END>>>"))
+    .complete({ prompt: "p", system: "s" });
+  assert.ok(result.text.includes("OBSERVATIONS"),
+    "eight near-identical phrases with distinct tails are eight phrases");
+});

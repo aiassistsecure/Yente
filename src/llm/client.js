@@ -21,6 +21,8 @@
  * untrusted text until the protocol layer has validated it.
  */
 
+import { createHash } from "node:crypto";
+
 /** Thrown for transport, protocol, and budget failures. Never for content. */
 export class ModelError extends Error {
   constructor(code, message, meta = {}) {
@@ -118,6 +120,18 @@ const DEFAULTS = Object.freeze({
   // while genuinely progressing. What is never legitimate is the same line
   // arriving over and over with nothing new between.
   maxReasoningRepeats: Number(process.env.YENTE_LLM_MAX_REASONING_REPEATS || 4),
+  // REPETITION IS LOCAL. The window of recent phrases a repeat is counted
+  // against — Mark's design, from the false positive it fixes: a model
+  // walking a per-claim pre-commit checklist ("do we include source_id?
+  // Yes.") says the SAME sentence once per claim, legitimately, every ~9
+  // lines. The old detector counted every phrase for the WHOLE stream, so a
+  // structural phrase hit four lifetime occurrences by the fourth claim and
+  // was called a loop while the model was preparing its final commit. A true
+  // loop repeats within a few lines of itself; four hits inside a 20-phrase
+  // window is going in circles, four hits spread over forty lines is a
+  // methodical model. Rolling, not cleared in batches — a clear every N
+  // would let a tight loop straddle the boundary and never trip.
+  loopWindow: Number(process.env.YENTE_LLM_LOOP_WINDOW || 20),
   streamTimeoutMs: 300_000,
   maxCharacters: 64_000,
   // How much of the reasoning channel is retained for harvest on failure.
@@ -252,8 +266,12 @@ async function streamCompletion({
   // before the first token and fast after it, and a single timeout either kills
   // the cold start or fails to notice a mid-stream stall.
   // Loop detection state. `reasoningLine` buffers the partial line currently
-  // arriving, because deltas do not respect line boundaries.
-  const reasoningLines = new Map();
+  // arriving, because deltas do not respect line boundaries. `recentHashes`
+  // is the rolling window of sha256(normalised phrase) — hashed so identity
+  // is the EXACT whole phrase, never a prefix, a tail, or a collision of
+  // trimming; compared only against the recent window, so recurrence at
+  // structural distance (once per claim) is not repetition.
+  const recentHashes = [];
   let reasoningLine = "";
   let loopedLine = null;
   let loopedCount = 0;
@@ -466,21 +484,23 @@ async function streamCompletion({
             // punctuation, not an argument going in circles.
             if (line.length < 12) continue;
 
-            const seen = (reasoningLines.get(line) ?? 0) + 1;
-            reasoningLines.set(line, seen);
+            // sha of the phrase, compared against the rolling window. The
+            // hash makes the comparison exact-whole-phrase — two lines that
+            // differ only in their tail are different phrases, full stop —
+            // and the WINDOW makes repetition mean "again, recently" rather
+            // than "again, ever". Four of the same phrase inside twenty is a
+            // loop; the same phrase once per claim across a long commit
+            // checklist never accumulates.
+            const sha = createHash("sha256").update(line).digest("hex");
+            const seen = recentHashes.filter((held) => held === sha).length + 1;
             if (seen >= settings.maxReasoningRepeats) {
               loopedLine = line;
               loopedCount = seen;
               abort("loop");
               break;
             }
-
-            // Bounded, so a genuinely long trace cannot grow this without
-            // limit. Evicting the oldest entry is safe: a loop repeats within a
-            // few lines of itself, so the line it is cycling on stays resident.
-            if (reasoningLines.size > 512) {
-              reasoningLines.delete(reasoningLines.keys().next().value);
-            }
+            recentHashes.push(sha);
+            if (recentHashes.length > settings.loopWindow) recentHashes.shift();
           }
         }
 
