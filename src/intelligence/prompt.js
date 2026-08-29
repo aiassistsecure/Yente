@@ -342,15 +342,50 @@ const OUTPUT_CONTRACT = [
  * repeating yourself" is a scolding; "you wrote this line five times" is
  * information the model can act on.
  *
+ * WHEN THE STALL FOLLOWED REAL WORK, THE WORK COMES BACK WITH THE WAKE-UP.
+ *
+ * 2026-08-29: ten minutes of clear thinking produced ~48 claims and THEN the
+ * checklist loop. A wake-up that shows the model only the line it repeated
+ * asks it to spend another ten minutes re-deriving what it already knew. So
+ * the wake-up now carries two more things when the caller has them:
+ *
+ *   - PREVIOUS_THOUGHTS: its own reasoning trace (tail-biased when capped —
+ *     the freshest work and the stall live at the end), so it RESUMES;
+ *   - EXTRACTED_CLAIMS: the claims already harvested from that trace and
+ *     already through the schema and grounding gates, numbered — and the task
+ *     becomes a REVIEW, one claim at a time: reject by number what it no
+ *     longer stands behind, add what is missing, never retype what it keeps.
+ *     A kept claim cannot mutate in transcription, and a review cut short
+ *     loses nothing, because unrejected claims stand.
+ *
+ * The thoughts are the model's own prior output derived from the sources in
+ * this same prompt — shown back with sentinels stripped, they add no
+ * authority and no new provenance, only continuity.
+ *
  * @param {object} input
  * @param {Array<{id: string, text: string}>} input.sources
  * @param {string} [input.repeatedLine]  the line it was cycling on
  * @param {object} [input.context]
+ * @param {string} [input.thoughts]     the stalled attempt's reasoning trace
+ * @param {string[]} [input.extracted]  harvested claim lines, already verified
  */
-export function createWakeUpPrompt({ sources, repeatedLine = null, context = null }) {
+// How much of the model's own reasoning trace the wake-up shows back.
+// The trace is CONTEXT for resuming, not the payload — the payload is
+// EXTRACTED_CLAIMS — and the whole prompt must fit a 16k-context model
+// beside the sources. Tail-biased truncation past the cap; env-tunable
+// because the right number depends on the model's window.
+const WAKEUP_THOUGHTS_MAX_CHARS =
+  Number(process.env.YENTE_WAKEUP_THOUGHTS_MAX_CHARS || 16_000);
+
+export function createWakeUpPrompt({
+  sources, repeatedLine = null, context = null, thoughts = null, extracted = null,
+}) {
   if (!Array.isArray(sources) || sources.length === 0) {
     throw new TypeError("createWakeUpPrompt requires at least one source");
   }
+  const claims = Array.isArray(extracted)
+    ? extracted.filter((line) => typeof line === "string" && line.length > 0)
+    : [];
 
   const blocks = [
     {
@@ -364,18 +399,39 @@ export function createWakeUpPrompt({ sources, repeatedLine = null, context = nul
         "requirements are in your instructions and you do not need to recite them —",
         "you need to use them once, on the message below.",
         "",
+        ...(claims.length > 0
+          ? [
+            "The work you did before stalling was kept. Your own reasoning is in",
+            "PREVIOUS_THOUGHTS, and the claims already extracted from it — each",
+            "one verified against the sources — are numbered in EXTRACTED_CLAIMS.",
+            "Do not re-derive them.",
+          ]
+          : thoughts
+            ? [
+              "Your reasoning from that attempt is in PREVIOUS_THOUGHTS. Resume",
+              "from where the real work stopped; do not start over.",
+            ]
+            : []),
+        "",
         "Do not plan. Do not list what you will check. Read the source and answer.",
       ].join("\n"),
     },
     {
       tag: BLOCK_TAGS.TASK,
-      content: [
-        "Read the SOURCE blocks — one message and anything attached to it —",
-        "and report three things about THIS message: who it identifies, what it",
-        "discloses about them, and what they are asking for. Quote your evidence",
-        "exactly. Report only what these sources support, and stop when they",
-        "have nothing further to say.",
-      ].join(" "),
+      content: claims.length > 0
+        ? [
+          "Review the numbered claims in EXTRACTED_CLAIMS one at a time. For",
+          "each one, decide whether you still stand behind it against the",
+          "SOURCE blocks. Then report anything the sources support that is",
+          "not yet claimed. Do not retype a claim you keep.",
+        ].join(" ")
+        : [
+          "Read the SOURCE blocks — one message and anything attached to it —",
+          "and report three things about THIS message: who it identifies, what it",
+          "discloses about them, and what they are asking for. Quote your evidence",
+          "exactly. Report only what these sources support, and stop when they",
+          "have nothing further to say.",
+        ].join(" "),
     },
   ];
 
@@ -385,6 +441,28 @@ export function createWakeUpPrompt({ sources, repeatedLine = null, context = nul
 
   for (const source of sources) {
     blocks.push({ tag: BLOCK_TAGS.SOURCE, argument: source.id, content: source.text });
+  }
+
+  // The model's own thoughts, shown back to it. Sentinels are stripped so a
+  // quoted string can never draw a block boundary; the cap is tail-biased
+  // because the claims nearest completion and the stall itself live at the
+  // end of the trace, and the head is the part already distilled into
+  // EXTRACTED_CLAIMS.
+  if (typeof thoughts === "string" && thoughts.trim().length > 0) {
+    let shown = thoughts.replace(/<<<|>>>/g, "");
+    if (shown.length > WAKEUP_THOUGHTS_MAX_CHARS) {
+      shown = `[earlier thinking elided]\n${shown.slice(shown.length - WAKEUP_THOUGHTS_MAX_CHARS)}`;
+    }
+    blocks.push({ tag: BLOCK_TAGS.PREVIOUS_THOUGHTS, content: shown });
+  }
+
+  if (claims.length > 0) {
+    blocks.push({
+      tag: BLOCK_TAGS.EXTRACTED_CLAIMS,
+      content: claims
+        .map((line, index) => `${index + 1}. ${line.replace(/<<<|>>>/g, "")}`)
+        .join("\n"),
+    });
   }
 
   // The vocabulary stays: it is data the answer needs, not a rule to rehearse.
@@ -409,13 +487,28 @@ export function createWakeUpPrompt({ sources, repeatedLine = null, context = nul
   // trace. A wake-up must never introduce a second opinion about the format.
   blocks.push({
     tag: BLOCK_TAGS.OUTPUT_CONTRACT,
-    content: [
-      "Answer as exactly one OBSERVATIONS block containing ONE CLAIM PER LINE —",
-      "each line a complete JSON object that parses alone and is judged alone.",
-      "The \"claim\" field names its kind: \"entity\", \"intent\",",
-      "\"relationship\", or \"disclosure\". Emit the single line {} when there",
-      "are no supported claims. Nothing before or after the block.",
-    ].join("\n"),
+    content: claims.length > 0
+      ? [
+        "Answer as exactly one OBSERVATIONS block containing ONE CLAIM PER LINE —",
+        "each line a complete JSON object that parses alone and is judged alone.",
+        "Go through EXTRACTED_CLAIMS in order, one verdict per line:",
+        "{\"claim\":\"approve\",\"n\":1} to keep claim 1, or",
+        "{\"claim\":\"reject\",\"n\":1} to withdraw it. Every claim you do not",
+        "reject is kept. After the verdicts, add any MISSING claims as normal",
+        "claim lines — \"entity\", \"intent\", \"relationship\", or",
+        "\"disclosure\" — quoting evidence exactly. A new claim may use a ref",
+        "that EXTRACTED_CLAIMS already declares. Never retype a claim from",
+        "EXTRACTED_CLAIMS as a claim line; it is already recorded. If nothing",
+        "is missing and nothing is rejected, the verdict lines alone are a",
+        "complete answer. Nothing before or after the block.",
+      ].join("\n")
+      : [
+        "Answer as exactly one OBSERVATIONS block containing ONE CLAIM PER LINE —",
+        "each line a complete JSON object that parses alone and is judged alone.",
+        "The \"claim\" field names its kind: \"entity\", \"intent\",",
+        "\"relationship\", or \"disclosure\". Emit the single line {} when there",
+        "are no supported claims. Nothing before or after the block.",
+      ].join("\n"),
   });
 
   return createPromptArtifact(blocks);

@@ -43,6 +43,17 @@ export const BLOCK_TAGS = Object.freeze({
    * back at the task — see createWakeUpPrompt in intelligence/prompt.js.
    */
   WAKE_UP: "WAKE_UP",
+  /**
+   * The model's own reasoning trace from the attempt that stalled, shown back
+   * to it on the wake-up so it resumes instead of re-deriving. Sentinel
+   * tokens are stripped at insertion; the thoughts are context, never rules.
+   */
+  PREVIOUS_THOUGHTS: "PREVIOUS_THOUGHTS",
+  /**
+   * Claims harvested from that reasoning and already through the schema and
+   * grounding gates, numbered for one-at-a-time review on the wake-up turn.
+   */
+  EXTRACTED_CLAIMS: "EXTRACTED_CLAIMS",
   MISSING_FIELDS: "MISSING_FIELDS",
   INTERVIEW_PLAN: "INTERVIEW_PLAN",
   MATCH: "MATCH",

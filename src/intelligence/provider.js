@@ -233,12 +233,24 @@ const LINE_GROUPS = Object.freeze({
 export function envelopeFromLines(content) {
   const raw = { entities: [], intents: [], relationships: [], disclosures: [] };
   const malformedLines = [];
+  // Verdicts on previously-banked claims, from a wake-up review turn:
+  // {"claim":"approve","n":12} / {"claim":"reject","n":12}, with the bare-text
+  // forms "APPROVE 12" / "REJECT 12" tolerated because a model asked to review
+  // one claim at a time will sometimes answer in exactly those words. Outside
+  // a review turn these are simply unused, never an error.
+  const reviews = [];
   let parsedAny = false;
 
   const lines = String(content).split("\n");
   lines.forEach((line, index) => {
     const trimmed = line.trim();
     if (trimmed === "") return;
+    const bareVerdict = /^(approve|reject)\s+#?(\d+)\.?$/i.exec(trimmed);
+    if (bareVerdict) {
+      reviews.push({ verdict: bareVerdict[1].toLowerCase(), n: Number(bareVerdict[2]) });
+      parsedAny = true;
+      return;
+    }
     let claim;
     try {
       claim = JSON.parse(trimmed);
@@ -258,7 +270,22 @@ export function envelopeFromLines(content) {
       });
       return;
     }
-    const group = LINE_GROUPS[String(claim.claim ?? "").toLowerCase()];
+    const kind = String(claim.claim ?? "").toLowerCase();
+    if (kind === "approve" || kind === "reject") {
+      const n = Number(claim.n);
+      if (Number.isInteger(n) && n > 0) {
+        reviews.push({ verdict: kind, n });
+        parsedAny = true;
+      } else {
+        malformedLines.push({
+          group: "lines", index,
+          code: "BAD_REVIEW",
+          message: `line ${index + 1}: a ${kind} verdict needs a positive integer "n"`,
+        });
+      }
+      return;
+    }
+    const group = LINE_GROUPS[kind];
     if (!group) {
       malformedLines.push({
         group: "lines", index,
@@ -273,7 +300,10 @@ export function envelopeFromLines(content) {
     raw[group].push(rest);
   });
 
-  return { raw: parsedAny ? raw : null, malformedLines };
+  // A reply that is ONLY verdicts is a complete, valid answer: the model
+  // reviewed the bank and found nothing missing. raw must not come back null
+  // for it, or the reader would call a finished review INVALID_JSON.
+  return { raw: parsedAny ? raw : null, malformedLines, reviews };
 }
 
 /**
@@ -307,6 +337,132 @@ export function salvageLines(partialText) {
   // JSON.parse and is counted malformed by envelopeFromLines — which is
   // correct, not noise: the count says how much the cut cost.
   return envelopeFromLines(content);
+}
+
+/**
+ * Harvest the claims a model already produced INSIDE ITS OWN THINKING.
+ *
+ * 2026-08-29: ten minutes of reasoning over one résumé produced ~48 numbered,
+ * complete claim lines — "42. {"claim":"disclosure",...}" — and then slid into
+ * the compliance checklist it looped on. The loop detector fired correctly;
+ * the eviction then discarded a finished harvest, because salvage only knew
+ * how to read the content channel and only past an OBSERVATIONS opener.
+ *
+ * Thinking is prose with claims embedded in it, so this reader inverts the
+ * burden: it keeps ONLY lines that look like claim objects (optionally behind
+ * a list marker) and never counts the surrounding prose as malformed — prose
+ * in thinking is what thinking is, not an error. Every kept line then faces
+ * the same schema and grounding gates as any answer; nothing enters the graph
+ * on the strength of having been thought.
+ */
+export function salvageThinking(reasoningText) {
+  if (typeof reasoningText !== "string" || reasoningText.length === 0) return null;
+  const candidates = [];
+  for (const line of reasoningText.split("\n")) {
+    // "42. {...}" / "- {...}" / "{...}" — strip the marker, keep the object.
+    const stripped = line.trim().replace(/^[-*]?\s*\d*[.)]?\s*/, "");
+    if (stripped.startsWith("{") && stripped.includes('"claim"')) {
+      candidates.push(stripped);
+    }
+  }
+  if (candidates.length === 0) return null;
+  return envelopeFromLines(candidates.join("\n"));
+}
+
+/**
+ * One claim, one row — the identity that makes two claims "the same claim".
+ *
+ * Everything semantic participates; evidence and confidence do not, because
+ * the same fact quoted from two places in a résumé, or asserted at 0.9 and
+ * again at 0.95, is one fact. First occurrence wins, which also means a
+ * banked claim beats its own re-derivation.
+ */
+export function claimKey(group, claim) {
+  const semantic = {};
+  for (const key of Object.keys(claim).sort()) {
+    if (key === "evidence" || key === "confidence" || key === "explicit") continue;
+    semantic[key] = claim[key];
+  }
+  return `${group}:${JSON.stringify(semantic)}`;
+}
+
+const GROUP_DISCRIMINATOR = Object.freeze({
+  entities: "entity",
+  intents: "intent",
+  relationships: "relationship",
+  disclosures: "disclosure",
+});
+
+/**
+ * A validated claim, serialized back to the wire shape the model writes —
+ * snake_case fields behind the `claim` discriminator, sentinels stripped so a
+ * quoted string can never draw a block boundary inside a prompt.
+ */
+export function wireClaimLine(group, claim) {
+  const wire = { claim: GROUP_DISCRIMINATOR[group] };
+  for (const [key, value] of Object.entries(claim)) {
+    const snake = key.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`);
+    wire[snake] = typeof value === "string" ? value.replace(/<<<|>>>/g, "") : value;
+  }
+  return JSON.stringify(wire);
+}
+
+/** Flatten a verified envelope into bankable [{ group, claim }] entries. */
+export function flattenVerified(verified) {
+  const entries = [];
+  for (const group of CLAIM_GROUPS) {
+    for (const claim of verified?.[group] ?? []) entries.push({ group, claim });
+  }
+  return entries;
+}
+
+/**
+ * Union of claim entries with duplicates dropped — first occurrence wins.
+ * Returns the deduped entries, an envelope built from them, and the count of
+ * what was dropped, because "we stored 48" and "it said 53" should reconcile
+ * in a log line rather than in a debugging session.
+ */
+export function mergeEntries(...entryLists) {
+  const seen = new Set();
+  const entries = [];
+  let duplicates = 0;
+  for (const list of entryLists) {
+    for (const entry of list) {
+      const key = claimKey(entry.group, entry.claim);
+      if (seen.has(key)) { duplicates += 1; continue; }
+      seen.add(key);
+      entries.push(entry);
+    }
+  }
+  const verified = {};
+  for (const group of CLAIM_GROUPS) verified[group] = [];
+  for (const { group, claim } of entries) verified[group].push(claim);
+  for (const group of CLAIM_GROUPS) verified[group] = Object.freeze(verified[group]);
+  verified.schemaVersion = OBSERVATION_SCHEMA_VERSION;
+  return { entries, verified: Object.freeze(verified), duplicates };
+}
+
+/**
+ * Apply the model's one-at-a-time review to the banked claims.
+ *
+ * The review protocol is REJECT-BY-NUMBER on purpose: the model never retypes
+ * a claim it keeps, so a kept claim cannot mutate in transcription, and a
+ * review cut short by a dying stream loses NOTHING — every claim not
+ * explicitly rejected stays, because each one already passed the same schema
+ * and grounding gates as any stored answer. The review is the model's
+ * opportunity to drop a claim it second-guessed, not a gate its work must
+ * re-clear.
+ */
+export function applyReviews(banked, reviews) {
+  if (!Array.isArray(reviews) || reviews.length === 0) return banked;
+  const rejectedNumbers = new Set();
+  for (const review of reviews) {
+    if (review?.verdict === "reject" && Number.isInteger(review.n)) {
+      rejectedNumbers.add(review.n);
+    }
+  }
+  if (rejectedNumbers.size === 0) return banked;
+  return banked.filter((_entry, index) => !rejectedNumbers.has(index + 1));
 }
 
 export function readEnvelope(text) {
@@ -381,9 +537,9 @@ export function readEnvelope(text) {
         // `claim` discriminator into its group.
       } catch { /* not one object; the line reader is the right path */ }
 
-      const { raw, malformedLines } = envelopeFromLines(content);
+      const { raw, malformedLines, reviews } = envelopeFromLines(content);
       if (raw) {
-        return { raw, recovered: null, blocks: null, malformedLines };
+        return { raw, recovered: null, blocks: null, malformedLines, reviews };
       }
       throw new ProtocolError("INVALID_JSON",
         `OBSERVATIONS contains neither a JSON object nor parseable claim lines`);
@@ -576,6 +732,14 @@ export function createIntelligenceProvider({
     const basePrompt = createObservationPrompt({ sources, context });
     // Set when an attempt aborts on a reasoning loop; consumed by the next one.
     let wokenFrom = null;
+    // Claims harvested from a failed attempt's own thinking — already through
+    // the same schema and grounding gates as any answer. They seed the wake-up
+    // (numbered, for one-at-a-time review) and they survive exhaustion, so an
+    // aborted stream never costs finished work again.
+    let banked = [];
+    // The most recent attempt's reasoning trace, for harvest and for showing
+    // the model its own thoughts when it is woken.
+    let lastReasoningText = null;
 
     const failures = [];
     let attempt = 0;
@@ -592,6 +756,21 @@ export function createIntelligenceProvider({
     // could smuggle forged block boundaries into the prompt, so it stays out.
     let repairNote = null;
 
+    // Harvest claims out of a failed attempt's reasoning trace and add the
+    // survivors to the bank. Same gates as any answer — envelopeFromLines for
+    // shape, validateEnvelope for schema and referential integrity,
+    // verifyEnvelope for verbatim grounding — then deduped against what is
+    // already banked. Thinking earns nothing by being thinking.
+    const bankThinking = (current, reasoningText) => {
+      const harvest = salvageThinking(reasoningText);
+      if (!harvest?.raw) return current;
+      const canonical = canonicalizeSourceIds(harvest.raw, aliases);
+      const { envelope } = validateEnvelope(canonical, { knownSourceIds, providedRefs });
+      const { verified } = verifyEnvelope(envelope, sourceTextById);
+      const { entries } = mergeEntries(current, flattenVerified(verified));
+      return entries;
+    };
+
     while (attempt < maxAttempts) {
       attempt += 1;
       try {
@@ -600,7 +779,11 @@ export function createIntelligenceProvider({
         // rules stay in the system message rather than being re-supplied, since
         // rehearsing the rules is what the model was stuck doing.
         const prompt = wokenFrom
-          ? createWakeUpPrompt({ sources, repeatedLine: wokenFrom, context })
+          ? createWakeUpPrompt({
+              sources, repeatedLine: wokenFrom, context,
+              thoughts: lastReasoningText,
+              extracted: banked.map(({ group, claim }) => wireClaimLine(group, claim)),
+            })
           : basePrompt;
 
         const completion = await client.complete({
@@ -640,16 +823,40 @@ export function createIntelligenceProvider({
             { transient: true });
         }
 
-        const { raw: receivedRaw, recovered, malformedLines = [] } = readEnvelope(completion.text);
+        const { raw: receivedRaw, recovered, malformedLines = [], reviews = [] } =
+          readEnvelope(completion.text);
         const raw = canonicalizeSourceIds(receivedRaw, aliases);
+        // On a review turn the model is told NOT to retype claims from the
+        // bank — so a new claim about a banked person legitimately references
+        // a ref that is declared only in EXTRACTED_CLAIMS. Those refs count
+        // as declared, exactly as providedRefs do: the entity exists, we are
+        // holding it.
+        const effectiveRefs = banked.length === 0 ? providedRefs
+          : new Set([
+            ...(providedRefs ?? []),
+            ...banked.filter((entry) => entry.group === "entities")
+              .map((entry) => entry.claim.ref),
+          ]);
         const { envelope, rejected: schemaRejected, discrepancies } =
-          validateEnvelope(raw, { knownSourceIds, providedRefs });
-        const { verified, rejected: groundingRejected } =
+          validateEnvelope(raw, { knownSourceIds, providedRefs: effectiveRefs });
+        const { verified: attemptVerified, rejected: groundingRejected } =
           verifyEnvelope(envelope, sourceTextById);
+
+        // The banked harvest joins the answer — minus whatever the model
+        // rejected in its one-at-a-time review — and the union is deduped, so
+        // a claim that exists in the bank AND in the fresh reply is stored
+        // once. mergeEntries also self-dedupes an ordinary non-wake-up reply,
+        // which is the cheap general fix for a model that states one fact
+        // twice.
+        const kept = applyReviews(banked, reviews);
+        const { verified, duplicates } =
+          mergeEntries(kept, flattenVerified(attemptVerified));
 
         const result = {
           envelope,
           verified,
+          duplicates,
+          harvested: kept.length,
           rejected: Object.freeze([...malformedLines, ...schemaRejected, ...groundingRejected]),
           discrepancies,
           failures: Object.freeze(failures),
@@ -731,6 +938,15 @@ export function createIntelligenceProvider({
         if (typeof error?.meta?.partialText === "string" && error.meta.partialText.length > 0) {
           lastPartialText = error.meta.partialText;
         }
+        if (typeof error?.meta?.reasoningText === "string" && error.meta.reasoningText.length > 0) {
+          lastReasoningText = error.meta.reasoningText;
+        }
+        // EAGER HARVEST. The attempt failed; its thinking may not have. Every
+        // claim the model already wrote inside its reasoning goes through the
+        // same schema and grounding gates NOW, and what survives is banked —
+        // shown to the model for review on the wake-up, kept at exhaustion.
+        // Ten minutes of deliberation over a résumé is never paid for twice.
+        banked = bankThinking(banked, lastReasoningText);
         onStream?.({ phase: "rejected", ...failure, evidence, contentHash });
 
         // Tell the next attempt what broke. Sentinel tokens are stripped from
@@ -753,25 +969,39 @@ export function createIntelligenceProvider({
           // already delivered whole. Same gates as any answer; never cached;
           // the caller sees partial: true and keeps the job open.
           const salvage = lastPartialText ? salvageLines(lastPartialText) : null;
-          if (salvage?.raw) {
-            const canonical = canonicalizeSourceIds(salvage.raw, aliases);
-            const { envelope, rejected: schemaRejected } =
-              validateEnvelope(canonical, { knownSourceIds, providedRefs });
-            const { verified, rejected: groundingRejected } =
-              verifyEnvelope(envelope, sourceTextById);
+          {
+            let envelope = null;
+            let salvageRejected = [];
+            let contentEntries = [];
+            if (salvage?.raw) {
+              const canonical = canonicalizeSourceIds(salvage.raw, aliases);
+              const validated = validateEnvelope(canonical, { knownSourceIds, providedRefs });
+              envelope = validated.envelope;
+              const groundChecked = verifyEnvelope(validated.envelope, sourceTextById);
+              contentEntries = flattenVerified(groundChecked.verified);
+              salvageRejected = [
+                ...salvage.malformedLines, ...validated.rejected, ...groundChecked.rejected,
+              ];
+            }
+            // The bank joins the content salvage: a loop abort and a dying
+            // transport lose work the same way, and both harvests are already
+            // through the gates. Content lines win ties — they were the
+            // model's ANSWER, the bank was its thinking.
+            const { verified, duplicates } = mergeEntries(contentEntries,
+              banked.map((entry) => ({ group: entry.group, claim: entry.claim })));
             if (claimCount(verified) > 0) {
               return Object.freeze({
                 envelope,
                 verified,
-                rejected: Object.freeze([
-                  ...salvage.malformedLines, ...schemaRejected, ...groundingRejected,
-                ]),
+                duplicates,
+                harvested: banked.length,
+                rejected: Object.freeze(salvageRejected),
                 discrepancies: Object.freeze([]),
                 failures: Object.freeze(failures),
                 attempts: attempt,
                 cached: false,
                 partial: true,
-                recovered: "salvaged_lines",
+                recovered: contentEntries.length > 0 ? "salvaged_lines" : "salvaged_thinking",
                 provenance: Object.freeze({
                   contentHash,
                   provider,
