@@ -95,6 +95,38 @@ export function createGraphLoops({
     });
   }
 
+  /* --- MATCHES PROPAGATE AS CONTENT ARRIVES, NOT ON A CLOCK -------------- */
+  //
+  // The connect loop used to sleep a flat 60s, which meant a person's match
+  // could sit unproposed for a minute after their claims landed — and, worse,
+  // that a burst of new understanding and an idle graph were paced identically.
+  // A matchmaker's job is to react to the graph CHANGING; the clock stays only
+  // as the fallback that catches anything a wake ever missed.
+  //
+  // One boolean, not a queue: N understandings before the loop wakes are one
+  // scan, because the scan reads the whole graph anyway. Racing is harmless —
+  // a wake during a scan sets the flag and the loop re-scans once.
+  let connectPending = false;
+  let wakeConnect = null;
+
+  function nudgeConnect() {
+    connectPending = true;
+    if (wakeConnect) {
+      const release = wakeConnect;
+      wakeConnect = null;
+      release();
+    }
+  }
+
+  function sleepOrNudge(ms) {
+    if (connectPending) return Promise.resolve();   // work arrived mid-scan
+    return new Promise((resolve) => {
+      const timer = setTimeout(resolve, ms);
+      wakeConnect = () => { clearTimeout(timer); resolve(); };
+      signal?.addEventListener("abort", () => { clearTimeout(timer); resolve(); }, { once: true });
+    });
+  }
+
   /* --- LISTEN ----------------------------------------------------------- */
 
   async function listen() {
@@ -155,6 +187,9 @@ export function createGraphLoops({
         health.ticks.understand += 1;
         if (summary.claimed > 0) {
           log("info", "understood", { ...summary, backlog: graph.jobs.counts().READY });
+          // The graph just changed; matching should notice NOW, not on the
+          // next tick of a clock that does not know anything happened.
+          if (summary.claims > 0) nudgeConnect();
           continue;   // keep going while there is a backlog
         }
       } catch (error) {
@@ -204,11 +239,16 @@ export function createGraphLoops({
         end("match:scan");
         log("error", "connect_failed", { error: String(error?.message ?? error) });
       }
-      await sleep(connectMs);
+      connectPending = false;
+      await sleepOrNudge(connectMs);
     }
   }
 
   return Object.freeze({
     listen, understand, connect, health, mailSilenceMinutes, sleep, concurrency,
+    // Exposed so anything that writes claims outside the understand loop — a
+    // manager correction, a declared role, a vendor enrichment — can make
+    // matching react immediately too.
+    nudgeConnect,
   });
 }

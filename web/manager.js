@@ -52,6 +52,24 @@ export async function handleManagerRequest({ req, res, manager, graph, health, o
 
   // Profiles. §9/§10 — the person is the entity and the mail is evidence, so a
   // subject gets a page and messages appear on it rather than the reverse.
+  // search_matches_or_return_false, as JSON. The operator's (and, once the
+  // tool transport lands, the model's) way to ask "who exists for this person
+  // right now" without waiting on the connect tick. `false` on no results is
+  // the contract: a caller must say so or say nothing, never render an
+  // enthusiastic empty list. Cards structurally cannot carry an email address.
+  if (url.pathname === "/search_matches" && req.method === "GET") {
+    const who = url.searchParams.get("subject");
+    if (!who) { res.writeHead(400).end("missing subject"); return true; }
+    const found = manager.searchMatchesOrReturnFalse({
+      subject: who,
+      query: url.searchParams.get("query") || null,
+      limit: Number(url.searchParams.get("limit") || 3),
+    });
+    res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+    res.end(JSON.stringify({ found }));
+    return true;
+  }
+
   if (url.pathname === "/subject" && req.method === "GET") {
     const id = url.searchParams.get("id");
     if (!id) { res.writeHead(400).end("missing id"); return true; }
