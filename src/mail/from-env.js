@@ -14,6 +14,7 @@
 
 import { createImapClient } from "./imap-client.js";
 import { createMailSource } from "./source.js";
+import { messageBodyText } from "./html-text.js";
 
 /**
  * The transport config, in the shape `createMailTransport` actually takes.
@@ -89,7 +90,12 @@ export function createMailFromEnv({ graph, log = () => {}, env = process.env }) 
         to: (parsed.to ?? []).map((a) => a.address),
         cc: (parsed.cc ?? []).map((a) => a.address),
         subject: parsed.subject,
-        text: parsed.text ?? parsed.html ?? "",
+        // NOT `parsed.text ?? parsed.html`. That fallback handed the observer
+        // RAW HTML — tags, inline CSS, tracking pixels, base64 data URIs — as
+        // the evidence text for every message without a plain-text part, which
+        // is most HTML mail. Too big to prefill inside the upstream's silence
+        // window, and unquotable even when it fit. See html-text.js.
+        text: messageBodyText(parsed),
         date: parsed.date,
         attachments: parsed.attachments ?? [],
       };

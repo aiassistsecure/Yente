@@ -30,6 +30,8 @@ import { normalizeMessage } from "../mail/source.js";
 import { ingestAttachments } from "./documents.js";
 import { addressesIn, subjectForAddress } from "./identity.js";
 import { linksIn } from "../extract/links.js";
+import { ROLE_PREDICATE, declaredRoles } from "./roles.js";
+import { currentReplyOnly } from "../mail/quoted.js";
 import { enrichLink } from "./enrich.js";
 import { AUTHORITY } from "../store/graph.js";
 
@@ -148,6 +150,32 @@ export async function ingestMail({
       //
       // Only for NEW messages: re-extracting an attachment we already have would
       // fork a parser for nothing.
+      // THE FOUR-WAY ANSWER IS READ HERE, DETERMINISTICALLY. declaredRoles()
+      // was built with the intake rework and then called by NOTHING in
+      // production — a parser with no feed, the same disease as the QUALIFIED
+      // gate with no writer. Every inbound message is now checked for a role
+      // declaration; quoted history is stripped first so a person quoting
+      // Yente's own menu back does not declare all four.
+      {
+        const senderAddress = addressesIn(message.from ?? "")[0]?.normalized ?? message.from;
+        if (senderAddress) {
+          const roleSubject = subjectForAddress(senderAddress);
+          for (const role of declaredRoles(currentReplyOnly(message.text ?? ""))) {
+            graph.observations.append({
+              subject: roleSubject,
+              predicate: ROLE_PREDICATE,
+              object: role,
+              evidenceId: evidence.id ?? `message:${message.contentHash}`,
+              quote: `declared: ${role}`,
+              authority: AUTHORITY.DETERMINISTIC,
+              confidence: 1,
+              observedAt: now(),
+              validFrom: message.sentAt ?? now(),
+            });
+          }
+        }
+      }
+
       // LINKS ARE THE THIRD KIND OF DOCUMENT. A LinkedIn URL goes to the
       // structured vendor path (DETERMINISTIC fields, no model); anything else
       // is fetched as prose and joins the normal pipeline. Both env-gated: a

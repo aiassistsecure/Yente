@@ -38,7 +38,16 @@ export const POLL_RUNS = "poll_runs";
  * @param {Function} deps.log        (level, event, meta) => void
  * @param {string}   [deps.mode]     recorded on each poll_run row, for auditing
  */
-export function createDesk({ store, runtime, log = () => {}, mode = "daemon" }) {
+export function createDesk({
+  store, runtime, log = () => {}, mode = "daemon",
+  // Called with each address the desk QUALIFIES this tick. This is the bridge
+  // that was missing: the desk ran its whole qualification policy (facts on
+  // file, intent stated, profile confirmed back to the person) and the GRAPH
+  // never heard about it — so isMatchable stayed false for every human forever
+  // and the matchmaker was structurally dead. The gate from the résumé bug was
+  // built with no writer.
+  onQualified = null,
+} = {}) {
   if (!store) throw new TypeError("createDesk requires the desk store");
   if (!runtime) throw new TypeError("createDesk requires the runtime");
 
@@ -70,6 +79,13 @@ export function createDesk({ store, runtime, log = () => {}, mode = "daemon" }) 
     for (const r of ingested) {
       const key = r?.outcome ?? "unknown";
       outcomes[key] = (outcomes[key] || 0) + 1;
+      if (key === "qualified" && r?.address && onQualified) {
+        try { onQualified(r.address); } catch (error) {
+          log("warn", "qualified_bridge_failed", {
+            address: r.address, error: String(error?.message ?? error),
+          });
+        }
+      }
       facts += r?.facts ?? 0;
       rejected += r?.rejected ?? 0;
       for (const f of r?.failures ?? []) failures.push(f);

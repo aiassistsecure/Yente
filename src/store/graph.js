@@ -415,6 +415,37 @@ export class IntelligenceJobRepository {
    * once. After they finish under the current version they stay DONE, including
    * honest zero-claim messages — no infinite replay of genuinely empty mail.
    */
+  /**
+   * The same document, sent by a DIFFERENT person, must teach the graph about
+   * THEM. Evidence is content-addressed, so five copies of one résumé are one
+   * evidence row — correct — but the job carried only the FIRST sender's
+   * subjectHint, so senders two through five got nothing: their copy was
+   * "already understood", for somebody else. Observed live: Mark mailing the
+   * same résumé from four addresses and only the first profile learning it.
+   *
+   * Re-running is nearly free: the inference cache is keyed on content, so the
+   * model's envelope comes back without a new inference and observationsFrom
+   * simply re-anchors it to the new owner. Only a DONE job re-opens — a READY
+   * or RUNNING one will carry its result soon anyway, and this call updating
+   * the hint would race it.
+   */
+  reassignOwner(evidenceId, subjectHint, at) {
+    const job = this.store.get(GRAPH_COLLECTIONS.INTELLIGENCE_JOBS, evidenceId);
+    if (!job || !subjectHint || job.subjectHint === subjectHint) return null;
+    if (job.state !== JOB_STATES.DONE) return null;
+    return this.store.put(GRAPH_COLLECTIONS.INTELLIGENCE_JOBS, evidenceId, {
+      ...job,
+      subjectHint,
+      state: JOB_STATES.READY,
+      availableAt: at,
+      startedAt: null,
+      finishedAt: null,
+      lastError: null,
+      lastErrorAt: null,
+      retryInMs: null,
+    });
+  }
+
   requeueForPrompt(promptVersion, at) {
     let count = 0;
     for (const job of this.store.query(`FROM ${GRAPH_COLLECTIONS.INTELLIGENCE_JOBS}`)) {
