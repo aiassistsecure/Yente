@@ -29,6 +29,8 @@
 import { normalizeMessage } from "../mail/source.js";
 import { ingestAttachments } from "./documents.js";
 import { addressesIn, subjectForAddress } from "./identity.js";
+import { linksIn } from "../extract/links.js";
+import { enrichLink } from "./enrich.js";
 import { AUTHORITY } from "../store/graph.js";
 
 /**
@@ -146,6 +148,33 @@ export async function ingestMail({
       //
       // Only for NEW messages: re-extracting an attachment we already have would
       // fork a parser for nothing.
+      // LINKS ARE THE THIRD KIND OF DOCUMENT. A LinkedIn URL goes to the
+      // structured vendor path (DETERMINISTIC fields, no model); anything else
+      // is fetched as prose and joins the normal pipeline. Both env-gated: a
+      // missing key reports itself skipped once rather than erroring per tick,
+      // and the SSRF guard inside classifyLink refuses private addresses
+      // before any credential is spent. Fire-and-forget by design — a slow or
+      // dead fetcher must never hold the IMAP connection.
+      {
+        const senderAddress = addressesIn(message.from ?? "")[0]?.normalized ?? message.from;
+        const linkSubject = senderAddress ? subjectForAddress(senderAddress) : null;
+        if (linkSubject) {
+          for (const url of linksIn(message.text ?? "")) {
+            enrichLink({ url, subject: linkSubject, graph, log, now })
+              .then((result) => {
+                if (result.outcome === "skipped") {
+                  log("info", "enrich_skipped", { url, why: result.skipped });
+                }
+              })
+              .catch((error) => {
+                // Cannot happen by contract — enrichLink returns outcomes —
+                // but a stranger's link must never take the listener down.
+                log("warn", "enrich_failed", { url, error: String(error?.message ?? error) });
+              });
+          }
+        }
+      }
+
       if (message.attachments.length > 0) {
         const senderAddress = addressesIn(message.from ?? "")[0]?.normalized ?? message.from;
         const docs = await extractAttachments({
