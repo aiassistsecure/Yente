@@ -136,3 +136,31 @@ test("HTML-only mail reaches the model as prose, and plain text still wins", asy
     /messageBodyText\(parsed\)/,
     "and production USES it — the raw-html fallback was the hole");
 });
+
+test("zero-claim jobs re-open ONCE, so a model swap can re-read consumed mail", () => {
+  // 27 DONE jobs from a night of NuExtract answering {} = 27 consumed
+  // messages, no facts, nobody qualified, a matchmaker with no candidates.
+  // Empty RESULTS were already uncached (#58) so a better model could
+  // re-derive them; the JOBS were the half that stayed sealed.
+  const graph = createGraphRepositories(openInMemory());
+  const at = new Date().toISOString();
+
+  graph.jobs.enqueue({ evidenceId: "message:empty", subjectHint: null, at });
+  graph.jobs.start("message:empty", at);
+  graph.jobs.finish("message:empty", { at, claims: 0 });
+
+  graph.jobs.enqueue({ evidenceId: "message:full", subjectHint: null, at });
+  graph.jobs.start("message:full", at);
+  graph.jobs.finish("message:full", { at, claims: 6 });
+
+  assert.equal(graph.jobs.requeueEmptyUnderstandings(at), 1,
+    "only the empty one re-opens; real work is never re-bought");
+  assert.equal(graph.jobs.counts().READY, 1);
+
+  // The once-ever guard: a genuinely empty message re-runs once under the
+  // current model and is never touched a third time — without this every
+  // boot would re-buy inference on every quiet message forever.
+  graph.jobs.start("message:empty", at);
+  graph.jobs.finish("message:empty", { at, claims: 0 });
+  assert.equal(graph.jobs.requeueEmptyUnderstandings(at), 0);
+});
