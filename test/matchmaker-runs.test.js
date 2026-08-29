@@ -164,3 +164,23 @@ test("zero-claim jobs re-open ONCE, so a model swap can re-read consumed mail", 
   graph.jobs.finish("message:empty", { at, claims: 0 });
   assert.equal(graph.jobs.requeueEmptyUnderstandings(at), 0);
 });
+
+test("a deduped attachment gains each later covering message, additively", () => {
+  // 'Manager is not showing attachments' — evidence meta kept only the FIRST
+  // messageEvidenceId, so every later email carrying the same file showed no
+  // attachment in the thread view. Linkage is knowledge that ARRIVES later;
+  // refusing to record it hid the document on four of five emails.
+  const graph = createGraphRepositories(openInMemory());
+  const at = new Date().toISOString();
+  graph.evidence.record({
+    kind: "attachment", contentHash: "abc", text: "resume text",
+    meta: { messageEvidenceId: "message:first", subjectHint: "person:a@x.test" },
+    receivedAt: at,
+  });
+
+  graph.evidence.updateMeta("attachment:abc", { coveringMessages: ["message:second"] });
+  const held = graph.evidence.get("attachment:abc");
+  assert.equal(held.meta.messageEvidenceId, "message:first", "the original slot is never replaced");
+  assert.deepEqual(held.meta.coveringMessages, ["message:second"]);
+  assert.equal(held.text, "resume text", "meta updates never touch the verbatim content");
+});

@@ -117,7 +117,14 @@ export function createGraphManager({
         .localeCompare(String(b.meta?.sentAt ?? b.receivedAt ?? "")));
     const messageIds = new Set(messages.map((m) => m.id ?? m._id));
     const attachments = graph.evidence.all().filter((row) =>
-      row.kind === "attachment" && messageIds.has(row.meta?.messageEvidenceId));
+      row.kind === "attachment" && (
+        messageIds.has(row.meta?.messageEvidenceId)
+        // A deduped document carried by a LATER email in this thread. The
+        // first covering message keeps its slot; every later carrier is in
+        // coveringMessages — without this the manager showed a résumé on one
+        // email and nothing on the four that carried the same file.
+        || (row.meta?.coveringMessages ?? []).some((id) => messageIds.has(id))
+      ));
     const evidenceIds = [...messageIds, ...attachments.map((a) => a.id ?? a._id)];
     const claims = graph.observations.all().filter((row) => evidenceIds.includes(row.evidenceId));
     return {

@@ -86,6 +86,13 @@ export async function ingestMail({
         to: message.to,
         cc: message.cc,
         subject: message.subject,
+        // The attachment MANIFEST — names only, content lives in its own
+        // evidence. Without this, a message whose body says "Attached is my
+        // resume" reached the model with nothing to confirm the attachment
+        // exists, and the model reasonably concluded it did not: "No
+        // attachment content provided?" — a real trace. The message must
+        // carry the fact that its documents ARE ELSEWHERE.
+        attachments: (message.attachments ?? []).map((a) => a?.filename ?? "unnamed"),
         // Carried because "we closed last month" is only resolvable against
         // when it was said, and the model never sees a Date header.
         sentAt: message.sentAt,
