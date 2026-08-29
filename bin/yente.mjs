@@ -276,6 +276,11 @@ const concurrency = Number(process.env.YENTE_INTELLIGENCE_CONCURRENCY || 3);
 // requeueEmptyUnderstandings for the night that made this necessary: a
 // failing model consumed 27 messages producing nothing, and the work stayed
 // sealed while its replacement would have read the same mail correctly.
+// Historical standalone attachment jobs — the letter reads the document now,
+// and a re-opened attachment job is a context-free double-read that wanders.
+const retired = graph.jobs.retireAttachmentJobs(new Date().toISOString());
+if (retired > 0) log("info", "attachment_jobs_retired", { jobs: retired });
+
 const emptyRequeued = graph.jobs.requeueEmptyUnderstandings(new Date().toISOString());
 if (emptyRequeued > 0) {
   log("info", "empty_understandings_requeued", { jobs: emptyRequeued });

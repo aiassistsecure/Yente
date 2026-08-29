@@ -243,3 +243,19 @@ test("the prompt teaches intent from a career's shape, bounded and honest", asyn
   assert.match(prompt, /NEVER an intent about the document itself/i,
     "the resume-as-intent bug stays dead in the instruction, not just the guard");
 });
+
+test("a retired attachment job stays retired through every requeue", () => {
+  // The hole the first version of retirement shipped with: retired jobs are
+  // DONE with an OLD promptVersion, so the next version bump would have
+  // un-retired every one of them — the double-read reborn each boot.
+  const graph = createGraphRepositories(openInMemory());
+  const at = new Date().toISOString();
+  graph.jobs.enqueue({ evidenceId: "attachment:old", subjectHint: null, at });
+  graph.jobs.start("attachment:old", at);
+  graph.jobs.finish("attachment:old", { at, claims: 0, promptVersion: "obs_prompt_v12" });
+
+  assert.equal(graph.jobs.retireAttachmentJobs(at), 1);
+  assert.equal(graph.jobs.requeueEmptyUnderstandings(at), 0, "claims=0 must not re-open it");
+  assert.equal(graph.jobs.requeueForPrompt("obs_prompt_v99", at), 0, "no version bump may either");
+  assert.equal(graph.jobs.retireAttachmentJobs(at), 0, "and retirement itself is idempotent");
+});
