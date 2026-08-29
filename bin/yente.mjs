@@ -76,6 +76,7 @@ import { createSiteHandler } from "../web/server.js";
 import { renderManager, handleManagerRequest } from "../web/manager.js";
 import { createDesk } from "../src/runtime/desk.js";
 import { createGraphLoops } from "../src/graph/loops.js";
+import { subjectForAddress } from "../src/graph/identity.js";
 import { createMailFromEnv, mailConfigFromEnv } from "../src/mail/from-env.js";
 import { createGraphManager } from "../src/graph/manager.js";
 import { drainConfirmedIntroductions } from "../src/graph/introductions.js";
@@ -197,7 +198,33 @@ if (deskStore) {
       emailClient: llm.emailClient,
       graphEvidence: graph.evidence,
     });
-    desk = createDesk({ store: deskStore, runtime, log, mode: "yente" });
+    desk = createDesk({
+      store: deskStore, runtime, log, mode: "yente",
+      // THE BRIDGE. When the desk qualifies a member — its whole policy:
+      // documents read, facts verified, intent stated, profile confirmed back
+      // to the person — the graph's lifecycle advances to QUALIFIED through
+      // its legal transitions, and matching can finally see them. Intake is
+      // autonomous per Mark's directive; the HITL stays where it belongs, on
+      // the INTRODUCTION review queue, which every match still passes through.
+      onQualified: (address) => {
+        const subject = subjectForAddress(address);
+        const order = ["received", "drafted", "awaiting_approval", "qualified"];
+        let state = manager.profileStateOf(subject);
+        // A person who DECLINED said no. The desk re-qualifying them on a new
+        // document must not silently override that — consent comes back only
+        // through the lifecycle's own door, not through this bridge.
+        if (state === "declined") return;
+        for (const next of order.slice(order.indexOf(state) + 1)) {
+          manager.setProfileState({
+            subject, state: next,
+            quote: `desk qualification for ${address}`,
+          });
+          state = next;
+        }
+        log("info", "graph_qualified", { subject, via: "desk" });
+        loops.nudgeConnect();   // a new candidate is exactly what connect waits for
+      },
+    });
     log("info", "desk", { parsers: parserTypes.length, llm: llm.describe?.provider ?? "?" });
   }
 }

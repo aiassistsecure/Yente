@@ -205,6 +205,12 @@ export function createGraphLoops({
 
   async function connect() {
     while (!isStopping()) {
+      // Consumed BEFORE the scan, not after. Clearing it after meant a nudge
+      // arriving DURING a scan was erased — the exact race the accumulator
+      // comment promised to handle, contradicted three lines later. Work that
+      // arrives mid-scan now survives into sleepOrNudge, which returns
+      // immediately when the flag is up.
+      connectPending = false;
       try {
         const observations = graph.observations
           .all()
@@ -239,7 +245,6 @@ export function createGraphLoops({
         end("match:scan");
         log("error", "connect_failed", { error: String(error?.message ?? error) });
       }
-      connectPending = false;
       await sleepOrNudge(connectMs);
     }
   }

@@ -221,13 +221,25 @@ export async function ingestAttachments({
     });
 
     summary.extracted += 1;
+    const evidenceId = evidence.id ?? `attachment:${result.contentHash}`;
     if (!duplicate) {
       const { duplicate: jobExisted } = graph.jobs.enqueue({
-        evidenceId: evidence.id ?? `attachment:${result.contentHash}`,
+        evidenceId,
         subjectHint,
         at: now(),
       });
       if (!jobExisted) summary.enqueued += 1;
+    } else if (subjectHint) {
+      // The SAME document from a NEW sender. Their copy must teach the graph
+      // about THEM — see reassignOwner for the bug this closes and why the
+      // re-run costs no new inference.
+      const reopened = graph.jobs.reassignOwner(evidenceId, subjectHint, now());
+      if (reopened) {
+        summary.enqueued += 1;
+        log("info", "document_reowned", {
+          evidence: evidenceId.slice(0, 24), owner: subjectHint,
+        });
+      }
     }
   }
 
