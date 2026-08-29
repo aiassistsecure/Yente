@@ -43,6 +43,7 @@ import {
   buildIdentityIndex, resolveObservations, proposeIdentityMerges,
 } from "./identity.js";
 import { documentVocabulary, groupBySource, sourceKindOf } from "./provenance.js";
+import { searchMatches } from "./discovery.js";
 
 export const CORRECTION = Object.freeze({
   SAME_PERSON: "same_person",
@@ -617,6 +618,13 @@ export function createGraphManager({
 
   return Object.freeze({
     pendingMatches, pendingIdentities, subject, subjects, thread, threadHrefFor, summary,
+    // search_matches_or_return_false — the discovery search, bound to this
+    // graph. Named for what a caller must handle: false means there is nobody,
+    // say so or say nothing; never an empty list rendered enthusiastically.
+    // Cards structurally cannot carry an email address (see discovery.js), so
+    // this is safe to hand to ANY reply-composing surface, model included.
+    searchMatchesOrReturnFalse: ({ subject: who, query = null, limit = 3 } = {}) =>
+      searchMatches({ graph, manager: { isMatchable }, subject: who, query, limit }),
     confirmMatch, rejectMatch, createMatch,
     samePerson, differentPeople, wrongClaim, excludeSubject, isEligible,
     // Matchability is deliberately separate from eligibility: one is the
