@@ -692,6 +692,9 @@ export function createIntelligenceProvider({
   now = () => new Date().toISOString(),
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 }) {
+  // In-flight inference per content hash — see the fence note in observe().
+  const inFlightObservations = new Map();
+
   if (!client || typeof client.complete !== "function") {
     throw new TypeError("createIntelligenceProvider requires a model client");
   }
@@ -733,6 +736,17 @@ export function createIntelligenceProvider({
       const hit = await cache.get(contentHash);
       if (hit) return Object.freeze({ ...hit, cached: true });
     }
+
+    // ONE INFERENCE PER CONTENT, AT A TIME. The cache dedupes across time;
+    // this dedupes across NOW: two drain workers holding jobs that resolve
+    // to the same letter (a covering message and a historical alias, a
+    // requeue racing a retry) share one inference instead of stacking two
+    // full-résumé generations onto one GPU. Same discipline as the netrows
+    // credit dedup in enrich.js, for the same reason — the expensive call is
+    // the thing to fence, and a promise is the fence.
+    const running = inFlightObservations.get(contentHash);
+    if (running) return running;
+    const settled = (async () => {
 
     const sourceTextById = new Map(sources.map((source) => [source.id, source.text]));
     const knownSourceIds = new Set(sourceTextById.keys());
@@ -1039,8 +1053,16 @@ export function createIntelligenceProvider({
       }
     }
 
-    /* c8 ignore next */
-    throw new IntelligenceError("OBSERVE_FAILED", "exhausted attempts", { failures });
+      /* c8 ignore next */
+      throw new IntelligenceError("OBSERVE_FAILED", "exhausted attempts", { failures });
+    })();
+
+    inFlightObservations.set(contentHash, settled);
+    try {
+      return await settled;
+    } finally {
+      inFlightObservations.delete(contentHash);
+    }
   }
 
   return Object.freeze({ observe, describe });

@@ -124,6 +124,15 @@ const DEFAULTS = Object.freeze({
   // Generous by design: the observed worst case (19k tokens of deliberation
   // over one résumé) is ~76 KB, so 256 KB means the whole trace in practice.
   maxReasoningCapture: Number(process.env.YENTE_LLM_MAX_REASONING_CAPTURE || 262_144),
+  // How many generations this client will run AT ONCE. Default one, because
+  // the operator on the other end of PIN is one GPU running a reasoning
+  // model: concurrent requests do not run in parallel there, they thrash —
+  // ollama SPLITS num_ctx across its parallel slots, so three 16k requests
+  // become three 5k contexts, and a résumé that fits alone stops fitting.
+  // Observed as "model online, PIN queue overflowed": the drain's three
+  // workers each stacked attempts onto a queue the GPU could only eat
+  // serially. Raise it only for a backend that genuinely runs parallel.
+  maxInflight: Number(process.env.YENTE_LLM_MAX_INFLIGHT || 1),
 });
 
 /**
@@ -138,6 +147,22 @@ export function createModelClient({ baseUrl, model, apiKey, fetchImpl = fetch, .
   if (!model) throw new TypeError("A model client requires a model name");
   const settings = { ...DEFAULTS, ...rest };
   const endpoint = `${String(baseUrl).replace(/\/+$/, "")}/chat/completions`;
+
+  // The in-flight gate. A plain counter + FIFO of waiters — no dependency,
+  // no fairness subtleties at the sizes involved. Every request passes
+  // through, including retries, so an abort-and-retry cycle can never hold
+  // more generations open than the limit allows.
+  let inflight = 0;
+  const waiters = [];
+  const acquire = () => new Promise((resolve) => {
+    if (inflight < settings.maxInflight) { inflight += 1; resolve(); return; }
+    waiters.push(resolve);
+  });
+  const release = () => {
+    const next = waiters.shift();
+    if (next) { next(); return; }
+    inflight -= 1;
+  };
 
   return {
     model,
@@ -155,7 +180,12 @@ export function createModelClient({ baseUrl, model, apiKey, fetchImpl = fetch, .
      * @returns {Promise<{text: string, finishReason: string|null, elapsedMs: number}>}
      */
     async complete(request) {
-      return streamCompletion({ endpoint, model, apiKey, fetchImpl, settings, ...request });
+      await acquire();
+      try {
+        return await streamCompletion({ endpoint, model, apiKey, fetchImpl, settings, ...request });
+      } finally {
+        release();
+      }
     },
   };
 }
