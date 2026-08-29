@@ -263,7 +263,7 @@ test("the same checklist INSIDE the window is still a loop", async () => {
   // The counter-case that keeps the guard honest: the identical sentence
   // four times with nothing between is going in circles, whatever it says.
   const lines = ["Preparing the block now, checking the fields."];
-  for (let i = 0; i < 6; i += 1) {
+  for (let i = 0; i < 12; i += 1) {
     lines.push('We need to check if we need to include "source_id". Yes.');
   }
 
@@ -283,7 +283,7 @@ test("the window rolls — a tight loop cannot straddle a boundary and hide", as
   // window cannot.
   const lines = [];
   for (let i = 0; i < 18; i += 1) lines.push(`step ${i} of the real analysis of the letter`);
-  for (let i = 0; i < 6; i += 1) lines.push("And we must double check the whole plan again now.");
+  for (let i = 0; i < 12; i += 1) lines.push("And we must double check the whole plan again now.");
 
   await assert.rejects(
     client(streamOf(lines)).complete({ prompt: "p", system: "s" }),
