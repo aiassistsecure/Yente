@@ -67,7 +67,7 @@ import {
   assertTransport,
   registerDocumentParsers,
 } from "../src/index.js";
-import { openDatabases } from "../src/store/db.js";
+import { openDatabases , COLLECTIONS } from "../src/store/db.js";
 import { createGraphRepositories } from "../src/store/graph.js";
 import { createLlmClients } from "../src/llm/providers.js";
 import { openWaitlistRepository } from "../src/waitlist/repository.js";
@@ -305,6 +305,35 @@ let stopping = false;
 const abort = new AbortController();
 
 const { source, imap, mailbox, configured } = createMailFromEnv({ graph, log });
+
+// BACKFILL: members the desk qualified BEFORE the bridge existed. The
+// onQualified hook fires on the tick where qualification HAPPENS — members
+// already QUALIFIED or ACTIVE in the desk store would otherwise stay
+// unmatchable forever, which is the gate-with-no-writer bug reborn one layer
+// up. Idempotent: setProfileState re-asserting a state is a legal no-op, and
+// a DECLINED graph lifecycle is never overridden.
+{
+  const deskMembers = deskStore
+    ? deskStore.query(`FROM ${COLLECTIONS.MEMBERS}`)
+    : [];
+  let bridged = 0;
+  for (const member of deskMembers) {
+    if (member.state !== "QUALIFIED" && member.state !== "ACTIVE") continue;
+    const address = member.address ?? member.email ?? null;
+    if (!address) continue;
+    const subject = subjectForAddress(address);
+    if (manager.profileStateOf(subject) === "qualified") continue;
+    if (manager.profileStateOf(subject) === "declined") continue;
+    const order = ["received", "drafted", "awaiting_approval", "qualified"];
+    let state = manager.profileStateOf(subject);
+    for (const next of order.slice(order.indexOf(state) + 1)) {
+      manager.setProfileState({ subject, state: next, quote: `backfill: desk ${member.state} for ${address}` });
+      state = next;
+    }
+    bridged += 1;
+  }
+  if (bridged > 0) log("info", "qualified_backfilled", { members: bridged });
+}
 
 const loops = createGraphLoops({
   graph, source, observer, manager, log, begin, end,

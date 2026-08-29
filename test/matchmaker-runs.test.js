@@ -88,6 +88,20 @@ test("bin/yente.mjs bridges desk qualification into the graph lifecycle", async 
     "a person who DECLINED is never re-qualified by this bridge");
 });
 
+test("boot backfills members the desk qualified BEFORE the bridge existed", async () => {
+  // The bridge fires on the tick where qualification HAPPENS. Members already
+  // QUALIFIED/ACTIVE in the desk store when this deploy landed would stay
+  // unmatchable forever — the gate-with-no-writer bug reborn one layer up.
+  // Observed live: a warm boot with 8 subjects, 27 DONE jobs, and no
+  // graph_qualified line, because every qualification predated the bridge.
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync(new URL("../bin/yente.mjs", import.meta.url), "utf8");
+  assert.match(src, /qualified_backfilled/, "boot must reconcile historical qualifications");
+  assert.match(src, /QUALIFIED.*ACTIVE|ACTIVE.*QUALIFIED/s, "both settled desk states bridge");
+  const block = src.slice(src.indexOf("BACKFILL"), src.indexOf("qualified_backfilled"));
+  assert.match(block, /declined/, "a DECLINED graph lifecycle is never overridden by backfill");
+});
+
 /* --- the nudge race ------------------------------------------------------- */
 
 test("a nudge during a scan survives into the next sleep", async () => {
