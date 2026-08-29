@@ -173,8 +173,13 @@ test("the purpose list stays closed, and every member of it is deliberate", () =
   // qualify() queues a letter only when something is MISSING, so the better a
   // member's résumé, the less they heard back — and from the outside that is
   // indistinguishable from the extraction having failed.
+  // linkedin_request is the tenth, added 2026-08-28 with the three-ask intake:
+  // "send me a document" and "send me one URL" are different questions, asked
+  // once each (idempotency key linkedin:<address>), and the "never ask for a
+  // résumé twice" invariant is only checkable while they stay distinguishable.
   assert.deepEqual(Object.values(OUTBOUND_PURPOSES), [
     "profile_request",
+    "linkedin_request",
     "interview_question",
     "clarification",
     "profile_confirmation",

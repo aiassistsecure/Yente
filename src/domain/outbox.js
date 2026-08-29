@@ -27,6 +27,11 @@ import { canReceiveOutbound, normalizeAddress } from "./member.js";
  */
 export const OUTBOUND_PURPOSES = Object.freeze({
   PROFILE_REQUEST: "profile_request",
+  // Ask 2 of the intake pipeline, its own purpose rather than a reuse of
+  // PROFILE_REQUEST: "send me a document" and "send me one URL" are different
+  // questions, and the suite's "never ask for a résumé twice" invariant is
+  // only checkable if the two are distinguishable in the outbox.
+  LINKEDIN_REQUEST: "linkedin_request",
   INTERVIEW_QUESTION: "interview_question",
   CLARIFICATION: "clarification",
   // What she understood, sent back for correction once a member qualifies.

@@ -330,10 +330,24 @@ export function createRuntime({
         [address],
         {
           subject: "What best explains your work?",
+          // THE THREE ASKS, in the order the pipeline consumes them. Each maps
+          // to a different extraction path with a different authority:
+          //   résumé        -> local parse, span-verified facts
+          //   LinkedIn URL  -> structured vendor lookup, deterministic
+          //   the four-way  -> declaredRoles(), deterministic — the closed
+          //                    question that replaced inferred intent, because
+          //                    every bad match came from mining prose
+          // The wording of the four options matches roles.js ANSWER_PHRASES
+          // exactly: the ask and the parser must agree, and the cheapest
+          // guarantee is for the ask to use the parser's own words.
           text:
-            "Hi — I can help with introductions. Please send whatever best explains your " +
-            "professional background: a resume, LinkedIn export, portfolio, or a short summary. " +
-            "Also tell me what you are looking for.",
+            "Hi — I make introductions between people who can help each other.\n\n" +
+            "Three things get you matched, in any order:\n\n" +
+            "1. Send your resume (attach it, any common format).\n" +
+            "2. Send your LinkedIn profile URL.\n" +
+            "3. Tell me which of these you are — one or more:\n" +
+            "   hiring · seeking employment · seeking funding · funding startups\n\n" +
+            "Reply STOP at any time and I will not write again.",
         },
         now,
         [message],
@@ -415,6 +429,16 @@ export function createRuntime({
         failures.push({ code: "QUALIFY_FAILED", message: String(error?.message ?? error) });
         outcome = "intake";
       }
+
+      // THE SECOND ASK, SENT ONLY WHEN IT IS STILL OPEN. A member whose résumé
+      // just landed has completed ask 1; if none of their mail has ever carried
+      // a LinkedIn URL, ask 2 is outstanding and this is the natural moment —
+      // the reply they are already expecting, not a fresh nag.
+      //
+      // Idempotent by construction: the outbox key is per-address, so a member
+      // who sends five documents is asked ONCE. And it rides the same INV-9
+      // gate as every letter — a suppressed member is never asked anything.
+      requestLinkedInIfMissing(address, now, [message]);
     }
 
     return {
@@ -439,6 +463,41 @@ export function createRuntime({
    * is not built yet, and inventing one here would put a policy decision in the
    * orchestrator.
    */
+  /**
+   * Ask for the LinkedIn URL — once, and only while nobody has sent one.
+   *
+   * "Has one" is judged from the member's stored inbound text, not from a flag
+   * somebody has to remember to set: if any message from this address ever
+   * contained a linkedin.com/in URL, the ask is settled, whether or not the
+   * enrichment that consumes it has run yet.
+   */
+  function requestLinkedInIfMissing(address, now, causedBy = []) {
+    const inbound = store.query(
+      `FROM ${COLLECTIONS.MESSAGES} WHERE direction = ${quote("inbound")} AND from = ${quote(address)}`,
+    );
+    const hasLinkedIn = inbound.some((row) =>
+      /linkedin\.com\/in\//i.test(`${row.text ?? ""} ${row.raw ?? ""}`));
+    if (hasLinkedIn) return null;
+
+    return queue(
+      OUTBOUND_PURPOSES.LINKEDIN_REQUEST,
+      `linkedin:${address}`,
+      [address],
+      {
+        subject: "One link would help",
+        text:
+          "Thanks — your document is on file and read.\n\n" +
+          "If you have a LinkedIn profile, reply with the URL " +
+          "(linkedin.com/in/...). It fills in what documents usually leave " +
+          "out, and it is the fastest way to complete your profile.\n\n" +
+          "No LinkedIn? No problem — just say so and we will work from what " +
+          "you have sent.",
+      },
+      now,
+      causedBy,
+    );
+  }
+
   function qualify(address, profile = null, now = new Date().toISOString()) {
     const member = repositories.members.findByAddress(address);
     if (!member || !canReceiveOutbound(member)) return { qualified: false, reason: "suppressed" };
