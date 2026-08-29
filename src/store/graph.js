@@ -446,6 +446,43 @@ export class IntelligenceJobRepository {
     });
   }
 
+  /**
+   * Re-open DONE jobs that produced ZERO claims — once per job, ever.
+   *
+   * A job that finished under a failing model stays finished: 27 DONE jobs
+   * from a night of NuExtract answering {} meant 27 consumed messages, no
+   * facts, nobody qualified, and a matchmaker with no candidates — while the
+   * model that replaced it would read the same mail correctly. Empty RESULTS
+   * were already uncached (#58) precisely so a better model could re-derive
+   * them; the JOBS were the half that stayed sealed.
+   *
+   * `emptyRequeuedAt` is the once-ever guard: a message that is GENUINELY
+   * empty re-runs once under the current model, produces zero again, and is
+   * never touched a third time. Without it every boot would re-buy inference
+   * on every quiet message forever.
+   */
+  requeueEmptyUnderstandings(at) {
+    let count = 0;
+    for (const job of this.store.query(`FROM ${GRAPH_COLLECTIONS.INTELLIGENCE_JOBS}`)) {
+      if (job.state !== JOB_STATES.DONE) continue;
+      if (Number(job.claims ?? 0) > 0) continue;
+      if (job.emptyRequeuedAt) continue;
+      this.store.put(GRAPH_COLLECTIONS.INTELLIGENCE_JOBS, job.evidenceId, {
+        ...job,
+        state: JOB_STATES.READY,
+        availableAt: at,
+        startedAt: null,
+        finishedAt: null,
+        lastError: null,
+        lastErrorAt: null,
+        retryInMs: null,
+        emptyRequeuedAt: at,
+      });
+      count += 1;
+    }
+    return count;
+  }
+
   requeueForPrompt(promptVersion, at) {
     let count = 0;
     for (const job of this.store.query(`FROM ${GRAPH_COLLECTIONS.INTELLIGENCE_JOBS}`)) {

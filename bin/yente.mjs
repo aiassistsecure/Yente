@@ -272,6 +272,15 @@ const concurrency = Number(process.env.YENTE_INTELLIGENCE_CONCURRENCY || 3);
 // every DONE job produced by an older/unknown
 // prompt exactly once; the finished job records this version so empty evidence
 // does not loop forever.
+// Jobs that finished with ZERO claims re-open once — see
+// requeueEmptyUnderstandings for the night that made this necessary: a
+// failing model consumed 27 messages producing nothing, and the work stayed
+// sealed while its replacement would have read the same mail correctly.
+const emptyRequeued = graph.jobs.requeueEmptyUnderstandings(new Date().toISOString());
+if (emptyRequeued > 0) {
+  log("info", "empty_understandings_requeued", { jobs: emptyRequeued });
+}
+
 const promptRequeued = graph.jobs.requeueForPrompt(
   observer.describe().promptVersion,
   new Date().toISOString(),
