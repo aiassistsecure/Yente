@@ -108,7 +108,12 @@ test("inferred facts become questions, never qualification facts — INV-3", () 
 
 test("normalisation folds formatting and nothing else", () => {
   assert.equal(normaliseForGrounding("A  B\nC"), "a b c");
-  assert.equal(normaliseForGrounding("Vice‑President"), "vice-president");
+  // The letter-hyphen-letter fold (2026-08-29): both sides normalise to the
+  // SAME form, which is the property grounding needs — a unicode hyphen, an
+  // ascii hyphen, and a PDF line-wrap hyphenation all land on one spelling.
+  assert.equal(normaliseForGrounding("Vice‑President"), "vicepresident");
+  assert.equal(normaliseForGrounding("Vice-President"), normaliseForGrounding("Vice‑Pres-\nident"),
+    "however the typography broke the word, the normal form is one word");
   assert.equal(normaliseForGrounding("“quoted”"), '"quoted"');
   assert.notEqual(normaliseForGrounding("led operations"), normaliseForGrounding("ran operations"));
 });
@@ -168,4 +173,70 @@ test("empty and oversized attachments are refused", async () => {
     extractText({ content: "x".repeat(2000), mimeType: "text/plain", maxBytes: 1000 }),
     (e) => e.code === "SOURCE_TOO_LARGE",
   );
+});
+
+/* --- typography is forgiven; drift is named ------------------------------- */
+
+// The live 21:05 run: 32 claims landed and 13 died SPAN_NOT_FOUND. Reading
+// the trace showed two distinct causes wearing one error code — a PDF
+// extractor's line-wrap hyphenation (honest quote, typographic mismatch),
+// and the model quoting from memory and drifting a word ("npm, PyPI, and
+// crates.io" vs the source's "npm, PyPI, crates.io" — correctly rejected).
+// The fix is likewise two-sided: fold the typography, and make every
+// remaining rejection name the exact fork so the next log is its own
+// diagnosis.
+
+test("a quote wrapped by the PDF extractor's hyphenation still grounds", () => {
+  const source = "Led cross-platform release engineer-\ning for npm, PyPI and crates.io targets.";
+  const fact = verifyFact({
+    field: "capability",
+    value: "release engineering",
+    source_id: "attachment:cv",
+    evidence: "cross-platform release engineering for npm, PyPI and crates.io",
+    explicit: true,
+  }, { "attachment:cv": source });
+  assert.equal(fact.field, "capability", "line-wrap hyphenation is typography, not invention");
+});
+
+test("hyphens next to digits stay content", () => {
+  const source = "Employed 2023-present at Acme Corp headquarters.";
+  assert.throws(() => verifyFact({
+    field: "availability", value: "present", source_id: "m",
+    evidence: "Employed 2023 present at Acme", explicit: true,
+  }, { m: source }), /SPAN_NOT_FOUND|does not occur/,
+  "a date range's hyphen is not typography — dropping it changes the text");
+});
+
+test("a drifted word still dies, and the rejection names the exact fork", () => {
+  const source = "release engineering for npm, PyPI, crates.io and beyond the registries";
+  try {
+    verifyFact({
+      field: "capability", value: "release engineering", source_id: "m",
+      evidence: "release engineering for npm, PyPI, and crates.io",
+      explicit: true,
+    }, { m: source });
+    assert.fail("the drifted quote must be rejected");
+  } catch (error) {
+    assert.equal(error.code, "SPAN_NOT_FOUND");
+    assert.match(error.message, /diverges after/,
+      "the error is its own diagnosis, not a bare code");
+    assert.match(error.message, /npm, pypi,/,
+      "it shows where the quote and the source last agreed");
+    assert.ok(error.meta.divergence.matchedChars > 20);
+    assert.match(error.meta.divergence.quoteContinues, /^and /,
+      "…and names the word the model inserted");
+  }
+});
+
+test("a quote with no foothold in the source says so plainly", () => {
+  const source = "A completely unrelated message about gardening begonias.";
+  try {
+    verifyFact({
+      field: "capability", value: "x", source_id: "m",
+      evidence: "distributed systems in Rust", explicit: true,
+    }, { m: source });
+    assert.fail("must reject");
+  } catch (error) {
+    assert.match(error.message, /no prefix of the quote occurs/);
+  }
 });
