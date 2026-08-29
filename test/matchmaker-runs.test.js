@@ -21,6 +21,7 @@ import { openInMemory } from "../src/store/db.js";
 import { createGraphRepositories } from "../src/store/graph.js";
 import { ROLE_PREDICATE } from "../src/graph/roles.js";
 import { JOB_STATES } from "../src/store/graph.js";
+import { observationsFrom } from "../src/intelligence/queue.js";
 
 /* --- roles are read from real inbound mail ------------------------------- */
 
@@ -183,4 +184,43 @@ test("a deduped attachment gains each later covering message, additively", () =>
   assert.equal(held.meta.messageEvidenceId, "message:first", "the original slot is never replaced");
   assert.deepEqual(held.meta.coveringMessages, ["message:second"]);
   assert.equal(held.text, "resume text", "meta updates never touch the verbatim content");
+});
+
+test("a claim quoting the resume cites the RESUME, even under the message's job", () => {
+  // The whole-letter change: one job reads message + attachments as separate
+  // SOURCE blocks. Comprehension is per-letter; provenance must stay
+  // per-document, or TRACE walks a resume fact to the email that carried it.
+  const out = observationsFrom({
+    evidenceId: "message:covering",
+    provenance: { model: "test", schemaVersion: "obs_v2", contentHash: "h" },
+    observedAt: "2026-08-29T18:00:00Z",
+    sentAt: "2026-08-29T17:00:00Z",
+    senderSubject: "person:mark@x.test",
+    subjectHint: "person:mark@x.test",
+    evidenceKind: "message",
+    verified: {
+      entities: [{
+        ref: "p1", kind: "PERSON", name: "Mark Allen Evans Jr", emailAddress: null,
+        sourceId: "attachment:resumehash", evidence: "Mark Allen Evans Jr",
+        explicit: true, confidence: 0.95,
+      }],
+      intents: [],
+      relationships: [],
+      disclosures: [{
+        subjectRef: "p1", field: "capability", value: "Rust",
+        sourceId: "attachment:resumehash", evidence: "Languages: Rust",
+        explicit: true, confidence: 0.95,
+      }],
+    },
+  });
+
+  const capability = out.find((row) => row.predicate === "capability");
+  assert.equal(capability.evidenceId, "attachment:resumehash",
+    "the claim cites the document it quoted, not the job that ran it");
+
+  // And the nameless resume person anchors to the sender even though the
+  // job's kind is message — ownership is about the shape of the entities.
+  const anchor = out.find((row) => row.predicate === "same_as");
+  assert.ok(anchor, "the resume's person IS the sender, recorded as same_as");
+  assert.equal(anchor.object, "person:mark@x.test");
 });

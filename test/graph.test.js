@@ -1090,7 +1090,7 @@ test("a worker that cannot run reports it as data rather than throwing", async (
   assert.match(out.error, /cannot start worker|failed to run/);
 });
 
-test("an attachment becomes its own evidence and its own job", async () => {
+test("an attachment becomes its own evidence, read by the LETTER's job", async () => {
   const { ingestAttachments } = await import("../src/graph/documents.js");
   const { graph } = fresh();
 
@@ -1111,14 +1111,19 @@ test("an attachment becomes its own evidence and its own job", async () => {
   });
 
   assert.equal(summary.extracted, 1);
-  assert.equal(summary.enqueued, 1, "its own job, so a claim can quote page 3");
+  // NO separate inference job: the covering message's job carries this
+  // attachment as an additional SOURCE block — the model reads the whole
+  // letter, and a second job would pay for the same comprehension twice.
+  // Claims quoting page 3 still cite THIS evidence id; only the prompt is
+  // assembled whole.
+  assert.equal(summary.enqueued, 0, "comprehension is per-letter; provenance stays per-document");
   const evidence = graph.evidence.get("attachment:doc-hash");
   assert.equal(evidence.kind, "attachment");
   assert.equal(evidence.meta.messageEvidenceId, "message:abc",
     "EMAIL -has_attachment-> DOCUMENT is recorded");
   assert.equal(evidence.meta.subjectHint, "person:founder@example.com");
-  assert.equal(graph.jobs.ready()[0].subjectHint, "person:founder@example.com",
-    "the résumé job carries the deterministic owner from the covering email");
+  assert.equal(graph.jobs.ready().length, 0,
+    "no attachment job exists to carry an owner — the letter's message job does");
   assert.match(evidence.text, /\[\[page 3\]\]/,
     "the page marker lives in the text a quote is checked against, so 'page 3' can ground");
 });
