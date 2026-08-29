@@ -142,14 +142,6 @@ export async function ingestMail({
         });
       }
 
-      // Enqueue only for new evidence. A redelivered message must not pay for
-      // inference twice — that is the expensive part of the whole system.
-      const { duplicate: jobExisted } = graph.jobs.enqueue({
-        evidenceId: evidence.id ?? `message:${message.contentHash}`,
-        subjectHint: message.from ?? null,
-        at: now(),
-      });
-      if (!jobExisted) summary.enqueued += 1;
 
       // §4: an attachment is its own graph object, with its own evidence and its
       // own job — so a deck sent to two people is extracted once, and a claim
@@ -225,6 +217,20 @@ export async function ingestMail({
         summary.documentsRefused += docs.refused;
         summary.enqueued += docs.enqueued;
       }
+
+      // THE JOB EXISTS ONLY AFTER THE WHOLE LETTER DOES. This enqueue used to
+      // run BEFORE extractAttachments, and the understand loop runs
+      // concurrently — it could claim the message job in the seconds before
+      // the résumé was recorded, and the "whole letter" (#74) assembled with
+      // no attachments in it. The race was ten seconds wide on a real boot.
+      // Enqueue only for new evidence: a redelivered message must not pay for
+      // inference twice.
+      const { duplicate: jobExisted } = graph.jobs.enqueue({
+        evidenceId: evidence.id ?? `message:${message.contentHash}`,
+        subjectHint: message.from ?? null,
+        at: now(),
+      });
+      if (!jobExisted) summary.enqueued += 1;
     }
 
     summary.highestUid = Math.max(summary.highestUid ?? 0, message.uid);
