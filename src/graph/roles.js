@@ -152,6 +152,38 @@ const DECLARATIONS = Object.freeze([
 const NEGATED = /\b(?:not|no longer|aren'?t|isn'?t|am not|don'?t|do not|stopped|never)\s+(?:\w+\s+){0,2}(?:hiring|raising|investing|fundraising|looking)\b/i;
 
 /**
+ * The exact phrases Yente offers, matched as ANSWERS rather than as prose.
+ *
+ * The intake email lists four options and asks the person to pick. Most will
+ * reply with the option and nothing else — "Hiring", "seeking employment",
+ * "• funding startups" — and NONE of the prose patterns above catch those,
+ * because every one requires a verb phrase ("we are hiring", "looking to
+ * hire").
+ *
+ * That gap would have been invisible until real replies started arriving and
+ * declared nothing: the ask and the parser have to agree, and the cheapest way
+ * to guarantee that is for the parser to accept the exact words the ask used.
+ *
+ * Matched per LINE and anchored at its start, so "hiring" as an answer is
+ * caught while "hiring is hard these days" in a paragraph is not.
+ */
+const ANSWER_PHRASES = Object.freeze([
+  // Longest first: "seeking funding" must be tested before "funding".
+  [ROLES.SEEKING_EMPLOYMENT, /^(?:seeking\s+employment|looking\s+for\s+work|job\s*seeking)/i],
+  [ROLES.FUNDING_STARTUPS, /^(?:funding\s+startups?|i\s+fund\s+startups?|investing)/i],
+  [ROLES.SEEKING_FUNDING, /^(?:seeking\s+funding|raising\s+funding|fundraising|raising)/i],
+  [ROLES.HIRING, /^hiring/i],
+]);
+
+/** Lines a reply is made of, stripped of quoting and list punctuation. */
+function answerLines(text) {
+  return String(text ?? "")
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^[\s>*•\-–—\d.)\]]+/, "").trim())
+    .filter(Boolean);
+}
+
+/**
  * Read the roles a person declared, from their own reply.
  *
  * Returns EVERY role the text supports, because a founder who is hiring and
@@ -166,6 +198,20 @@ export function declaredRoles(text) {
   if (!source.trim()) return [];
 
   const found = [];
+
+  // ANSWERS FIRST. Somebody replying with the option we offered has answered
+  // unambiguously, and the prose patterns must not get a chance to read a
+  // second meaning into a one-word reply.
+  for (const line of answerLines(source)) {
+    for (const [role, pattern] of ANSWER_PHRASES) {
+      if (!found.includes(role) && pattern.test(line)) {
+        if (NEGATED.test(line)) continue;
+        found.push(role);
+        break;   // one declaration per line
+      }
+    }
+  }
+
   for (const [role, pattern] of DECLARATIONS) {
     if (found.includes(role)) continue;
     const match = pattern.exec(source);

@@ -894,21 +894,26 @@ test("a failed inference never reaches the cache", async () => {
 /* --- configuration ------------------------------------------------------ */
 
 test("the configured default is PIN and muse-local, with the old env names honoured", () => {
-  assert.deepEqual(resolveIntelligenceConfig({}),
+  // deepEqual on the two ORIGINAL fields only: the config also carries the
+  // message/document split now, which defaults to `model` and is covered by
+  // its own suite.
+  const core = ({ provider, model }) => ({ provider, model });
+
+  assert.deepEqual(core(resolveIntelligenceConfig({})),
     { provider: "pin", model: "muse-local:latest" });
 
   assert.deepEqual(
-    resolveIntelligenceConfig({ YENTE_INTELLIGENCE_PROVIDER: "aias", YENTE_MODEL: "muse-chat:latest" }),
+    core(resolveIntelligenceConfig({ YENTE_INTELLIGENCE_PROVIDER: "aias", YENTE_MODEL: "muse-chat:latest" })),
     { provider: "aias", model: "muse-chat:latest" });
 
   // A box configured for the current daemon keeps working across the cutover.
   assert.deepEqual(
-    resolveIntelligenceConfig({ YENTE_LLM_PROVIDER: "local", YENTE_LLM_MODEL: "x" }),
+    core(resolveIntelligenceConfig({ YENTE_LLM_PROVIDER: "local", YENTE_LLM_MODEL: "x" })),
     { provider: "local", model: "x" });
 
   // And the new names win when both are set.
   assert.deepEqual(
-    resolveIntelligenceConfig({ YENTE_INTELLIGENCE_PROVIDER: "pin", YENTE_LLM_PROVIDER: "local" }),
+    core(resolveIntelligenceConfig({ YENTE_INTELLIGENCE_PROVIDER: "pin", YENTE_LLM_PROVIDER: "local" })),
     { provider: "pin", model: "muse-local:latest" });
 });
 
