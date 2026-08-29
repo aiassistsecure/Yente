@@ -75,7 +75,12 @@ import {
 // blocks), so every envelope produced under v12 understood half a letter.
 // Bumping here is what makes the boot requeue re-read them whole, once,
 // automatically — the same lever the version exists for.
-export const PROMPT_VERSION = "obs_prompt_v13";
+// v14: intent is inferred from a career's SHAPE (founder -> investment for
+// their company; employee -> employment in the evidenced fields), explicit:
+// false, capped confidence — and never about the document itself. Mark's
+// direction, verbatim in spirit: "if a resume speaks loudly about tech work,
+// we can infer the intent of the submitter."
+export const PROMPT_VERSION = "obs_prompt_v14";
 
 /** Default attempts. Transient failures are retried; deterministic ones are not. */
 const DEFAULT_ATTEMPTS = 3;
