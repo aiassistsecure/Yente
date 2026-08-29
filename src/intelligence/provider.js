@@ -531,13 +531,22 @@ export function createIntelligenceProvider({
     });
   }
 
-  async function observe({ sources, context = null, providedRefs = null, signal } = {}) {
+  async function observe({
+    sources, context = null, providedRefs = null, signal,
+    // Per-call model, for the message/document split. Part of the cache key
+    // and the provenance below, so two models over the same evidence are two
+    // inferences — not one poisoned entry — and every observation records
+    // which model actually produced it. That is what makes a model swap
+    // measurable instead of a vibe.
+    model: modelOverride = null,
+  } = {}) {
     if (!Array.isArray(sources) || sources.length === 0) {
       throw new TypeError("observe requires at least one source");
     }
 
+    const effectiveModel = modelOverride || model;
     const contentHash = inferenceKey({
-      sources, provider, model, context,
+      sources, provider, model: effectiveModel, context,
       providedRefs: providedRefs ? [...providedRefs].sort() : null,
       schemaVersion: OBSERVATION_SCHEMA_VERSION,
       promptVersion: PROMPT_VERSION,
@@ -587,6 +596,8 @@ export function createIntelligenceProvider({
         const completion = await client.complete({
           prompt: repairNote ? `${prompt}\n\n${repairNote}` : prompt,
           system: OBSERVER_SYSTEM, prefill, signal,
+          // The client spreads its request last, so a per-call model wins.
+          ...(modelOverride ? { model: modelOverride } : {}),
           onReasoning: (delta) => onStream?.({
             phase: "reasoning", delta, attempt, evidence, contentHash,
           }),
@@ -625,7 +636,7 @@ export function createIntelligenceProvider({
           provenance: Object.freeze({
             contentHash,
             provider,
-            model,
+            model: effectiveModel,
             schemaVersion: OBSERVATION_SCHEMA_VERSION,
             promptVersion: PROMPT_VERSION,
             inferenceTimestamp: now(),
@@ -772,8 +783,18 @@ export function createIntelligenceProvider({
  * precedence is stated here rather than discovered later.
  */
 export function resolveIntelligenceConfig(env = process.env) {
+  const model = env.YENTE_MODEL || env.YENTE_LLM_MODEL || "muse-local:latest";
   return Object.freeze({
     provider: env.YENTE_INTELLIGENCE_PROVIDER || env.YENTE_LLM_PROVIDER || "pin",
-    model: env.YENTE_MODEL || env.YENTE_LLM_MODEL || "muse-local:latest",
+    model,
+    // THE SPLIT FOLLOWS THE WORK, measured on one live run: a short message
+    // took 1m1s of deliberation to decide whether to attach an email address
+    // to one entity, while the résumé pass in the same minute produced 63
+    // typed claims. Messages are short bodies whose right answer is usually
+    // zero or one claim; documents reward a model that thinks.
+    //
+    // Both default to `model`, so an unsplit config changes nothing.
+    messageModel: env.YENTE_MODEL_MESSAGE || model,
+    documentModel: env.YENTE_MODEL_DOCUMENT || model,
   });
 }

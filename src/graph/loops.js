@@ -62,6 +62,7 @@ export function createGraphLoops({
   isStopping = () => false,
   intervals = {},
   concurrency = undefined,
+  models = null,
   onMessage = null,
   transport = null,
 }) {
@@ -149,7 +150,7 @@ export function createGraphLoops({
     while (!isStopping()) {
       try {
         const summary = await drainIntelligence({
-          graph, observer, log, signal, concurrency,
+          graph, observer, log, signal, concurrency, models,
         });
         health.ticks.understand += 1;
         if (summary.claimed > 0) {
