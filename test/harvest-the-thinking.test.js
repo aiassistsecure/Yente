@@ -460,3 +460,55 @@ test("flattenVerified walks every group in claim-group order", () => {
   });
   assert.deepEqual(entries.map((e) => e.group), ["entities", "disclosures"]);
 });
+
+/* ------------------------------------------------------------------ */
+/* 9. prose thinking: the thoughts travel even when the bank is empty  */
+/* ------------------------------------------------------------------ */
+
+// Mark's question, 2026-08-29: "is the wake up from the loop contract
+// updated with the content that was in the thoughts too?" — asked over a
+// live trace where the model thought about the resume IN PROSE ("We need to
+// produce entity claim for that person...") and wrote no JSON claim lines,
+// so the harvest banked nothing. The answer must be YES either way: an
+// empty bank must not mean an empty-handed wake-up. The thoughts block is
+// the model's continuity; the claims block is a bonus when the thinking
+// happened to be written as claims.
+
+test("a prose-thinking loop still hands the wake-up the model's own thoughts", async () => {
+  const proseThinking = [
+    "We need to produce observations from the message and attachment.",
+    "The attachment is a resume. We can identify Mark Evans Jr. as a PERSON.",
+    "We also see Rust in the skills line, that is a capability disclosure.",
+    "Now produce the block.",
+    "Now produce the block.",
+    "Now produce the block.",
+  ].join("\n");
+
+  const prompts = [];
+  const client = {
+    async complete({ prompt }) {
+      prompts.push(prompt);
+      if (prompts.length === 1) {
+        throw new ModelError(ModelErrorCode.REASONING_LOOP, "looped", {
+          partialText: "", repeatedLine: "now produce the block.", repeats: 10,
+          reasoningText: proseThinking,
+        });
+      }
+      return { text: block([CLAIM_ENTITY]), finishReason: "stop", elapsedMs: 1 };
+    },
+  };
+
+  const result = await providerOver(client).observe({ sources: [SOURCE] });
+
+  assert.equal(prompts.length, 2);
+  assert.match(prompts[1], /<<<PREVIOUS_THOUGHTS>>>/,
+    "the thoughts travel even though no claim lines existed to bank");
+  assert.ok(prompts[1].includes("identify Mark Evans Jr. as a PERSON"),
+    "the CONTENT of the thinking is in the block, verbatim");
+  assert.ok(!prompts[1].includes("<<<EXTRACTED_CLAIMS>>>"),
+    "no bank, no numbered review — the model resumes from prose, not from a list");
+  assert.match(prompts[1], /Resume\s*\nfrom where the real work stopped; do not start over/,
+    "the wake-up says what the thoughts are FOR");
+  assert.equal(result.verified.entities.length, 1,
+    "and the resumed attempt lands its answer");
+});
