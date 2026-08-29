@@ -34,6 +34,21 @@
 
 import { createHash } from "node:crypto";
 
+/**
+ * In-flight enrichments, keyed by evidence id.
+ *
+ * The idempotency check is check-then-fetch: three copies of one URL arriving
+ * in a single ingest tick all passed `evidence.get()` before any had recorded,
+ * and netrows was paid THREE TIMES for one profile — observed live,
+ * `enriched claims=18` three times in two seconds. The graph survived
+ * (observation keys dedupe) but the credits did not.
+ *
+ * Concurrent callers now share ONE promise per evidence id. Per-process is the
+ * right scope: the race is same-tick, and cross-restart the evidence row
+ * already exists so the ordinary check holds.
+ */
+const inFlight = new Map();
+
 import { LINK_KINDS, classifyLink } from "../extract/links.js";
 import { AUTHORITY } from "../store/graph.js";
 
@@ -76,16 +91,30 @@ export async function enrichLink({
   if (graph.evidence.get(existingId)) {
     return { outcome: "already_enriched", evidenceId: existingId };
   }
-
-  if (kind === "vendor") {
-    const key = env.NETROWS_API_KEY;
-    if (!key) return { outcome: "skipped", skipped: "NETROWS_API_KEY is not set" };
-    return enrichViaNetrows({ link, subject, graph, key, fetchImpl, log, now, contentHash });
+  if (inFlight.has(existingId)) {
+    // Somebody in this same tick is already paying for this URL. Share their
+    // answer instead of buying a second copy.
+    await inFlight.get(existingId).catch(() => {});
+    return { outcome: "already_enriched", evidenceId: existingId };
   }
 
-  const key = env.AIASSIST_API_KEY;
-  if (!key) return { outcome: "skipped", skipped: "AIASSIST_API_KEY is not set" };
-  return enrichViaWebExtract({ link, subject, graph, key, fetchImpl, log, now, contentHash });
+  const run = (async () => {
+    if (kind === "vendor") {
+      const key = env.NETROWS_API_KEY;
+      if (!key) return { outcome: "skipped", skipped: "NETROWS_API_KEY is not set" };
+      return enrichViaNetrows({ link, subject, graph, key, fetchImpl, log, now, contentHash });
+    }
+    const key = env.AIASSIST_API_KEY;
+    if (!key) return { outcome: "skipped", skipped: "AIASSIST_API_KEY is not set" };
+    return enrichViaWebExtract({ link, subject, graph, key, fetchImpl, log, now, contentHash });
+  })();
+
+  inFlight.set(existingId, run);
+  try {
+    return await run;
+  } finally {
+    inFlight.delete(existingId);
+  }
 }
 
 /* --- netrows: structured fields, DETERMINISTIC --------------------------- */
