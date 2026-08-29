@@ -229,10 +229,27 @@ export async function ingestAttachments({
         at: now(),
       });
       if (!jobExisted) summary.enqueued += 1;
-    } else if (subjectHint) {
-      // The SAME document from a NEW sender. Their copy must teach the graph
-      // about THEM — see reassignOwner for the bug this closes and why the
-      // re-run costs no new inference.
+    } else {
+      // THE SAME DOCUMENT, A LATER COVERING MESSAGE. Evidence meta kept only
+      // the FIRST messageEvidenceId, so every later email carrying this file
+      // showed NO attachment in the manager's thread view — 'manager is not
+      // showing attachments' was this line missing. Linkage is appended, never
+      // replaced: the original covering message stays first, and the thread
+      // view can now find the document from ANY email that carried it.
+      const held = graph.evidence.get(evidenceId);
+      if (held && messageEvidenceId) {
+        const covering = new Set([
+          held.meta?.messageEvidenceId,
+          ...(held.meta?.coveringMessages ?? []),
+          messageEvidenceId,
+        ].filter(Boolean));
+        graph.evidence.updateMeta(evidenceId, {
+          coveringMessages: [...covering],
+        });
+      }
+      if (!subjectHint) continue;
+      // And a NEW sender's copy must teach the graph about THEM — see
+      // reassignOwner for the bug and why the re-run costs no new inference.
       const reopened = graph.jobs.reassignOwner(evidenceId, subjectHint, now());
       if (reopened) {
         summary.enqueued += 1;

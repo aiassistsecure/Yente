@@ -165,6 +165,22 @@ export class EvidenceRepository {
     return this.store.get(GRAPH_COLLECTIONS.EVIDENCE, id) ?? null;
   }
 
+  /**
+   * Merge fields into an evidence row's META, never its text or hash. The
+   * verbatim content is immutable — the span verifier depends on it — but
+   * linkage (which messages carried this document) is knowledge that ARRIVES
+   * later, and refusing to record it is how the manager showed a résumé on
+   * one email and nothing on the four that carried the same file.
+   */
+  updateMeta(id, fields) {
+    const held = this.store.get(GRAPH_COLLECTIONS.EVIDENCE, id);
+    if (!held) return null;
+    return this.store.put(GRAPH_COLLECTIONS.EVIDENCE, id, {
+      ...held,
+      meta: { ...held.meta, ...fields },
+    });
+  }
+
   all() {
     return this.store.query(`FROM ${GRAPH_COLLECTIONS.EVIDENCE}`);
   }

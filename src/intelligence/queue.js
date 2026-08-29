@@ -332,6 +332,18 @@ export async function drainIntelligence({
           // signature block would be slower and less reliable. Anything it
           // reports still needs its own quote.
           context: {
+            // The model reads ONE source per job by design (§4: a document is
+            // its own graph object). But a body that says "attached is my
+            // resume" with no visible attachment reads as a broken email, and
+            // the model wastes reasoning on the discrepancy — or worse,
+            // invents an intent to explain it. Name the situation instead.
+            ...(Array.isArray(evidence.meta?.attachments) && evidence.meta.attachments.length > 0
+              ? {
+                attachments_note: `${evidence.meta.attachments.length} attachment(s) `
+                  + `(${evidence.meta.attachments.join(", ")}) arrived with this message `
+                  + "and are analysed separately — do not report their absence.",
+              }
+              : {}),
             sender: evidence.meta?.from
               ?? (subjectHint?.startsWith("person:") ? subjectHint.slice("person:".length) : null),
             // The contract: the sender exists, keyed by email, and the model
