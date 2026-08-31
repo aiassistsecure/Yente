@@ -50,7 +50,7 @@
 import { digest } from "../store/keys.js";
 import { isTransient, ModelErrorCode } from "../llm/client.js";
 import {
-  ProtocolError, parseJsonBlock, requireSingleBlock, textBlock, BLOCK_TAGS,
+  ProtocolError, parseJsonBlock, requireSingleBlock, stripFenceLines, textBlock, BLOCK_TAGS,
 } from "../protocol/blocks.js";
 import { verifyFact } from "../extract/spans.js";
 import { createObservationPrompt, createWakeUpPrompt, OBSERVER_SYSTEM } from "./prompt.js";
@@ -472,7 +472,12 @@ export function applyReviews(banked, reviews) {
   return banked.filter((_entry, index) => !rejectedNumbers.has(index + 1));
 }
 
-export function readEnvelope(text) {
+export function readEnvelope(rawText) {
+  // A finished answer wearing markdown (```json around the sentinel block)
+  // is a finished answer. Fence marker lines are dropped before any reader
+  // runs; real prose outside blocks still fails, and the REPAIR retry
+  // handles it. See stripFenceLines in blocks.js for the live trace.
+  const text = stripFenceLines(rawText);
   // 1. THE MANIFEST PROTOCOL. Preferred, because it is the only shape in which a
   //    truncated answer is detectable rather than silently partial.
   try {

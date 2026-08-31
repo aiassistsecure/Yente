@@ -308,3 +308,24 @@ test("a proposal ranks a match; it never establishes one", () => {
       "no proposal weight without a shared specific underneath it");
   }
 });
+
+/* --- a fenced envelope reads end to end ----------------------------------- */
+
+test("readEnvelope unwraps a markdown-fenced envelope and reads it strictly", () => {
+  // The 2026-08-31 live failure: a perfect answer wearing ```json. The
+  // reading edge unwraps the chat reflex; every other rule stays strict.
+  const { raw } = readEnvelope([
+    "```json",
+    "<<<OBSERVATIONS>>>",
+    JSON.stringify({
+      claim: "proposal", subject_ref: "p1", kind: "invest_in",
+      target: "Interchained LLC", grade: "strong",
+      source_id: "attachment:cv1", evidence: "Founder & Systems Architect | Interchained LLC",
+      explicit: false, confidence: 0.8,
+    }),
+    "<<<END>>>",
+    "```",
+  ].join("\n"));
+  assert.equal(raw.proposals.length, 1);
+  assert.equal(raw.proposals[0].target, "Interchained LLC");
+});

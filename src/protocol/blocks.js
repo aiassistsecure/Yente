@@ -162,6 +162,37 @@ function scanBlockFrames(artifact) {
   return frames;
 }
 
+/**
+ * Strip markdown code-fence marker LINES from a model's reply, when — and
+ * only when — the reply actually contains a canonical sentinel block.
+ *
+ * Observed live, 2026-08-31: a model emitted a PERFECT envelope wearing
+ * cosmetic markdown — ```json above <<<OBSERVATIONS>>>, ``` below <<<END>>>
+ * — and the strict outside-text scan killed a finished, correct answer
+ * three attempts in a row. A fence marker is a chat-formatting reflex, not
+ * content: the sentinel frame is the answer's real boundary, and it is
+ * unambiguous with or without the wrapper.
+ *
+ * Deliberately narrow:
+ *   - fence marker LINES only (``` or ```lang alone on a line) — prose
+ *     outside blocks still fails OUTSIDE_BLOCK_TEXT, because commentary is
+ *     ambiguity and the retry's REPAIR note handles it;
+ *   - only applied when a sentinel opener is present — text with no blocks
+ *     keeps its fences and fails MALFORMED_ARTIFACT exactly as before;
+ *   - a TOLERANCE FOR READING model output, exported for the reading edges
+ *     (readEnvelope, the desk extractor). Never applied to artifacts we
+ *     build: our prompts do not wear fences, and a SOURCE block's own
+ *     content is extracted from the ORIGINAL text, not this copy.
+ */
+export function stripFenceLines(artifact) {
+  const text = String(artifact ?? "");
+  if (!/<<<[A-Za-z][A-Za-z0-9_]*(?:[ \t][^>\r\n]*)?>>>/.test(text)) return text;
+  return text
+    .split("\n")
+    .filter((line) => !/^\s*`{3,}[A-Za-z0-9_-]*\s*$/.test(line))
+    .join("\n");
+}
+
 export function textBlock(tag, content) {
   requireKnownTag(tag);
   return wrap(tag, requireText(content, tag));
