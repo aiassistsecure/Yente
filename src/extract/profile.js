@@ -14,6 +14,7 @@ import {
   ProtocolError,
   createPromptArtifact,
   parseJsonBlock,
+  stripFenceLines,
   textBlock,
 } from "../protocol/blocks.js";
 import { verifyFacts, qualifyingFacts, factsNeedingConfirmation } from "./spans.js";
@@ -155,7 +156,7 @@ export async function extractProfileFacts({
 
     let payload;
     try {
-      payload = parseJsonBlock(completion.text, BLOCK_TAGS.PROFILE_FACTS);
+      payload = parseJsonBlock(stripFenceLines(completion.text), BLOCK_TAGS.PROFILE_FACTS);
     } catch (error) {
       if (!(error instanceof ProtocolError)) throw error;
       failures.push({ attempt, code: error.code, message: error.message });
