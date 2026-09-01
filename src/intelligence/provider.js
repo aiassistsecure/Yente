@@ -89,7 +89,10 @@ import {
 // The bump is again the retroactive lever: every letter whose cached envelope
 // carries historical rejects (hash typos, drifted skills-line quotes) gets
 // re-read once under the protocol that would have saved those claims.
-export const PROMPT_VERSION = "obs_prompt_v17";
+// v18: DISCLOSURE_FIELDS gained "contact" — evidence read under v17 had its
+// phone numbers and handles rejected as UNKNOWN_DISCLOSURE_FIELD, so finished
+// jobs requeue once and those claims get their second chance.
+export const PROMPT_VERSION = "obs_prompt_v18";
 
 /** Default attempts. Transient failures are retried; deterministic ones are not. */
 const DEFAULT_ATTEMPTS = 3;
