@@ -154,8 +154,76 @@ export function sourceAliases(sources) {
     add(canonical, canonical);
     const colon = canonical.indexOf(":");
     if (colon >= 0) add(canonical.slice(colon + 1), canonical);
+    const short = shortSourceId(canonical);
+    if (short !== canonical) {
+      add(short, canonical);
+      add(short.slice(colon + 1), canonical);
+    }
   }
   return aliases;
+}
+
+/**
+ * The id a MODEL should be asked to copy.
+ *
+ * A source id is kind + sha256 — 64 hex characters the model must retype on
+ * every claim line. gpt-oss copied them perfectly; GLM-4-32B drifted ONE hex
+ * digit mid-hash (…0aa0e9a45cc… became …0aa0e9a42cc…) and every claim in the
+ * run died UNKNOWN_SOURCE, 2026-08-31. The full hash's job is collision
+ * resistance in the store; the model only ever needs enough of it to name one
+ * SOURCE block unambiguously. Twelve hex characters is 48 bits — and ~25
+ * fewer output tokens per claim line, twenty-nine times per résumé.
+ */
+export function shortSourceId(id) {
+  const canonical = String(id);
+  const colon = canonical.indexOf(":");
+  if (colon < 0) return canonical;
+  const tail = canonical.slice(colon + 1);
+  return /^[0-9a-f]{16,}$/i.test(tail)
+    ? canonical.slice(0, colon + 1) + tail.slice(0, 12)
+    : canonical;
+}
+
+/**
+ * The sources as the model should SEE them: short ids where shortening stays
+ * unambiguous, canonical ids where it would collide. Everything downstream of
+ * canonicalizeSourceIds still runs on canonical ids — this is presentation.
+ */
+export function displaySourceIds(sources) {
+  const counts = new Map();
+  for (const source of sources ?? []) {
+    const short = shortSourceId(source.id);
+    counts.set(short, (counts.get(short) ?? 0) + 1);
+  }
+  return (sources ?? []).map((source) => {
+    const short = shortSourceId(source.id);
+    return { ...source, id: counts.get(short) === 1 ? short : String(source.id) };
+  });
+}
+
+/**
+ * A cited id that is ALMOST a canonical id — same length, hamming distance
+ * at most 2 — is a transcription slip, not an invention: two real sha256
+ * hashes differ in roughly half of their 64 characters, so a candidate
+ * within 2 of one canonical id cannot also be within 2 of another unless
+ * the ids were pathological to begin with. Resolve the slip only when the
+ * match is unique; anything further away stays UNKNOWN_SOURCE, because a
+ * looser tolerance would be guessing which document the model meant.
+ */
+function nearestCanonical(id, aliases) {
+  const candidate = String(id);
+  let found = null;
+  for (const canonical of new Set(aliases.values())) {
+    if (canonical.length !== candidate.length) continue;
+    let distance = 0;
+    for (let i = 0; i < canonical.length && distance <= 2; i += 1) {
+      if (canonical[i] !== candidate[i]) distance += 1;
+    }
+    if (distance > 2) continue;
+    if (found !== null && found !== canonical) return null;
+    found = canonical;
+  }
+  return found;
 }
 
 /** Rewrite accepted aliases to the canonical id before schema and span checks. */
@@ -169,12 +237,14 @@ export function canonicalizeSourceIds(raw, aliases) {
       const field = claim.source_id !== undefined ? "source_id"
         : claim.sourceId !== undefined ? "sourceId" : null;
       if (!field) continue;
-      const canonical = aliases.get(String(claim[field]));
+      const canonical = aliases.get(String(claim[field]))
+        ?? nearestCanonical(claim[field], aliases);
       if (canonical) claim[field] = canonical;
     }
   }
   if (Array.isArray(copy.evidence_refs)) {
-    copy.evidence_refs = copy.evidence_refs.map((id) => aliases.get(String(id)) ?? id);
+    copy.evidence_refs = copy.evidence_refs.map((id) =>
+      aliases.get(String(id)) ?? nearestCanonical(id, aliases) ?? id);
   }
   return copy;
 }
@@ -756,10 +826,14 @@ export function createIntelligenceProvider({
     const sourceTextById = new Map(sources.map((source) => [source.id, source.text]));
     const knownSourceIds = new Set(sourceTextById.keys());
     const aliases = sourceAliases(sources);
+    // The model reads and cites SHORT ids; verification runs on canonical
+    // ones. canonicalizeSourceIds maps the citation back before the schema
+    // and grounding gates, so nothing downstream sees the abbreviation.
+    const promptSources = displaySourceIds(sources);
     // Stable identity for stream telemetry. Concurrency means several attempt=1
     // streams coexist; attempt alone cannot keep their token buffers separate.
     const evidence = sources.map((source) => source.id).sort().join(",");
-    const basePrompt = createObservationPrompt({ sources, context });
+    const basePrompt = createObservationPrompt({ sources: promptSources, context });
     // Set when an attempt aborts on a reasoning loop; consumed by the next one.
     let wokenFrom = null;
     // Claims harvested from a failed attempt's own thinking — already through
@@ -810,7 +884,7 @@ export function createIntelligenceProvider({
         // rehearsing the rules is what the model was stuck doing.
         const prompt = wokenFrom
           ? createWakeUpPrompt({
-              sources, repeatedLine: wokenFrom, context,
+              sources: promptSources, repeatedLine: wokenFrom, context,
               thoughts: lastReasoningText,
               extracted: banked.map(({ group, claim }) => wireClaimLine(group, claim)),
             })
