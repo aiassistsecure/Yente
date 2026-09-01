@@ -72,7 +72,7 @@ import { generateEmail } from "../llm/generate.js";
 import { YENTE_SYSTEM_IDENTITY } from "../llm/identity.js";
 import { extractText } from "../extract/sources.js";
 import { extractProfileFacts } from "../extract/profile.js";
-import { DEFAULT_POLICIES } from "../domain/policies.js";
+import { DEFAULT_POLICIES, MAX_LIVE_INTRODUCTIONS } from "../domain/policies.js";
 import { extractionVocabulary, questionsFor, resolveField } from "../domain/profile-schema.js";
 import { outboxKeyFor } from "../store/keys.js";
 import { COLLECTIONS, quote } from "../store/db.js";
@@ -861,6 +861,22 @@ export function createRuntime({
 
   /* --- 3. matching and previews ------------------------------------------ */
 
+  // The front page's "never more than five live introductions", enforced at
+  // the only place a desk match is born. Live = the person is mid-process:
+  // previews queued or out, veto window open, ready or queued to introduce.
+  const DESK_LIVE_STATES = new Set([
+    MATCH_STATES.PROPOSED, MATCH_STATES.PREVIEWS_QUEUED, MATCH_STATES.VETO_WINDOW,
+    MATCH_STATES.READY_TO_INTRODUCE, MATCH_STATES.INTRODUCTION_QUEUED,
+  ]);
+  function liveMatchCount(address) {
+    let count = 0;
+    for (const row of store.query(`FROM ${COLLECTIONS.MATCHES}`)) {
+      if (!DESK_LIVE_STATES.has(row.state)) continue;
+      if ((row.memberIds ?? []).includes(address)) count += 1;
+    }
+    return count;
+  }
+
   function proposeMatches({ profiles, now }) {
     const proposed = [];
 
@@ -889,6 +905,12 @@ export function createRuntime({
         });
 
         if (!evaluation.eligible) continue;
+
+        // The five-live cap, for BOTH people. A match consumes a slot on
+        // each side, so either side being at capacity blocks the proposal —
+        // it will be proposed on a later tick when a slot frees.
+        if (liveMatchCount(address) >= MAX_LIVE_INTRODUCTIONS) continue;
+        if (liveMatchCount(opportunity.memberId) >= MAX_LIVE_INTRODUCTIONS) continue;
 
         const memberIds = [address, opportunity.memberId];
         const stored = repositories.matches.find({

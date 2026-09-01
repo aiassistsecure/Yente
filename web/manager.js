@@ -139,6 +139,11 @@ export async function handleManagerRequest({ req, res, manager, graph, health, o
     switch (action) {
       case "confirm": {
         const match = manager.confirmMatch({ matchId: form.get("matchId"), note });
+        if (match?.refused) {
+          // The five-live cap said no. Surfaced, not swallowed — an operator
+          // whose click did nothing silently will click it again forever.
+          throw new Error(match.note ?? `refused: ${match.refused}`);
+        }
         if (match && onConfirmed) await onConfirmed(match);
         break;
       }
