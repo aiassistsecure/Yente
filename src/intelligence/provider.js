@@ -820,6 +820,14 @@ export function createIntelligenceProvider({
 
   async function observe({
     sources, context = null, providedRefs = null, signal,
+    // Claims ALREADY accepted for this evidence by a previous, interrupted
+    // run — [{group, claim}] entries, exactly what flattenVerified emits.
+    // Seeding them makes a job retry a CONTINUATION: the first prompt opens
+    // as a RESULTS turn showing the bank, and the model adds what is
+    // missing instead of re-typing a resume it already read (live,
+    // 2026-09-01: attempt #4 re-streaming the same Languages line at
+    // 3-5s per claim while the transport died somewhere in minute three).
+    seedEntries = null,
     // Per-call model, for the message/document split. Part of the cache key
     // and the provenance below, so two models over the same evidence are two
     // inferences — not one poisoned entry — and every observation records
@@ -872,7 +880,7 @@ export function createIntelligenceProvider({
     // the same schema and grounding gates as any answer. They seed the wake-up
     // (numbered, for one-at-a-time review) and they survive exhaustion, so an
     // aborted stream never costs finished work again.
-    let banked = [];
+    let banked = Array.isArray(seedEntries) ? [...seedEntries] : [];
     // The most recent attempt's reasoning trace, for harvest and for showing
     // the model its own thoughts when it is woken.
     let lastReasoningText = null;
@@ -959,7 +967,18 @@ export function createIntelligenceProvider({
                 accepted: banked.map(({ group, claim }) => wireClaimLine(group, claim)),
                 rejected: resultsFeedback,
               })
-            : basePrompt;
+            : banked.length > 0
+              // A non-empty bank with no fresher context means we are
+              // CONTINUING — a seeded retry, or the attempt after a dying
+              // stream whose lines bankPartial already kept. Open with the
+              // bank instead of the blank page: the model reviews what is
+              // already accepted and adds only what is missing.
+              ? createResultsPrompt({
+                  sources: promptSources, context,
+                  accepted: banked.map(({ group, claim }) => wireClaimLine(group, claim)),
+                  rejected: [],
+                })
+              : basePrompt;
 
         const completion = await client.complete({
           prompt: repairNote ? `${prompt}\n\n${repairNote}` : prompt,
