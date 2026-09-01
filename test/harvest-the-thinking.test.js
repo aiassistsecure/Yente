@@ -281,10 +281,13 @@ test("the wake-up carries the model's own thoughts and the claims for review", (
   assert.match(artifact, /<<<EXTRACTED_CLAIMS>>>/);
   assert.match(artifact, /1\. \{"claim":"entity"/);
   assert.match(artifact, /2\. \{"claim":"disclosure"/);
-  assert.match(artifact, /one at a time/i, "the review is per claim, in one pass");
-  assert.match(artifact, /\{"claim":"reject","n":1\}/, "the verdict shape is shown");
-  assert.match(artifact, /Every claim you do not\nreject is kept/,
+  assert.match(artifact, /ALREADY ACCEPTED/i,
+    "the bank is stated as kept — she does not approve her own work");
+  assert.match(artifact, /\{"claim":"reject","n":K\}/, "the reject knob is shown");
+  assert.match(artifact, /every claim you do not reject is kept/i,
     "unrejected claims stand — a cut-short review must lose nothing");
+  assert.doesNotMatch(artifact, /"approve"/,
+    "approvals are never solicited (they remain legal wire if sent)");
   assert.match(artifact, /ONE CLAIM PER LINE/,
     "the wake-up never introduces a second opinion about the format");
   assert.ok(!artifact.includes("four array fields"));

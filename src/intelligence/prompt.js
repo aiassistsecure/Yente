@@ -456,10 +456,11 @@ export function createWakeUpPrompt({
       tag: BLOCK_TAGS.TASK,
       content: claims.length > 0
         ? [
-          "Review the numbered claims in EXTRACTED_CLAIMS one at a time. For",
-          "each one, decide whether you still stand behind it against the",
-          "SOURCE blocks. Then report anything the sources support that is",
-          "not yet claimed. Do not retype a claim you keep.",
+          "Every claim in EXTRACTED_CLAIMS is ALREADY ACCEPTED and will be",
+          "kept — you do not approve your own work. If one is wrong against",
+          "the SOURCE blocks, reject it by number; silence keeps it. Then",
+          "report anything the sources support that is not yet claimed. Do",
+          "not retype a claim you keep.",
         ].join(" ")
         : [
           "Read the SOURCE blocks — one message and anything attached to it —",
@@ -529,10 +530,10 @@ export function createWakeUpPrompt({
       ? [
         "Answer as exactly one OBSERVATIONS block containing ONE CLAIM PER LINE —",
         "each line a complete JSON object that parses alone and is judged alone.",
-        "Go through EXTRACTED_CLAIMS in order, one verdict per line:",
-        "{\"claim\":\"approve\",\"n\":1} to keep claim 1, or",
-        "{\"claim\":\"reject\",\"n\":1} to withdraw it. Every claim you do not",
-        "reject is kept. After the verdicts, add any MISSING claims as normal",
+        "EXTRACTED_CLAIMS is already kept — emit NO approvals. Only to",
+        "withdraw a wrong claim, emit {\"claim\":\"reject\",\"n\":K} for its",
+        "number; every claim you do not reject is kept, in silence. Then add",
+        "any MISSING claims as normal",
         "claim lines — \"entity\", \"intent\", \"relationship\",",
         "\"disclosure\", or \"proposal\" — quoting evidence exactly. A new",
         "claim may use a ref",
@@ -602,8 +603,9 @@ export function createResultsPrompt({
     {
       tag: BLOCK_TAGS.TASK,
       content: [
-        "Review the numbered claims in EXTRACTED_CLAIMS one at a time and",
-        "stand behind them or reject them by number. Then resubmit any",
+        "Every claim in EXTRACTED_CLAIMS is ALREADY ACCEPTED and will be",
+        "kept — you do not approve your own work; silence keeps a claim,",
+        "and only a reject-by-number withdraws one. Then resubmit any",
         "REJECTED claim the sources truly support, corrected, as a normal",
         "claim line — and add anything the sources support that is not yet",
         "claimed. Do not retype a claim you keep.",
@@ -665,10 +667,10 @@ export function createResultsPrompt({
     content: [
       "Answer as exactly one OBSERVATIONS block containing ONE CLAIM PER LINE —",
       "each line a complete JSON object that parses alone and is judged alone.",
-      "Go through EXTRACTED_CLAIMS in order, one verdict per line:",
-      "{\"claim\":\"approve\",\"n\":1} to keep claim 1, or",
-      "{\"claim\":\"reject\",\"n\":1} to withdraw it. Every claim you do not",
-      "reject is kept. After the verdicts, resubmit any corrected REJECTED",
+      "EXTRACTED_CLAIMS is already kept — emit NO approvals. Only to",
+      "withdraw a wrong claim, emit {\"claim\":\"reject\",\"n\":K} for its",
+      "number; every claim you do not reject is kept, in silence. Then",
+      "resubmit any corrected REJECTED",
       "claims and add any MISSING claims as normal claim lines — \"entity\",",
       "\"intent\", \"relationship\", \"disclosure\", or \"proposal\" — quoting",
       "evidence exactly. A new claim may use a ref that EXTRACTED_CLAIMS",

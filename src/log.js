@@ -337,7 +337,9 @@ export function createLogger({ pid = process.pid, quiet = false } = {}) {
             : nothingNew
               ? `understood, nothing new — ${c.bold(meta.duplicates)} claim${
                 Number(meta.duplicates) === 1 ? "" : "s"} already on the graph`
-              : `understood ${c.bold(meta.claims)} claim${meta.claims === 1 ? "" : "s"}`, {
+              : `understood ${c.bold(meta.claims)} claim${meta.claims === 1 ? "" : "s"}${
+                Number(meta.duplicates) > 0
+                  ? c.grey(` (+${meta.duplicates} already on the graph)`) : ""}`, {
             evidence: String(meta.evidence).slice(0, 20),
             took: human(meta.elapsed_ms),
             rejected: meta.rejected || undefined,
