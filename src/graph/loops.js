@@ -249,12 +249,16 @@ export function createGraphLoops({
         const proposals = proposeIntroductions({ observations });
         let queued = 0;
         for (const proposal of proposals) {
-          const { decided } = graph.matches.propose({
+          const { fresh } = graph.matches.propose({
             ...proposal, at: new Date().toISOString(),
           });
-          // A match a person already ruled on is never re-opened. Without this
-          // the review queue is a treadmill.
-          if (!decided) queued += 1;
+          // A match a person already ruled on is never re-opened, and a pair
+          // ALREADY WAITING for review is not news either — re-proposing it
+          // refreshes confidence and evidence, silently. Only a pair the
+          // queue has never held counts as queued; without this the tape read
+          // "3 candidates queued" every scan forever and the matches counter
+          // climbed on zero new information.
+          if (fresh) queued += 1;
         }
         end("match:scan");
         health.ticks.connect += 1;
