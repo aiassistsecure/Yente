@@ -353,6 +353,18 @@ export function envelopeFromLines(content) {
       });
       return;
     }
+    // The contract's own nothing-token. The constitution teaches "the single
+    // line {} is the complete, correct answer" — and until 2026-09-01 this
+    // parser REJECTED it as UNKNOWN_CLAIM_KIND, sole answer or padding
+    // alike: the prompt and the parser contradicting each other since v2.
+    // A bare {} carries zero information; as the whole answer it is a valid
+    // empty envelope, and after real claims it is a model exhaling. Either
+    // way it is never a rejection — rejections trigger graded rounds, and a
+    // round spent relitigating an empty object is a round burned.
+    if (Object.keys(claim).length === 0) {
+      parsedAny = true;
+      return;
+    }
     const kind = String(claim.claim ?? "").toLowerCase();
     if (kind === "approve" || kind === "reject") {
       const n = Number(claim.n);

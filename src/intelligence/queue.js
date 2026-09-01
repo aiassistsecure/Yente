@@ -422,9 +422,11 @@ export async function drainIntelligence({
         });
 
         let written = 0;
+        let duplicates = 0;
         for (const claim of claims) {
           const { duplicate } = graph.observations.append(claim);
-          if (!duplicate) written += 1;
+          if (duplicate) duplicates += 1;
+          else written += 1;
         }
 
         // SALVAGED, NOT FINISHED. A partial result carries claims a dying
@@ -480,9 +482,18 @@ export async function drainIntelligence({
         //
         // Logged at WARN with its own event so it is countable and visible,
         // rather than as an `observed` line whose claim count happens to be 0.
-        log(written === 0 ? "warn" : "info", written === 0 ? "understood_nothing" : "observed", {
+        // "Understood NOTHING" must mean the model produced nothing usable —
+        // not that everything it said was ALREADY KNOWN. Live, 2026-09-01:
+        // "I'm mark" produced one perfectly valid entity that deduped against
+        // the graph, and the tape reported it as the model returning no
+        // usable claims. Nothing new is a quiet success, not a failure.
+        const nothingNew = written === 0 && duplicates > 0;
+        log(written === 0 && !nothingNew ? "warn" : "info",
+          written === 0 && !nothingNew ? "understood_nothing"
+            : nothingNew ? "understood_nothing_new" : "observed", {
           evidence: job.evidenceId,
           claims: written,
+          ...(duplicates > 0 ? { duplicates } : {}),
           rejected: result.rejected.length,
           ...(result.rejected.length > 0
             ? {
