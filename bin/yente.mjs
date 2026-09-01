@@ -281,6 +281,11 @@ const { provider: providerName } = intelligenceConfig;
 // YENTE_MODEL_MESSAGE (the voice — everything Yente writes to people).
 // There is no per-evidence-kind model split; the split is by AUDIENCE.
 const clients = createLlmClients({ provider: providerName, log });
+// The voice, pooled onto the voice lanes when they exist. One client serves
+// every place Yente speaks: desk replies AND graph introductions.
+const voiceClient = voiceLanes
+  ? pooledCompleter({ lanes: voiceLanes, baseClient: clients.emailClient })
+  : clients.emailClient;
 const localObserver = createIntelligenceProvider({
   client: clients.extractionClient,
   provider: providerName,
@@ -396,6 +401,7 @@ const { source, imap, mailbox, configured } = createMailFromEnv({ graph, log });
 
 const loops = createGraphLoops({
   graph, source, observer, manager, log, begin, end,
+  emailClient: voiceClient,
   autoQualify: String(process.env.YENTE_AUTOQUALIFY ?? "1") === "1",
   signal: abort.signal,
   isStopping: () => stopping,
@@ -518,7 +524,7 @@ if (on("YENTE_HTTP")) {
       const handled = await handleManagerRequest({
         req, res, manager, graph, health,
         onConfirmed: () => drainConfirmedIntroductions({
-          graph, manager, transport, log,
+          graph, manager, transport, emailClient: voiceClient, log,
         }),
       });
       if (handled) return;

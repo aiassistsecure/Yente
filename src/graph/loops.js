@@ -69,6 +69,9 @@ export function createGraphLoops({
   concurrency = undefined,
   onMessage = null,
   transport = null,
+  // The voice seat — when present, confirmed introductions are written by
+  // the model (guard-checked, human-template fallback) instead of the template.
+  emailClient = null,
 }) {
   if (!graph) throw new TypeError("createGraphLoops requires the graph repositories");
   if (!observer) throw new TypeError("createGraphLoops requires an observer");
@@ -277,7 +280,7 @@ export function createGraphLoops({
           confirmed: graph.matches.byState(MATCH_STATES.CONFIRMED).length,
           introduced: graph.matches.byState(MATCH_STATES.INTRODUCED).length,
         });
-        await drainConfirmedIntroductions({ graph, manager, transport, log });
+        await drainConfirmedIntroductions({ graph, manager, transport, emailClient, log });
       } catch (error) {
         end("match:scan");
         log("error", "connect_failed", { error: String(error?.message ?? error) });

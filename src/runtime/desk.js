@@ -75,6 +75,7 @@ export function createDesk({
     // tool re-running extraction by hand. The counts belong in the tick.
     let facts = 0;
     let rejected = 0;
+    let replies = 0;
     const failures = [];
     for (const r of ingested) {
       const key = r?.outcome ?? "unknown";
@@ -88,6 +89,7 @@ export function createDesk({
       }
       facts += r?.facts ?? 0;
       rejected += r?.rejected ?? 0;
+      if (r?.replied) replies += 1;
       for (const f of r?.failures ?? []) failures.push(f);
     }
 
@@ -164,13 +166,13 @@ export function createDesk({
         started_at: startedAt, finished_at: new Date().toISOString(),
         pid: process.pid, mode, status: "ok",
         ingested: ingested.length, sent, outcomes,
-        facts, rejected, failures: failures.length, proposed, advanced, answered,
+        facts, rejected, failures: failures.length, proposed, advanced, answered, replies,
       });
     } catch { /* ignore */ }
 
     return {
       ingested: ingested.length, sent, outcomes,
-      facts, rejected, failures: failures.length, proposed, advanced, answered,
+      facts, rejected, failures: failures.length, proposed, advanced, answered, replies,
       ms: Date.now() - t0,
     };
   }

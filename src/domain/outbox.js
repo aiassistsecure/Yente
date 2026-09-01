@@ -39,6 +39,10 @@ export const OUTBOUND_PURPOSES = Object.freeze({
   // states only span-verified facts, and it exists because the alternative was
   // silence — a member sent a résumé, she read it correctly, and said nothing.
   PROFILE_CONFIRMATION: "profile_confirmation",
+  // The voice. A model-composed reply to a message no templated letter
+  // answered — the "keep the conversation alive" purpose. One per inbound
+  // message, keyed reply:<rfcMessageId>.
+  CONVERSATION: "conversation",
   PRIVATE_MATCH_PREVIEW: "private_match_preview",
   JOINT_INTRODUCTION: "joint_introduction",
   STOP_CONFIRMATION: "stop_confirmation",
