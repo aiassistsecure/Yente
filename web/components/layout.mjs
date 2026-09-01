@@ -110,6 +110,7 @@ function header(active) {
     </a>
     <nav class="nav" aria-label="Primary">
       ${link("/how-it-works", "How it works")}
+      ${link("/directory", "Directory")}
       ${link("/privacy", "What stays private")}
       <a class="nav-cta" href="/join">Claim a seat</a>
     </nav>
