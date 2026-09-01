@@ -62,6 +62,11 @@ export function createGraphManager({
   graph,
   actor = process.env.YENTE_OPERATOR || "operator",
   now = () => new Date().toISOString(),
+  // Both-parties consent (Mark, 2026-09-01): operator confirmation opens a
+  // consent round — each party is mailed the other's evidenced profile card
+  // and the introduction sends only when both reply yes. Off restores the
+  // operator-only instant send.
+  partyApproval = false,
 }) {
   /* --- review queue --------------------------------------------------- */
 
@@ -323,6 +328,25 @@ export function createGraphManager({
 
   function confirmMatch({ matchId, note = null }) {
     const at = now();
+    // Party approval: the operator's yes is gate ONE. The match enters the
+    // consent round; both parties get the other's card and the introduction
+    // waits for two legible approvals. A match whose sides are not both
+    // email-keyed people cannot run a consent round and confirms directly.
+    if (partyApproval) {
+      const held = graph.matches.get(matchId);
+      const bothPeople = held
+        && /^person:[^\s@]+@[^\s@]+$/.test(String(held.seeker))
+        && /^person:[^\s@]+@[^\s@]+$/.test(String(held.offerer));
+      if (bothPeople) {
+        const match = graph.matches.awaitParties(matchId, { by: actor, at });
+        if (!match) return null;
+        graph.decisions.record({
+          kind: "match", target: matchId, verdict: MATCH_STATES.AWAITING_PARTIES,
+          by: actor, at, detail: { note, seeker: match.seeker, offerer: match.offerer },
+        });
+        return match;
+      }
+    }
     const match = graph.matches.decide({
       matchId, state: MATCH_STATES.CONFIRMED, by: actor, at, note,
     });

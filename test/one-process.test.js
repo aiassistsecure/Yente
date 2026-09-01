@@ -169,8 +169,10 @@ test("the merged process wires inbound mail to founding-seat accounting", () => 
     "boot reconciles historical emails so existing members do not need to write again");
   assert.match(src, /requeueForPrompt/,
     "jobs completed under the broken source-id prompt are reprocessed once");
-  assert.match(src, /onConfirmed:[\s\S]{0,250}drainConfirmedIntroductions/,
-    "manager approval must trigger SMTP delivery immediately");
+  assert.match(src, /onConfirmed:[\s\S]{0,700}drainPartyConsent/,
+    "manager approval must open the consent round in the same request's wake");
+  assert.match(src, /onConfirmed:[\s\S]{0,700}drainConfirmedIntroductions/,
+    "and still deliver immediately when a match is already fully consented");
   assert.match(src, /createGraphLoops\([\s\S]{0,500}transport/,
     "the background loop recovers confirmed introductions after restart");
 });
