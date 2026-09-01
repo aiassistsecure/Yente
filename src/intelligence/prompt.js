@@ -127,14 +127,17 @@ export const OBSERVER_SYSTEM = [
   "  {\"claim\": \"entity\", \"ref\": \"p1\", \"kind\": \"PERSON\", \"name\": \"Mark Evans Jr.\", \"source_id\": \"attachment:demo2\", \"evidence\": \"MARK EVANS JR. — Systems Architect\", \"explicit\": true, \"confidence\": 0.95}",
   "  {\"claim\": \"disclosure\", \"subject_ref\": \"p1\", \"field\": \"role\", \"value\": \"Systems Architect\", \"source_id\": \"attachment:demo2\", \"evidence\": \"MARK EVANS JR. — Systems Architect\", \"explicit\": true, \"confidence\": 0.95}",
   "  {\"claim\": \"disclosure\", \"subject_ref\": \"p1\", \"field\": \"employer\", \"value\": \"Acme Corp\", \"source_id\": \"attachment:demo2\", \"evidence\": \"Acme Corp, 2023–present.\", \"explicit\": true, \"confidence\": 0.95}",
-  "  {\"claim\": \"disclosure\", \"subject_ref\": \"p1\", \"field\": \"capability\", \"value\": \"Rust\", \"source_id\": \"attachment:demo2\", \"evidence\": \"Skills: Rust, distributed systems, PostgreSQL.\", \"explicit\": true, \"confidence\": 0.95}",
-  "  {\"claim\": \"disclosure\", \"subject_ref\": \"p1\", \"field\": \"capability\", \"value\": \"distributed systems\", \"source_id\": \"attachment:demo2\", \"evidence\": \"Skills: Rust, distributed systems, PostgreSQL.\", \"explicit\": true, \"confidence\": 0.95}",
+  "  {\"claim\": \"disclosure\", \"subject_ref\": \"p1\", \"field\": \"capability\", \"value\": \"Rust\", \"source_id\": \"attachment:demo2\", \"evidence\": \"Rust\", \"explicit\": true, \"confidence\": 0.95}",
+  "  {\"claim\": \"disclosure\", \"subject_ref\": \"p1\", \"field\": \"capability\", \"value\": \"distributed systems\", \"source_id\": \"attachment:demo2\", \"evidence\": \"distributed systems\", \"explicit\": true, \"confidence\": 0.95}",
   "  {\"claim\": \"proposal\", \"subject_ref\": \"p1\", \"kind\": \"hire_for\", \"target\": \"systems architecture and Rust backend roles\", \"grade\": \"strong\", \"source_id\": \"attachment:demo2\", \"evidence\": \"Built the distributed storage layer in Rust.\", \"explicit\": false, \"confidence\": 0.8}",
   "  <<<END>>>",
   "  Note: a résumé discloses, it does not ask. There is no intent on a CV.",
   "  One capability per disclosure — Rust and distributed systems are two rows,",
-  "  not one packed into a sentence. The proposal is your graded read of the",
-  "  résumé — what this person is a good candidate FOR, and nothing else.",
+  "  not one packed into a sentence. And when the value IS one item in a list,",
+  "  the shortest honest quote is the value itself: evidence \"Rust\", not the",
+  "  whole skills line retyped for every item on it. The proposal is your",
+  "  graded read of the résumé — what this person is a good candidate FOR,",
+  "  and nothing else.",
   "",
   "— Example 3: a bare-address sender with a real ask.",
   "  META { \"sender\": \"founders@vibecode-101.com\", \"sender_ref\": \"sender\" }",
@@ -194,6 +197,11 @@ export const OBSERVER_SYSTEM = [
   "  span that supports the claim. Copy it exactly — case, punctuation, and all;",
   "  a corrected typo or a tidied capital is no longer the source's own words and",
   "  is discarded the same as a paraphrase.",
+  "  When the claim's value is a single item from a list — a skill, a tool, a",
+  "  credential — quote just that item as the evidence: \"Docker\", not the",
+  "  200-character line it sits on. A quote retyped many times drifts, and a",
+  "  drifted quote is discarded as invented. Short and exact beats long and",
+  "  almost.",
   "  Evidence must be ONE contiguous span. Never join a section heading to a",
   "  list item under it (\"Skills: FastAPI\" when the source lists FastAPI three",
   "  lines below \"Skills:\") — that composed line exists nowhere in the source",
@@ -540,6 +548,134 @@ export function createWakeUpPrompt({
         "line {} when there",
         "are no supported claims. Nothing before or after the block.",
       ].join("\n"),
+  });
+
+  return createPromptArtifact(blocks);
+}
+
+/**
+ * The graded-rounds turn — Mark's protocol, 2026-08-31: "make the model
+ * submit claims more frequently and show it the results. 200 OK: 9 claims
+ * accepted, 2 rejected: evidence <12 chars, etc."
+ *
+ * After an answer verifies PARTLY, the next completion opens with the grade:
+ * what was accepted (banked, numbered, never resent) and what was rejected,
+ * each with the parser's own deterministic reason — including the divergence
+ * detail, which was written for exactly this reader. The model fixes a
+ * citation the source really supports, or drops the claim; silence is free.
+ *
+ * Same review contract as the wake-up, ON PURPOSE: verdicts by number, new
+ * or corrected claims as ordinary claim lines, never retype a kept claim. A
+ * second opinion about the format is how recovery turns get spent
+ * reconciling contracts instead of answering.
+ */
+export function createResultsPrompt({
+  sources, context = null, accepted = null, rejected = null,
+}) {
+  if (!Array.isArray(sources) || sources.length === 0) {
+    throw new TypeError("createResultsPrompt requires at least one source");
+  }
+  const bank = Array.isArray(accepted)
+    ? accepted.filter((line) => typeof line === "string" && line.length > 0)
+    : [];
+  const graded = Array.isArray(rejected) ? rejected : [];
+
+  const blocks = [
+    {
+      tag: BLOCK_TAGS.RESULTS,
+      content: [
+        `${bank.length} of your claims were ACCEPTED — verified against the`,
+        "sources and recorded. They are numbered in EXTRACTED_CLAIMS. Do not",
+        "resend them.",
+        `${graded.length} were REJECTED. Each one is in REJECTED_CLAIMS with`,
+        "the parser's exact reason.",
+        "",
+        "A rejection is mechanical, not a judgment: usually the evidence quote",
+        "is not a verbatim substring of the source, or it is shorter than the",
+        "floor. Re-read the SOURCE, and resubmit a rejected claim ONLY if the",
+        "source really supports it — with the evidence quoted exactly, and as",
+        "short as honesty allows. If the source does not support it, drop it:",
+        "a dropped claim costs nothing, an invented quote is discarded again.",
+      ].join("\n"),
+    },
+    {
+      tag: BLOCK_TAGS.TASK,
+      content: [
+        "Review the numbered claims in EXTRACTED_CLAIMS one at a time and",
+        "stand behind them or reject them by number. Then resubmit any",
+        "REJECTED claim the sources truly support, corrected, as a normal",
+        "claim line — and add anything the sources support that is not yet",
+        "claimed. Do not retype a claim you keep.",
+      ].join(" "),
+    },
+  ];
+
+  if (context && Object.keys(context).length > 0) {
+    blocks.push({ tag: BLOCK_TAGS.META, json: context });
+  }
+
+  for (const source of sources) {
+    blocks.push({ tag: BLOCK_TAGS.SOURCE, argument: source.id, content: source.text });
+  }
+
+  if (bank.length > 0) {
+    blocks.push({
+      tag: BLOCK_TAGS.EXTRACTED_CLAIMS,
+      content: bank
+        .map((line, index) => `${index + 1}. ${line.replace(/<<<|>>>/g, "")}`)
+        .join("\n"),
+    });
+  }
+
+  // The rejected lines are re-serialized wire claims (single-line JSON,
+  // sentinels stripped) plus OUR parser message — never the model's raw
+  // reply echoed back, for the same forgery reason as the REPAIR block.
+  if (graded.length > 0) {
+    blocks.push({
+      tag: BLOCK_TAGS.REJECTED_CLAIMS,
+      content: graded
+        .map((row, index) => {
+          const line = String(row.line ?? "").replace(/<<<|>>>/g, "");
+          const why = `${row.code}: ${String(row.message ?? "")}`
+            .replace(/<<<|>>>/g, "").slice(0, 300);
+          return `R${index + 1}. ${why}\n    ${line}`;
+        })
+        .join("\n"),
+    });
+  }
+
+  blocks.push({
+    tag: BLOCK_TAGS.CONTROLLED_VOCABULARY,
+    json: {
+      entity_kinds: ENTITY_KINDS,
+      intent_types: INTENT_TYPES,
+      relationship_predicates: RELATIONSHIP_PREDICATES,
+      disclosure_fields: DISCLOSURE_FIELDS,
+      proposal_kinds: PROPOSAL_KINDS,
+      proposal_grades: PROPOSAL_GRADES,
+    },
+  });
+
+  // Word for word the wake-up's review contract, plus one sentence for the
+  // corrected-reject case. See the wake-up's comment for why a recovery turn
+  // must never hear a second opinion about the format.
+  blocks.push({
+    tag: BLOCK_TAGS.OUTPUT_CONTRACT,
+    content: [
+      "Answer as exactly one OBSERVATIONS block containing ONE CLAIM PER LINE —",
+      "each line a complete JSON object that parses alone and is judged alone.",
+      "Go through EXTRACTED_CLAIMS in order, one verdict per line:",
+      "{\"claim\":\"approve\",\"n\":1} to keep claim 1, or",
+      "{\"claim\":\"reject\",\"n\":1} to withdraw it. Every claim you do not",
+      "reject is kept. After the verdicts, resubmit any corrected REJECTED",
+      "claims and add any MISSING claims as normal claim lines — \"entity\",",
+      "\"intent\", \"relationship\", \"disclosure\", or \"proposal\" — quoting",
+      "evidence exactly. A new claim may use a ref that EXTRACTED_CLAIMS",
+      "already declares. Never retype a claim from EXTRACTED_CLAIMS as a",
+      "claim line; it is already recorded. If nothing is missing and nothing",
+      "is rejected, the verdict lines alone are a complete answer. Nothing",
+      "before or after the block.",
+    ].join("\n"),
   });
 
   return createPromptArtifact(blocks);

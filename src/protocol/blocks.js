@@ -59,6 +59,16 @@ export const BLOCK_TAGS = Object.freeze({
    * grounding gates, numbered for one-at-a-time review on the wake-up turn.
    */
   EXTRACTED_CLAIMS: "EXTRACTED_CLAIMS",
+  /**
+   * The graded-rounds protocol: after an answer verifies PARTLY, the next
+   * turn opens with RESULTS (what was accepted, what was not) and lists each
+   * rejected claim in REJECTED_CLAIMS with the parser's own reason, so the
+   * model can fix a citation the source really supports — or drop it, since
+   * silence is free. The rejected lines are re-serialized through the wire
+   * form (single-line JSON, sentinels stripped), never echoed raw.
+   */
+  RESULTS: "RESULTS",
+  REJECTED_CLAIMS: "REJECTED_CLAIMS",
   MISSING_FIELDS: "MISSING_FIELDS",
   INTERVIEW_PLAN: "INTERVIEW_PLAN",
   MATCH: "MATCH",
