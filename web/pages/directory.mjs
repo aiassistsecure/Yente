@@ -62,8 +62,10 @@ export function directoryPage({ cards = [], query = "", total = null } = {}) {
     <h1 class="display-2">People Yente has actually read.</h1>
     <p class="lede">Every card below is ${SITE.name}'s own verified summary of a
     résumé somebody sent to <strong>${esc(SITE.inbox)}</strong> — assembled claim
-    by claim, each one traced to that person's exact words. No documents are
-    published, and no contact details. Introductions go through Yente.</p>
+    by claim, each one traced to that person's exact words. Original documents
+    are never published, and neither are email addresses — a card shows only
+    what its owner volunteered onto the record, including any business phone
+    or profile link they offered. Introductions go through Yente.</p>
   </div>
 </section>
 <section class="band">

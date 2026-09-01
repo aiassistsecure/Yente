@@ -94,3 +94,14 @@ export const DEFAULT_POLICIES = Object.freeze({
   opportunityQualification: opportunityQualificationPolicy,
   match: matchPolicy,
 });
+
+/**
+ * "Never more than five live introductions." — the front page's promise,
+ * enforced here rather than remembered. A LIVE introduction is one a person
+ * is currently in the middle of: previews out, veto window open, awaiting
+ * party consent, confirmed-but-unsent, or mid-send. Completed introductions
+ * and refusals do not count against it — the cap protects attention, not
+ * history.
+ */
+export const MAX_LIVE_INTRODUCTIONS = 5;
+

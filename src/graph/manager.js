@@ -35,6 +35,7 @@
  */
 
 import { AUTHORITY, MATCH_ORIGIN, MATCH_STATES, matchPairKey } from "../store/graph.js";
+import { MAX_LIVE_INTRODUCTIONS } from "../domain/policies.js";
 import {
   PROFILE_STATES, PROFILE_STATE_PREDICATE,
   isLegalTransition, isQualified, profileState, isIntakeArtifact,
@@ -326,8 +327,34 @@ export function createGraphManager({
 
   /* --- ruling on matches ---------------------------------------------- */
 
+  // "Never more than five live introductions." Live on the graph arm =
+  // awaiting party consent, confirmed-but-unsent, or mid-send. Counted per
+  // person at the moment the operator tries to make a match live.
+  const GRAPH_LIVE_STATES = new Set([
+    MATCH_STATES.AWAITING_PARTIES, MATCH_STATES.CONFIRMED,
+    MATCH_STATES.INTRODUCTION_SENDING,
+  ]);
+  function liveIntroductionCount(subject) {
+    return graph.matches.all().filter((row) =>
+      GRAPH_LIVE_STATES.has(row.state)
+      && (row.seeker === subject || row.offerer === subject)).length;
+  }
+
   function confirmMatch({ matchId, note = null }) {
     const at = now();
+    {
+      const held = graph.matches.get(matchId);
+      if (held) {
+        for (const side of [held.seeker, held.offerer]) {
+          if (liveIntroductionCount(side) >= MAX_LIVE_INTRODUCTIONS) {
+            return {
+              refused: "at_capacity", side,
+              note: `${side} already has ${MAX_LIVE_INTRODUCTIONS} live introductions`,
+            };
+          }
+        }
+      }
+    }
     // Party approval: the operator's yes is gate ONE. The match enters the
     // consent round; both parties get the other's card and the introduction
     // waits for two legible approvals. A match whose sides are not both
