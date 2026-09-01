@@ -130,7 +130,11 @@ export function createLogger({ pid = process.pid, quiet = false } = {}) {
   const modelStreamBuffers = new Map();
   const stats = {
     ingested: 0, documents: 0, observed: 0, claims: 0, emptyUnderstandings: 0,
-    failures: 0, retries: 0, matches: 0, decisions: 0,
+    failures: 0, retries: 0, decisions: 0,
+    // The standing match tally, read from the graph each connect scan —
+    // absolute state, not a per-session counter (which read "matches 0"
+    // over a full review queue after every reboot).
+    matchesPending: 0, matchesConfirmed: 0, matchesIntroduced: 0,
     observeMs: [],                 // for the sparkline and the average
   };
 
@@ -433,8 +437,13 @@ export function createLogger({ pid = process.pid, quiet = false } = {}) {
         });
         return;
 
+      case "match_tally":
+        stats.matchesPending = Number(meta.pending ?? 0);
+        stats.matchesConfirmed = Number(meta.confirmed ?? 0);
+        stats.matchesIntroduced = Number(meta.introduced ?? 0);
+        return; // silent — the dashboard is where a tally lives
+
       case "proposed":
-        stats.matches += Number(meta.queued ?? 0);
         line("info", "connect",
           `${c.bold(meta.queued)} network-wide introduction candidate${meta.queued === 1 ? "" : "s"} queued`, {
             pending_review: meta.pending,
@@ -528,7 +537,9 @@ export function createLogger({ pid = process.pid, quiet = false } = {}) {
         + `${concurrency ? c.grey(`/${concurrency}`) : ""}`
         + `${(jobs.FAILED ?? 0) > 0 ? c.red(` dead ${jobs.FAILED}`) : ""}`
         + `${stats.retries ? c.yellow(` retries ${stats.retries}`) : ""}`,
-      `${c.green("matches")} ${stats.matches}`,
+      `${c.green("matches")} ${stats.matchesPending} to review`
+        + (stats.matchesConfirmed > 0 ? c.yellow(` ${stats.matchesConfirmed} confirmed`) : "")
+        + (stats.matchesIntroduced > 0 ? c.green(` ${stats.matchesIntroduced} made`) : ""),
       `${c.grey("avg")} ${avg} ${c.magenta(spark(stats.observeMs))}`,
       `${c.grey("up")} ${uptime}`,
     ].join("  ");

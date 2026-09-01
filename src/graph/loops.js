@@ -30,6 +30,7 @@
 import { ingestMail } from "./ingest.js";
 import { drainIntelligence } from "../intelligence/queue.js";
 import { proposeIntroductions } from "./matching.js";
+import { MATCH_STATES } from "../store/graph.js";
 import { drainConfirmedIntroductions } from "./introductions.js";
 
 /**
@@ -265,6 +266,17 @@ export function createGraphLoops({
         if (queued > 0) {
           log("info", "proposed", { queued, pending: manager.pendingMatches().length });
         }
+        // THE TALLY IS THE STATE, NOT THE SESSION. The dashboard used to show
+        // a counter of pairs queued since THIS process booted — which read
+        // "matches 0" over a review queue holding three, every reboot. What
+        // the operator wants to know is standing: how many pairs await a
+        // ruling, how many introductions were actually made. Read it from the
+        // graph every scan; absolute, reboot-proof, and free.
+        log("info", "match_tally", {
+          pending: graph.matches.byState(MATCH_STATES.PROPOSED).length,
+          confirmed: graph.matches.byState(MATCH_STATES.CONFIRMED).length,
+          introduced: graph.matches.byState(MATCH_STATES.INTRODUCED).length,
+        });
         await drainConfirmedIntroductions({ graph, manager, transport, log });
       } catch (error) {
         end("match:scan");
