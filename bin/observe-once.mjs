@@ -9,7 +9,7 @@
  *   export YENTE_LLM_API_KEY=aai_...
  * Optionally:
  *   export YENTE_INTELLIGENCE_PROVIDER=pin      (default)
- *   export YENTE_MODEL=muse-local:latest        (default)
+ *   export YENTE_MODEL_DOCUMENT=GLM-4-32B        (the heavyweight seat)
  *
  * WHY THIS EXISTS AS A COMMITTED TOOL RATHER THAN A SCRATCH SCRIPT
  *
@@ -47,7 +47,8 @@ usage: node bin/observe-once.mjs <file> [file...]
 environment:
   YENTE_LLM_API_KEY               required for the pin provider
   YENTE_INTELLIGENCE_PROVIDER     default pin
-  YENTE_MODEL                     default muse-local:latest
+  YENTE_MODEL_DOCUMENT            default muse-local:latest
+  YENTE_MODEL_MESSAGE             short bodies; defaults to the document model
 `);
   return 2;
 }
