@@ -111,6 +111,11 @@ export function createRuntime({
   // overriding one policy does not silently drop the others.
   policies: policyOverrides = {},
   config = {},
+  // Observability. The runtime made decisions silently — most expensively in
+  // drainOutbox, where a failed SMTP send was recorded in the outbox row and
+  // NOWHERE else. "Yente is not emailing me back" was undiagnosable from the
+  // console because the console was never told.
+  log = () => {},
 }) {
   assertTransport(transport);
   const { store } = repositories;
@@ -399,6 +404,57 @@ export function createRuntime({
           failures.push({ code: failure.code, message: failure.message });
         }
       }
+    }
+
+    // THE OTHER DEAD END. The block below documents the first one — facts
+    // extracted, qualify() never called. This is its mirror, found live
+    // 2026-09-01: a NEW person's message stored a source, extraction produced
+    // ZERO verified facts (model error, failed grounding, or a document that
+    // simply carries none), and the function fell through to outcome "intake"
+    // — no clarification, no ask, nothing queued. "A new email, a new name, a
+    // new profile, all ingested... and no response." A stored source with no
+    // facts must CONTINUE the conversation, not end it.
+    if (stored.length > 0 && facts.length === 0) {
+      const known = store.query(
+        `FROM ${COLLECTIONS.PROFILE_FACTS} WHERE memberId = ${quote(address)}`,
+      );
+      if (known.length > 0) {
+        // They already have a profile on file; treat this like any thin
+        // follow-up and let qualification continue the conversation.
+        let outcome = "interviewing";
+        try {
+          const result = qualify(address, null, now);
+          outcome = result.qualified ? "qualified" : "interviewing";
+          if (result.qualified) acknowledge(address, now, [message]);
+        } catch (error) {
+          failures.push({ code: "QUALIFY_FAILED", message: String(error?.message ?? error) });
+          outcome = "intake";
+        }
+        return { outcome, address, sources: stored.length, facts: 0, rejected, failures };
+      }
+      // Per-address idempotent: five unreadable documents earn ONE letter.
+      queue(
+        OUTBOUND_PURPOSES.CLARIFICATION,
+        `clarify:nofacts:${address}`,
+        [address],
+        {
+          subject: "I read it, but I could not use it yet",
+          text:
+            "Thanks — I received what you sent, but I could not pull verifiable " +
+            "facts from it.\n\nAny of these will get you matched:\n\n" +
+            "1. A resume, attached in any common format.\n" +
+            "2. Your LinkedIn profile URL.\n" +
+            "3. Which of these you are — one or more:\n" +
+            "   hiring · seeking employment · seeking funding · funding startups\n\n" +
+            "Reply STOP at any time and I will not write again.",
+        },
+        now,
+        [message],
+      );
+      return {
+        outcome: "clarification_sent", address,
+        sources: stored.length, facts: 0, rejected, failures,
+      };
     }
 
     member = repositories.members.findByAddress(address);
@@ -870,7 +926,13 @@ export function createRuntime({
   }
 
   async function drainOutbox(now) {
-    if (isSendingHalted({ haltOutbound })) return { halted: true, sent: 0 };
+    if (isSendingHalted({ haltOutbound })) {
+      const pending = repositories.outbox.claimable(now).length;
+      // Silence here cost a debugging session: halted outbound with letters
+      // waiting looked identical to a desk with nothing to say.
+      if (pending > 0) log("warn", "outbound_halted", { pending });
+      return { halted: true, sent: 0 };
+    }
 
     let sent = 0;
     for (const stored of repositories.outbox.claimable(now)) {
@@ -898,6 +960,16 @@ export function createRuntime({
         repositories.outbox.save(
           markFailed(claimed, { at: now, error: error.message, permanent: isPermanent(error) }),
         );
+        // THE CONSOLE HEARS ABOUT EVERY FAILED LETTER. This was recorded in
+        // the outbox row and nowhere else — a desk that queues a reply, fails
+        // to send it, and says nothing is indistinguishable from a desk that
+        // decided silence, and only one of those is a bug.
+        log("error", "send_failed", {
+          purpose: claimed.purpose ?? null,
+          to: (claimed.recipients ?? []).join(", "),
+          permanent: isPermanent(error),
+          error: String(error?.message ?? error).slice(0, 300),
+        });
       }
     }
     return { halted: false, sent };
