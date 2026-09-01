@@ -36,6 +36,7 @@
 import { AUTHORITY, JOB_STATES } from "../store/graph.js";
 import { boundSources } from "./bound.js";
 import { CLAIM_GROUPS } from "./schema.js";
+import { flattenVerified } from "./provider.js";
 // ONE function turns an address into a subject id. This file used to build
 // `person:${emailAddress}` inline while identity.js normalised gmail dots and
 // plus-tags — so the graph stored `person:s.chen@gmail.com` and identity
@@ -56,6 +57,17 @@ import { isIntakeArtifact } from "../graph/qualification.js";
  * its ref names. A claim whose ref was never declared has already been dropped
  * by validateEnvelope, so there is no dangling case to handle.
  */
+/**
+ * What an interrupted job already got accepted, per evidence — the seed for
+ * its retry. In-memory on purpose: the claims themselves are durably in the
+ * graph (the partial write banks them), this map only spares the MODEL from
+ * re-deriving them within this process's lifetime. A restart loses the seed
+ * and costs one re-read; a retry in the same process — the common case, and
+ * the live loop of 2026-09-01 (attempt #4 re-typing the same skills line) —
+ * costs nothing.
+ */
+const RETRY_SEEDS = new Map();
+
 export function observationsFrom({
   verified, evidenceId, provenance, observedAt, sentAt,
   subjectHint = null, evidenceKind = null, senderSubject = null,
@@ -376,6 +388,8 @@ export async function drainIntelligence({
       try {
         const result = await observer.observe({
           sources,
+          // A retry continues; it does not start over. See RETRY_SEEDS.
+          seedEntries: RETRY_SEEDS.get(job.evidenceId) ?? null,
           // Deterministic orientation, marked as such. The parser already knows
           // who sent this and when; making the model re-derive it from a
           // signature block would be slower and less reliable. Anything it
@@ -436,6 +450,11 @@ export async function drainIntelligence({
         // understood. The job goes back to READY and retries; nothing partial
         // may masquerade as complete.
         if (result.partial) {
+          // Everything verified so far seeds the retry, so the next attempt
+          // opens as a RESULTS turn over this bank instead of a blank page.
+          try {
+            RETRY_SEEDS.set(job.evidenceId, flattenVerified(result.verified));
+          } catch { /* a seed is an optimization, never a failure */ }
           graph.jobs.fail(job.evidenceId, {
             at: now(),
             error: "stream died mid-generation; complete claim lines salvaged",
@@ -452,6 +471,7 @@ export async function drainIntelligence({
           continue;
         }
 
+        RETRY_SEEDS.delete(job.evidenceId);
         graph.jobs.finish(job.evidenceId, {
           at: now(), claims: written,
           promptVersion: result.provenance.promptVersion ?? null,

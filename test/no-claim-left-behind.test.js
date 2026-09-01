@@ -83,3 +83,43 @@ test("the retry sees the banked lines and does not re-pay them", async () => {
   assert.deepEqual(values, ["HMAC tunnel", "Rust"],
     "attempt 1's paid-for claim joined attempt 2's completion");
 });
+
+
+test("a seeded retry opens as a RESULTS turn and only adds what is missing", async () => {
+  // The live loop: attempt #4 re-streaming the same Languages line at 3-5s
+  // per claim. A retry seeded with the already-accepted entries must show
+  // the model its bank instead of a blank page — and keep the seed in the
+  // final envelope alongside whatever the continuation adds.
+  const prompts = [];
+  const client = {
+    async complete({ prompt }) {
+      prompts.push(prompt);
+      return {
+        text: "<<<OBSERVATIONS>>>\n" + line("capability", "HMAC tunnel", "HMAC tunnel") + "\n<<<END>>>",
+        finishReason: "stop", elapsedMs: 1,
+      };
+    },
+  };
+  const provider = createIntelligenceProvider({
+    client, provider: "test", model: "test-model", retryDelayMs: 0,
+  });
+
+  const seedEntries = [{
+    group: "disclosures",
+    claim: {
+      subjectRef: "sender", field: "capability", value: "Rust",
+      sourceId: "attachment:eea45b7e8c47", evidence: "Rust",
+      explicit: true, confidence: 0.9,
+    },
+  }];
+  const result = await provider.observe({
+    sources: SOURCES, attempts: 3, providedRefs: ["sender"], seedEntries,
+  });
+
+  assert.match(prompts[0], /ACCEPTED/, "the first prompt is a RESULTS turn, not the blank page");
+  assert.match(prompts[0], /"value": "Rust"|"value":"Rust"/,
+    "and it shows the banked claim so the model does not re-derive it");
+  const values = (result.verified?.disclosures ?? []).map((d) => d.value).sort();
+  assert.deepEqual(values, ["HMAC tunnel", "Rust"],
+    "seed and continuation land together");
+});
