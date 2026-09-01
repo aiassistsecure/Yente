@@ -50,12 +50,12 @@ test("the first proposal of a pair is fresh; every rescan of it is not", () => {
 test("a decided pair is neither fresh nor reopened", () => {
   const graph = createGraphRepositories(openInMemory());
   const { match } = graph.matches.propose({ ...PAIR, at: T0 });
-  graph.matches.decide({ matchId: match.id, state: MATCH_STATES.DECLINED, by: "mark", at: T0 });
+  graph.matches.decide({ matchId: match.id, state: MATCH_STATES.REJECTED, by: "mark", at: T0 });
 
   const again = graph.matches.propose({ ...PAIR, at: T1 });
   assert.equal(again.decided, true, "a human ruling stands");
   assert.equal(again.fresh, false);
-  assert.equal(again.match.state, MATCH_STATES.DECLINED);
+  assert.equal(again.match.state, MATCH_STATES.REJECTED);
 });
 
 test("ten scans of an unchanged graph queue a pair exactly once", () => {
