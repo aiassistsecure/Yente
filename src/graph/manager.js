@@ -37,7 +37,7 @@
 import { AUTHORITY, MATCH_ORIGIN, MATCH_STATES, matchPairKey } from "../store/graph.js";
 import {
   PROFILE_STATES, PROFILE_STATE_PREDICATE,
-  isLegalTransition, isQualified, profileState,
+  isLegalTransition, isQualified, profileState, isIntakeArtifact,
 } from "./qualification.js";
 import {
   buildIdentityIndex, resolveObservations, proposeIdentityMerges,
@@ -583,6 +583,78 @@ export function createGraphManager({
     return profileState(graph.observations.project(id));
   }
 
+  /**
+   * AUTO-QUALIFICATION — Mark's directive, 2026-09-01: "fix the damn code to
+   * automate matching, I know I can manually match it but thats not what I
+   * want." Intake has been autonomous since the same directive put the HITL
+   * on the INTRODUCTION queue; the graph lifecycle just never got the memo,
+   * and every subject sat at `new` until an operator clicked four buttons.
+   *
+   * A subject is promoted straight to QUALIFIED when the graph can already
+   * stand behind them:
+   *   - a NAMED person (is_person; orgs are subjects, not members)
+   *   - at least one live intent that is not an intake artifact, OR a graded
+   *     proposal (Yente's own read of their documents)
+   *   - at least `minClaims` live claims in total
+   *   - eligible (not operator-excluded)
+   *
+   * What it will NEVER do: resurrect a DECLINED person (no is no), touch an
+   * excluded subject, or move anybody backwards. Every hop is a normal
+   * setProfileState — legal transitions, recorded rulings, TRACE answers
+   * "when did they qualify, and on the strength of what" with the reason
+   * written here. The human gate stays where the directive put it: the
+   * introduction review queue.
+   */
+  function autoQualify({ minClaims = 3 } = {}) {
+    const NEXT = {
+      [PROFILE_STATES.NEW]: PROFILE_STATES.RECEIVED,
+      [PROFILE_STATES.ASKED]: PROFILE_STATES.RECEIVED,
+      [PROFILE_STATES.RECEIVED]: PROFILE_STATES.DRAFTED,
+      [PROFILE_STATES.DRAFTED]: PROFILE_STATES.AWAITING_APPROVAL,
+      [PROFILE_STATES.AWAITING_APPROVAL]: PROFILE_STATES.QUALIFIED,
+    };
+    const promoted = [];
+    const resolved = resolveObservations(graph.observations.all())
+      .filter((row) => !row?.attributes?.retracted);
+    const bySubject = new Map();
+    for (const row of resolved) {
+      const held = bySubject.get(row.subject) ?? [];
+      held.push(row);
+      bySubject.set(row.subject, held);
+    }
+
+    for (const [id, rows] of bySubject) {
+      if (!isEligible(id)) continue;
+      const state = profileStateOf(id);
+      if (state === PROFILE_STATES.QUALIFIED || state === PROFILE_STATES.DECLINED) continue;
+
+      const named = rows.some((row) => row.predicate === "is_person");
+      if (!named) continue;
+      const substance = rows.some((row) => {
+        const predicate = String(row.predicate);
+        if (predicate.startsWith("proposal:")) return true;
+        return predicate.startsWith("intent:") && !isIntakeArtifact(row.object);
+      });
+      if (!substance) continue;
+      const claims = rows.filter((row) => row.predicate !== PROFILE_STATE_PREDICATE).length;
+      if (claims < minClaims) continue;
+
+      const reason = `auto-qualified: named person, ${claims} verified claims, `
+        + "live intent or graded proposal on file";
+      let current = state;
+      while (current !== PROFILE_STATES.QUALIFIED) {
+        const next = NEXT[current];
+        if (!next) break;
+        setProfileState({ subject: id, state: next, quote: reason, by: "yente:auto" });
+        current = next;
+      }
+      if (current === PROFILE_STATES.QUALIFIED) {
+        promoted.push({ subject: id, from: state, claims });
+      }
+    }
+    return promoted;
+  }
+
 
   /** Counts for the header, so the operator can see the loop moving. */
   /**
@@ -838,7 +910,7 @@ export function createGraphManager({
     // operator excluding somebody, the other is the person not having approved
     // their profile yet. Collapsing them would make "why isn't this person
     // matching" unanswerable.
-    isMatchable, setProfileState, profileStateOf,
+    isMatchable, setProfileState, profileStateOf, autoQualify,
     relationshipSignal,
     actor,
   });

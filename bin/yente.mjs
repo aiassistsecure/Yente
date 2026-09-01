@@ -396,6 +396,7 @@ const { source, imap, mailbox, configured } = createMailFromEnv({ graph, log });
 
 const loops = createGraphLoops({
   graph, source, observer, manager, log, begin, end,
+  autoQualify: String(process.env.YENTE_AUTOQUALIFY ?? "1") === "1",
   signal: abort.signal,
   isStopping: () => stopping,
   concurrency,
