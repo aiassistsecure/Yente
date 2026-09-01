@@ -111,6 +111,13 @@ export const RELATIONSHIP_PREDICATES = Object.freeze([
 export const DISCLOSURE_FIELDS = Object.freeze([
   "role", "capability", "industry", "employer", "geography",
   "seniority", "credential", "availability", "stage", "budget",
+  // A way to reach them that they OFFERED — a phone number, a handle. Added
+  // 2026-09-01 after the live desk rejected "+1-844-VAPE-B2B" twice per pass
+  // (UNKNOWN_DISCLOSURE_FIELD): the writer kept handing over contact routes
+  // and the schema kept refusing to remember them. Renders everywhere,
+  // including the public directory — this is B2B, and a business line the
+  // writer volunteered is a business line (Mark, 2026-09-01).
+  "contact",
 ]);
 
 /**

@@ -25,10 +25,18 @@ import { resolveObservations } from "./identity.js";
 import { significantWords, sourceKindOf } from "./provenance.js";
 import { digest } from "../store/keys.js";
 
-/** Disclosure predicates, in the order a card presents them. */
+/**
+ * Disclosure predicates, in the order a card presents them.
+ *
+ * "contact" renders here too — this is a B2B directory, and a business phone
+ * line or handle the writer VOLUNTEERED is part of their public card (Mark,
+ * 2026-09-01). Email addresses remain the one thing never rendered: they are
+ * member identifiers, not disclosures, and introductions still go through
+ * Yente's own mailbox.
+ */
 const DISCLOSURE_FIELDS = Object.freeze([
   "role", "employer", "industry", "capability", "geography",
-  "seniority", "credential", "availability", "stage", "budget",
+  "seniority", "credential", "availability", "stage", "budget", "contact",
 ]);
 
 const GRADE_RANK = Object.freeze({ exceptional: 3, strong: 2, good: 1 });
