@@ -234,23 +234,15 @@ if (deskStore) {
 
 const intelligenceConfig = resolveIntelligenceConfig();
 const { provider: providerName } = intelligenceConfig;
-// The message/document split, resolved ONCE here and passed down. Null when
-// the operator has not split — observe() then uses its construction model.
-const models = (intelligenceConfig.messageModel !== intelligenceConfig.model
-  || intelligenceConfig.documentModel !== intelligenceConfig.model)
-  ? {
-    messageModel: intelligenceConfig.messageModel,
-    documentModel: intelligenceConfig.documentModel,
-  }
-  : null;
+// THE TWO SEATS, resolved inside createLlmClients: extractionClient runs
+// YENTE_MODEL_DOCUMENT (ingestion — every observe job), emailClient runs
+// YENTE_MODEL_MESSAGE (the voice — everything Yente writes to people).
+// There is no per-evidence-kind model split; the split is by AUDIENCE.
 const clients = createLlmClients({ provider: providerName, log });
 const observer = createIntelligenceProvider({
   client: clients.extractionClient,
   provider: providerName,
   model: clients.describe.model,
-  // The split, when configured — reported from the RESOLVED values, never the
-  // env, so the log cannot name a model the code is not using.
-  ...(models ? { message_model: models.messageModel, document_model: models.documentModel } : {}),
   // The terminal is the operator console. Show the stream here rather than
   // hiding it inside the HTTP adapter: reasoning proves liveness, content shows
   // the exact Sentinel text the parser will receive, and a rejection names the
@@ -355,7 +347,6 @@ const loops = createGraphLoops({
   signal: abort.signal,
   isStopping: () => stopping,
   concurrency,
-  models,
   transport,
   onMessage: waitlist
     ? (message) => {

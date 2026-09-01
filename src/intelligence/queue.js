@@ -280,9 +280,6 @@ function subjectHintFor({ graph, job, evidence }) {
 export async function drainIntelligence({
   graph,
   observer,
-  // { messageModel, documentModel } or null. Threaded, not read from the env
-  // here — one read, one owner, passed down, same rule as concurrency.
-  models = null,
   // The env fallback stays for the one-shot tools, but a caller that owns the
   // number should pass it. `= default` covers an explicit `undefined`, which is
   // what a caller that hasn't decided actually sends.

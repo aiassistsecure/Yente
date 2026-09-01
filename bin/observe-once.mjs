@@ -48,7 +48,7 @@ environment:
   YENTE_LLM_API_KEY               required for the pin provider
   YENTE_INTELLIGENCE_PROVIDER     default pin
   YENTE_MODEL_DOCUMENT            default muse-local:latest
-  YENTE_MODEL_MESSAGE             short bodies; defaults to the document model
+  YENTE_MODEL_MESSAGE             the voice (unused by this tool)
 `);
   return 2;
 }
