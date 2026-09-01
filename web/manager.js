@@ -573,6 +573,7 @@ ${thread.claims.map(claimCard).join("") || `<p class="empty">No claims mined fro
 export function renderManager({ manager, health = {}, mailSilenceMinutes = null }) {
   const summary = manager.summary();
   const pending = manager.pendingMatches({ limit: 40 });
+  const awaiting = manager.awaitingMatches ? manager.awaitingMatches({ limit: 40 }) : [];
   const identities = manager.pendingIdentities ? manager.pendingIdentities({ limit: 10 }) : [];
   const subjects = manager.subjects().slice(0, 60);
 
@@ -604,6 +605,7 @@ export function renderManager({ manager, health = {}, mailSilenceMinutes = null 
     <span><b>${summary.observations}</b> observations</span>
     <span><b>${summary.jobs.READY ?? 0}</b> queued</span>
     <span><b>${summary.matches.proposed}</b> to review</span>
+    ${awaiting.length > 0 ? `<span><b>${awaiting.length}</b> awaiting yes</span>` : ""}
     <span><b>${summary.matches.confirmed}</b> introduced</span>
     <span><a href="/stats">stats</a></span>
   </div>
@@ -620,6 +622,33 @@ ${mailAlert}
 ${pending.length === 0
     ? `<p class="empty">Nothing waiting. ${summary.jobs.READY ?? 0} messages still to interpret.</p>`
     : pending.map(matchCard).join("")}
+
+${awaiting.length === 0 ? "" : `
+<h2>Waiting on the parties</h2>
+${awaiting.map((m) => `
+<div class="card">
+  <div><span class="pair">${esc(shortSubject(m.seeker))} ↔ ${esc(shortSubject(m.offerer))}</span>
+    <span style="color:var(--dim)"> · ${esc(String(m.matchType ?? ""))}</span></div>
+  <ul class="why">
+    ${m.sides.map((side) => {
+      const who = esc(side.name ?? side.address ?? shortSubject(side.subject));
+      if (side.decision === "approve") {
+        return `<li>✓ <b>${who}</b> said yes${side.quote ? ` — “${esc(side.quote)}”` : ""}</li>`;
+      }
+      if (side.decision === "decline") {
+        return `<li>✕ <b>${who}</b> declined${side.quote ? ` — “${esc(side.quote)}”` : ""}</li>`;
+      }
+      return side.previewSentAt
+        ? `<li>… <b>${who}</b> has the letter (sent ${esc(String(side.previewSentAt).slice(0, 16))}), no legible answer yet</li>`
+        : `<li>✉ <b>${who}</b> — letter not sent yet (next connect pass)</li>`;
+    }).join("")}
+  </ul>
+  <form class="row" method="post" action="/">
+    <input type="hidden" name="matchId" value="${esc(m.id)}">
+    <input type="text" name="note" placeholder="why withdraw it (optional)">
+    <button class="no" name="action" value="reject">Withdraw</button>
+  </form>
+</div>`).join("")}`}
 
 ${identities.length === 0 ? "" : `
 <h2>Same person?</h2>
