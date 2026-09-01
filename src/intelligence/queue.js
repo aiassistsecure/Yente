@@ -513,6 +513,9 @@ export async function drainIntelligence({
             : nothingNew ? "understood_nothing_new" : "observed", {
           evidence: job.evidenceId,
           claims: written,
+          // ALWAYS shown when nonzero. "understood 5" over a 30-claim bank
+          // read as 27 claims thrown in the trash (live, 2026-09-01) — they
+          // were on the graph all along, and the line refused to say so.
           ...(duplicates > 0 ? { duplicates } : {}),
           rejected: result.rejected.length,
           ...(result.rejected.length > 0
