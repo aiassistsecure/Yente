@@ -74,6 +74,7 @@ import { createLlmClients } from "../src/llm/providers.js";
 import { openWaitlistRepository } from "../src/waitlist/repository.js";
 import { claimSeatFromInbound } from "../src/waitlist/inbound.js";
 import { createSiteHandler } from "../web/server.js";
+import { createLanes, pooledObserver, pooledCompleter } from "../src/runtime/lanes.js";
 import { renderManager, handleManagerRequest } from "../web/manager.js";
 import { createDesk } from "../src/runtime/desk.js";
 import { createGraphLoops } from "../src/graph/loops.js";
@@ -140,6 +141,42 @@ let desk = null;
 let waitlist = null;
 let transport = null;
 
+/* --------------------------------------------------- the supervisor lanes */
+//
+// "Main thread connects to nedb and dispatches workers." This process is the
+// supervisor: it alone holds the store locks, listens to mail, applies
+// verified results, and runs matching (always on, nudged per understanding).
+// The model work — reading documents, writing to people — runs on worker
+// threads, one pool per seat, each sized by its own variable:
+//
+//   YENTE_INGEST_WORKERS  lanes reading evidence (the document seat)
+//   YENTE_VOICE_WORKERS   lanes writing to people (the message seat)
+//
+// 0 (the default) keeps that seat in-process — same behaviour as before the
+// supervisor existed, and the safe setting on a box that has not planned its
+// GPU budget in lanes yet. 2/1, 1/2, 2/3: an env decision, not a deploy.
+const laneCount = (name) => {
+  const n = Number(process.env[name] ?? 0);
+  return Number.isInteger(n) && n > 0 ? n : 0;
+};
+const laneStream = (event, meta) => log(
+  event?.phase === "rejected" ? "warn" : "info",
+  "model_stream",
+  { ...event, ...(meta?.evidence ? { evidence: meta.evidence } : {}) },
+);
+const ingestLaneCount = laneCount("YENTE_INGEST_WORKERS");
+const voiceLaneCount = laneCount("YENTE_VOICE_WORKERS");
+const ingestLanes = ingestLaneCount > 0
+  ? createLanes({ size: ingestLaneCount, name: "ingest", log, onEvent: laneStream,
+    workerData: { seat: "ingest", provider: process.env.YENTE_INTELLIGENCE_PROVIDER
+      || process.env.YENTE_LLM_PROVIDER || "pin" } })
+  : null;
+const voiceLanes = voiceLaneCount > 0
+  ? createLanes({ size: voiceLaneCount, name: "voice", log,
+    workerData: { seat: "voice", provider: process.env.YENTE_INTELLIGENCE_PROVIDER
+      || process.env.YENTE_LLM_PROVIDER || "pin" } })
+  : null;
+
 if (deskStore) {
   // WITHOUT THIS, EVERY ATTACHMENT IS UNREADABLE. The extractor registry starts
   // empty and parsers register themselves; production once had none at all, so
@@ -192,11 +229,16 @@ if (deskStore) {
 
   if (transport) {
     const llm = createLlmClients({ log });
+    // The desk's voice renders on the voice lanes when they exist — same
+    // client contract, the completion just runs off the main thread.
+    const deskEmailClient = voiceLanes
+      ? pooledCompleter({ lanes: voiceLanes, baseClient: llm.emailClient })
+      : llm.emailClient;
     const runtime = createRuntime({
       repositories,
       transport,
       extractionClient: llm.extractionClient,
-      emailClient: llm.emailClient,
+      emailClient: deskEmailClient,
       graphEvidence: graph.evidence,
     });
     desk = createDesk({
@@ -239,7 +281,7 @@ const { provider: providerName } = intelligenceConfig;
 // YENTE_MODEL_MESSAGE (the voice — everything Yente writes to people).
 // There is no per-evidence-kind model split; the split is by AUDIENCE.
 const clients = createLlmClients({ provider: providerName, log });
-const observer = createIntelligenceProvider({
+const localObserver = createIntelligenceProvider({
   client: clients.extractionClient,
   provider: providerName,
   model: clients.describe.model,
@@ -253,12 +295,22 @@ const observer = createIntelligenceProvider({
     event,
   ),
 });
+// With ingest lanes, observe() crosses to a worker thread; the drain never
+// learns the difference — same result shape, same error codes, and the
+// stream telemetry above still arrives (forwarded across the boundary).
+const observer = ingestLanes
+  ? pooledObserver({ lanes: ingestLanes, describe: localObserver.describe })
+  : localObserver;
 
 // Read ONCE, here, and passed down. The previous version read this env var in
 // the log line and again inside drainIntelligence — so the boot line reported
 // intent while the drain used its own copy, and a setting that failed to take
 // looked exactly like a setting that worked.
-const concurrency = Number(process.env.YENTE_INTELLIGENCE_CONCURRENCY || 3);
+// With ingest lanes, the lanes ARE the concurrency: one observation per lane,
+// which is the unit the GPU budget was planned in.
+const concurrency = ingestLanes
+  ? ingestLanes.size
+  : Number(process.env.YENTE_INTELLIGENCE_CONCURRENCY || 3);
 
 // Prompt v6 keeps quoted copies of Yente's prior email out of the model's
 // analysis view while preserving the complete message in NEDB evidence. Requeue
@@ -532,6 +584,12 @@ async function shutdown(signal) {
 
   await imap?.close().catch(() => {});
   await transport?.close?.().catch(() => {});
+  // Lanes before stores: a worker mid-task holds no store handle (that is the
+  // whole design), so terminating them cannot corrupt anything — but the
+  // in-flight tasks reject as transient and their jobs stay READY for the
+  // next boot.
+  await ingestLanes?.shutdown().catch(() => {});
+  await voiceLanes?.shutdown().catch(() => {});
   for (const store of openDatabases()) closeDatabase(store);
   log("info", "stopped", { ticks: JSON.stringify(health.ticks) });
   process.exit(0);
