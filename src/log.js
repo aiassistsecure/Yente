@@ -319,8 +319,10 @@ export function createLogger({ pid = process.pid, quiet = false } = {}) {
       // the same shape as `understood 6 claims` is how twenty-six empty answers
       // drain a queue while the heartbeat reports progress.
       case "understood_nothing":
+      case "understood_nothing_new":
       case "observed": {
         const empty = event === "understood_nothing";
+        const nothingNew = event === "understood_nothing_new";
         flushModelStreamsFor(meta.evidence);
         end(meta.evidence);
         stats.observed += 1;
@@ -332,7 +334,10 @@ export function createLogger({ pid = process.pid, quiet = false } = {}) {
         line(empty ? "warn" : "info", "understand",
           empty
             ? `${c.yellow("understood NOTHING")} — the model returned no usable claims`
-            : `understood ${c.bold(meta.claims)} claim${meta.claims === 1 ? "" : "s"}`, {
+            : nothingNew
+              ? `understood, nothing new — ${c.bold(meta.duplicates)} claim${
+                Number(meta.duplicates) === 1 ? "" : "s"} already on the graph`
+              : `understood ${c.bold(meta.claims)} claim${meta.claims === 1 ? "" : "s"}`, {
             evidence: String(meta.evidence).slice(0, 20),
             took: human(meta.elapsed_ms),
             rejected: meta.rejected || undefined,
