@@ -23,6 +23,8 @@
  * link preview can fire.
  */
 
+import { LEGAL_TRANSITIONS } from "../src/graph/qualification.js";
+
 const ESCAPES = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
 const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (c) => ESCAPES[c]);
 
@@ -162,6 +164,17 @@ export async function handleManagerRequest({ req, res, manager, graph, health, o
         break;
       case "exclude":
         manager.excludeSubject({ subject: form.get("subject"), note });
+        break;
+      case "profile_state":
+        // The operator moving somebody along the lifecycle — most importantly
+        // to QUALIFIED, the only state matching can see (§20). Legal
+        // transitions are enforced in the manager; an illegal move throws and
+        // surfaces below rather than silently mutating.
+        manager.setProfileState({
+          subject: form.get("subject"),
+          state: form.get("state"),
+          quote: note || undefined,
+        });
         break;
       default:
         res.writeHead(400, { "content-type": "text/plain" });
@@ -346,6 +359,9 @@ export function renderProfile({ profile }) {
   ${row("signal", `${esc(profile.signal.strength)}
     <span class="empty">${esc(JSON.stringify(profile.signal.inputs))}</span>`)}
   ${row("matchmaking", profile.eligible ? "eligible" : "<b>excluded</b>")}
+  ${row("lifecycle", `<b>${esc(profile.profileState ?? "new")}</b>${
+    profile.matchable ? ' <span class="badge curated">matchable</span>'
+      : ' <span class="badge thin">not matchable — only QUALIFIED profiles are scored (§20)</span>'}`)}
 </table>
 <p class="empty" style="padding-top:4px">${esc(profile.signal.label ?? "")}</p>
 
@@ -467,6 +483,24 @@ ${profile.history.length === 0 ? `<p class="empty">Nothing recorded.</p>` : `
       : "asserted"}</td>
   </tr>`).join("")}</table>
 </details>`}
+
+<h2>Lifecycle</h2>
+<div class="card">
+  <p class="empty" style="padding:0 0 8px">Matching only sees QUALIFIED profiles —
+  people who approved what Yente believes about them. Advancing a state by hand
+  asserts that step happened off-channel (a reply, a call); it is recorded as
+  your ruling, at your authority, with your note as the quote.</p>
+  <form class="row" method="post" action="/?back=${encodeURIComponent(`/subject?id=${profile.id}`)}">
+    <input type="hidden" name="action" value="profile_state">
+    <input type="hidden" name="subject" value="${esc(profile.id)}">
+    <input type="text" name="note" placeholder="how you know (e.g. approved by reply, 9/1)">
+    ${(LEGAL_TRANSITIONS[profile.profileState ?? "new"] ?? [])
+      .filter((state) => state !== (profile.profileState ?? "new"))
+      .map((state) => `<button name="state" value="${esc(state)}"${
+        state === "qualified" ? ' class="yes"' : state === "declined" ? ' class="no"' : ""
+      }>${esc(state.replace(/_/g, " "))}</button>`).join("")}
+  </form>
+</div>
 
 <h2>Corrections</h2>
 <div class="card">
