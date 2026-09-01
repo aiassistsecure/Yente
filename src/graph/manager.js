@@ -76,6 +76,38 @@ export function createGraphManager({
    * sides' quotes so the decision can be made from this payload alone without a
    * second round of lookups.
    */
+  /**
+   * The consent round, visible. A match in AWAITING_PARTIES had vanished
+   * from the console: not in the review queue (it is decided), not
+   * introduced (it is not), only a number in the tape's tally. The operator
+   * could not see who has been written to, who answered, or what they said
+   * — and a quoted consent that cannot be inspected may as well not exist.
+   */
+  function awaitingMatches({ limit = 50 } = {}) {
+    return graph.matches
+      .byState(MATCH_STATES.AWAITING_PARTIES)
+      .sort((a, b) => String(b.operatorConfirmedAt ?? "").localeCompare(String(a.operatorConfirmedAt ?? "")))
+      .slice(0, limit)
+      .map((match) => {
+        const id = match.id ?? match._id;
+        const sides = [match.seeker, match.offerer].map((subjectId) => {
+          const address = String(subjectId).startsWith("person:")
+            ? String(subjectId).slice("person:".length).toLowerCase() : null;
+          const decision = address ? match.partyDecisions?.[address] ?? null : null;
+          return {
+            subject: subjectId,
+            name: subject(subjectId)?.name ?? null,
+            address,
+            previewSentAt: address ? match.previews?.[address]?.sentAt ?? null : null,
+            decision: decision?.decision ?? null,
+            quote: decision?.quote ?? null,
+            decidedAt: decision?.at ?? null,
+          };
+        });
+        return { ...match, id, sides };
+      });
+  }
+
   function pendingMatches({ limit = 50 } = {}) {
     return graph.matches
       .byState(MATCH_STATES.PROPOSED)
@@ -946,7 +978,7 @@ export function createGraphManager({
   }
 
   return Object.freeze({
-    pendingMatches, pendingIdentities, subject, subjects, thread, threadHrefFor, summary,
+    pendingMatches, awaitingMatches, pendingIdentities, subject, subjects, thread, threadHrefFor, summary,
     searchGraph, stats,
     // search_matches_or_return_false — the discovery search, bound to this
     // graph. Named for what a caller must handle: false means there is nobody,

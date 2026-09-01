@@ -498,7 +498,13 @@ export function wireClaimLine(group, claim) {
   const wire = { claim: GROUP_DISCRIMINATOR[group] };
   for (const [key, value] of Object.entries(claim)) {
     const snake = key.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`);
-    wire[snake] = typeof value === "string" ? value.replace(/<<<|>>>/g, "") : value;
+    // The bank speaks the same dialect as the prompt: SOURCE blocks are
+    // named by their 12-hex short form, so an EXTRACTED_CLAIMS line echoing
+    // the full 64-char hash both wastes ~25 tokens per line and shows the
+    // model an id shape it was told not to use.
+    wire[snake] = snake === "source_id"
+      ? shortSourceId(String(value ?? ""))
+      : typeof value === "string" ? value.replace(/<<<|>>>/g, "") : value;
   }
   return JSON.stringify(wire);
 }
