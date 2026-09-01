@@ -18,7 +18,7 @@
  * invented.
  */
 
-import { ProtocolError, parseEmailArtifact, textBlock, BLOCK_TAGS } from "../protocol/blocks.js";
+import { ProtocolError, extractArtifact, parseEmailArtifact, textBlock, BLOCK_TAGS } from "../protocol/blocks.js";
 
 export class DisclosureError extends ProtocolError {
   constructor(code, message, meta = {}) {
@@ -139,8 +139,12 @@ export async function generateEmail({ client, prompt, expect, fallback, system, 
     }
 
     try {
-      const email = guardEmailDisclosure(completion.text, expect);
-      return { source: "model", artifact: completion.text, email, attempts: attempt, failures };
+      // Reading tolerance: small models narrate around their blocks. Slice
+      // to the artifact before judging it — the guard still validates every
+      // byte INSIDE the frames.
+      const artifact = extractArtifact(completion.text);
+      const email = guardEmailDisclosure(artifact, expect);
+      return { source: "model", artifact, email, attempts: attempt, failures };
     } catch (error) {
       if (!(error instanceof ProtocolError)) throw error;
       failures.push({ attempt, code: error.code, message: error.message });

@@ -156,6 +156,17 @@ export function createDesk({
       log("error", "sweep_failed", { error: String(error?.message ?? error).slice(0, 300) });
     }
 
+    // Owed conversational replies: no canned fallback exists, so a reply the
+    // voice could not compose stays on the ledger and gets another model
+    // round here, every tick, until it speaks for real.
+    let owedSettled = 0;
+    try {
+      owedSettled = runtime.retryOwedReplies ? await runtime.retryOwedReplies(now) : 0;
+      if (owedSettled > 0) log("info", "owed_replies_settled", { settled: owedSettled });
+    } catch (error) {
+      log("error", "owed_retry_failed", { error: String(error?.message ?? error).slice(0, 300) });
+    }
+
     const drained = await runtime.drainOutbox(now);
     const sent = Array.isArray(drained)
       ? drained.filter((d) => d?.status === "sent" || d?.sent).length
@@ -166,13 +177,15 @@ export function createDesk({
         started_at: startedAt, finished_at: new Date().toISOString(),
         pid: process.pid, mode, status: "ok",
         ingested: ingested.length, sent, outcomes,
-        facts, rejected, failures: failures.length, proposed, advanced, answered, replies,
+        facts, rejected, failures: failures.length, proposed, advanced, answered,
+        replies: replies + owedSettled,
       });
     } catch { /* ignore */ }
 
     return {
       ingested: ingested.length, sent, outcomes,
-      facts, rejected, failures: failures.length, proposed, advanced, answered, replies,
+      facts, rejected, failures: failures.length, proposed, advanced, answered,
+      replies: replies + owedSettled,
       ms: Date.now() - t0,
     };
   }

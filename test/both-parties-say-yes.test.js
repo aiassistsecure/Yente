@@ -54,7 +54,7 @@ function world() {
   claim(DEV, "proposal:hire_for", "Rust backend engineering roles",
     { evidenceId: "attachment:cv1", attributes: { grade: "exceptional" } });
 
-  const manager = createGraphManager({ graph, actor: "mark", partyApproval: true });
+  const manager = createGraphManager({ graph, actor: "mark", partyApproval: true, now: () => T0 });
   const { match } = graph.matches.propose({
     seeker: HIRER, offerer: DEV, matchType: "hiring_x_hire_for", confidence: 0.8,
     reasons: [{ id: "graded_candidate", detail: "exceptional for rust roles" }],
@@ -181,6 +181,21 @@ test("an unclear reply moves nothing, and is not re-read on the next pass", asyn
   assert.equal(consentClient.calls, callsAfterFirst, "the same reply is read once");
 });
 
+test("a chatty consent verdict wrapped in narration still counts", async () => {
+  const chatty = {
+    async complete() {
+      const block = composeBlocks(jsonBlock(BLOCK_TAGS.CONSENT,
+        { decision: "approve", quote: "sounds great" }));
+      return { text: "Okay, my read:\n```\n" + block + "\n```", finishReason: "stop", elapsedMs: 1 };
+    },
+  };
+  const verdict = await interpretConsent({
+    client: chatty, text: "sounds great, set it up", counterpartName: "Dana",
+  });
+  assert.equal(verdict.decision, "approve",
+    "narration around the CONSENT block is transport noise");
+});
+
 test("a grounded verdict requires the quote to be IN the reply", async () => {
   const liar = modelSaying("approve", "yes absolutely definitely");
   const verdict = await interpretConsent({
@@ -192,7 +207,7 @@ test("a grounded verdict requires the quote to be IN the reply", async () => {
 
 test("party approval off: confirm sends immediately, exactly as before", async () => {
   const { graph, matchId } = world();
-  const manager = createGraphManager({ graph, actor: "mark", partyApproval: false });
+  const manager = createGraphManager({ graph, actor: "mark", partyApproval: false, now: () => T0 });
   const transport = createMemoryTransport();
   const held = manager.confirmMatch({ matchId });
   assert.equal(held.state, MATCH_STATES.CONFIRMED);

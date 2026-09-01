@@ -11,9 +11,10 @@
  * identity file ordered "Reply to every email promptly."
  *
  * These tests pin the yap gate: when the pipeline queues nothing for a live
- * conversational message, the voice model composes the reply — guarded,
- * per-message idempotent, with a deterministic fallback so a wedged model
- * degrades to an acknowledgment and never to silence.
+ * conversational message, the voice model composes the reply — guarded and
+ * per-message idempotent. There is NO canned fallback ("thats not how we do
+ * business with yente"): a wedged model records an owed reply and the desk
+ * retries it every tick until the voice speaks for real.
  */
 
 import assert from "node:assert/strict";
@@ -112,39 +113,66 @@ test("a repeat message every template ignores gets a model-composed reply", asyn
   assert.equal(transport.sent.filter((m) => m.subject === "About your rust search").length, 1);
 });
 
-test("a babbling voice degrades to the deterministic fallback, never silence", async () => {
+test("no dumb fallback: a wedged voice owes the reply and pays when it recovers", async () => {
   const store = openInMemory();
   const repositories = createRepositories(store);
   const transport = createMemoryTransport();
-  const babble = { async complete() { return { text: "uhh no blocks here", finishReason: "stop", elapsedMs: 1 }; } };
+  // A voice that babbles until it recovers — the live shape: the 8B flunks
+  // the contract for a while, then produces a clean artifact.
+  const moody = {
+    recovered: false,
+    async complete() {
+      if (!this.recovered) return { text: "uhh no blocks here", finishReason: "stop", elapsedMs: 1 };
+      return {
+        text: createEmailArtifact({
+          meta: { template: "conversation", facts_used: [] },
+          subject: "About what I have for you",
+          text: "Here is where things stand.\n\n\u2014 Yente",
+        }),
+        finishReason: "stop", elapsedMs: 1,
+      };
+    },
+  };
   const rows = [{
     id: "message:f1", kind: "message", text: "Any candidates yet?",
     meta: { rfcMessageId: "<f1@live.test>", from: WHO, to: ["yente@ccme.network"], subject: "checking in" },
     receivedAt: T0,
   }];
   const runtime = createRuntime({
-    repositories, transport, extractionClient: emptyModel, emailClient: babble,
+    repositories, transport, extractionClient: emptyModel, emailClient: moody,
     graphEvidence: { all: () => rows, get: () => null },
     config: { extractionRetryDelayMs: 0 },
   });
-  // No facts on file and no source in the message: intake queues the profile
-  // request template — the voice stays quiet behind a fresh template.
   let [result] = await runtime.ingest(NOW);
   assert.equal(result.outcome, "profile_requested");
 
-  // Second note: the profile-request key is used up. The pipeline is silent,
-  // the model babbles twice, and the FALLBACK still answers.
+  // Second note: pipeline silent, model babbles twice — NOTHING sends. The
+  // debt is recorded instead of papered over with a form letter.
   rows.push({
     id: "message:f2", kind: "message", text: "hello?",
     meta: { rfcMessageId: "<f2@live.test>", from: WHO, to: ["yente@ccme.network"], subject: "hello" },
     receivedAt: T0,
   });
   [result] = await runtime.ingest(NOW);
-  assert.equal(result.replied, true, "a wedged model must not mean silence");
+  assert.notEqual(result.replied, true, "no letter is faked");
   await runtime.drainOutbox(NOW);
-  const ack = transport.sent.find((m) => m.subject === "I read your note");
-  assert.ok(ack, "the deterministic acknowledgment went out");
-  assert.match(ack.text, /working with what you have given me/);
+  assert.equal(transport.sent.length, 1, "only the profile request went out — no canned ack");
+  assert.equal(store.query("FROM owed_replies").length, 1, "the reply is on the owed ledger");
+
+  // Still wedged: the retry pays nothing and the debt stays.
+  assert.equal(await runtime.retryOwedReplies(NOW), 0);
+  assert.equal(store.query("FROM owed_replies").length, 1);
+
+  // The model recovers: the next tick pays the debt with a REAL letter.
+  moody.recovered = true;
+  assert.equal(await runtime.retryOwedReplies(NOW), 1);
+  await runtime.drainOutbox(NOW);
+  const paid = transport.sent.find((m) => m.subject === "About what I have for you");
+  assert.ok(paid, "the recovered voice paid the debt");
+  assert.equal(store.query("FROM owed_replies").length, 0, "and the ledger is clear");
+
+  // Settled means settled: another retry pays nothing twice.
+  assert.equal(await runtime.retryOwedReplies(NOW), 0);
 });
 
 test("a voice that names a stranger is stopped by the disclosure guard", async () => {
@@ -194,8 +222,57 @@ test("a voice that names a stranger is stopped by the disclosure guard", async (
     assert.doesNotMatch(sent.text ?? "", /candidate\.zero@secret\.test/,
       "a stranger's address never leaves the desk");
   }
-  const ack = transport.sent.find((m) => m.subject === "I read your note");
-  assert.ok(ack, "the guard rejected the leak twice and the fallback spoke instead");
+  // No form letter covers for the leak: the reply goes on the owed ledger
+  // and waits for a letter the guard will pass.
+  assert.equal(store.query("FROM owed_replies").length, 1,
+    "the guard held the line and the debt is recorded, not papered over");
+});
+
+test("a chatty model that narrates around valid blocks still speaks", async () => {
+  // The LIVE failure, 2026-09-01: the 8B wrapped a perfectly valid artifact
+  // in preamble and fences, OUTSIDE_BLOCK_TEXT rejected it twice, and every
+  // reply fell back. The reading edge now slices to the artifact first.
+  const store = openInMemory();
+  const repositories = createRepositories(store);
+  const transport = createMemoryTransport();
+  const chatty = {
+    async complete() {
+      const clean = createEmailArtifact({
+        meta: { template: "conversation", facts_used: [] },
+        subject: "Here is where we stand",
+        text: "Working on it.\n\n\u2014 Yente",
+      });
+      return {
+        text: "Sure! Here is the email you asked for:\n```\n" + clean + "\n```\nHope that helps!",
+        finishReason: "stop", elapsedMs: 1,
+      };
+    },
+  };
+  const rows = [
+    {
+      id: "message:f1", kind: "message", text: "Any candidates yet?",
+      meta: { rfcMessageId: "<f1@live.test>", from: WHO, to: ["yente@ccme.network"], subject: "checking in" },
+      receivedAt: T0,
+    },
+    {
+      id: "message:f2", kind: "message", text: "hello?",
+      meta: { rfcMessageId: "<f2@live.test>", from: WHO, to: ["yente@ccme.network"], subject: "hello" },
+      receivedAt: T0,
+    },
+  ];
+  const runtime = createRuntime({
+    repositories, transport, extractionClient: emptyModel, emailClient: chatty,
+    graphEvidence: { all: () => rows, get: () => null },
+    config: { extractionRetryDelayMs: 0 },
+  });
+  const results = await runtime.ingest(NOW);
+  assert.ok(results.some((r) => r.replied === true),
+    "narration around the blocks is transport noise, not a failure");
+  await runtime.drainOutbox(NOW);
+  const spoken = transport.sent.find((m) => m.subject === "Here is where we stand");
+  assert.ok(spoken, "the model's own letter went out on the first pass");
+  assert.doesNotMatch(spoken.text, /Hope that helps/,
+    "the narration itself never reaches the recipient");
 });
 
 test("no voice model configured: exactly the old behavior, no crash", async () => {

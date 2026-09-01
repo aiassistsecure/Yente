@@ -32,7 +32,7 @@ import { createHash } from "node:crypto";
 
 import { MATCH_STATES } from "../store/graph.js";
 import { resolveObservations } from "./identity.js";
-import { BLOCK_TAGS, composeBlocks, textBlock, parseJsonBlock, namedTextBlock } from "../protocol/blocks.js";
+import { BLOCK_TAGS, composeBlocks, extractArtifact, textBlock, parseJsonBlock, namedTextBlock } from "../protocol/blocks.js";
 import { YENTE_SYSTEM_IDENTITY } from "../llm/identity.js";
 
 const CARD_FIELDS = Object.freeze([
@@ -211,7 +211,7 @@ export async function interpretConsent({ client, text, counterpartName }) {
   }
   let verdict;
   try {
-    verdict = parseJsonBlock(String(completion.text ?? ""), BLOCK_TAGS.CONSENT);
+    verdict = parseJsonBlock(extractArtifact(completion.text), BLOCK_TAGS.CONSENT);
   } catch {
     return { decision: "unclear", quote: null, via: "malformed" };
   }
