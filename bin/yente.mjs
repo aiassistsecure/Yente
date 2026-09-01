@@ -82,7 +82,7 @@ import { subjectForAddress } from "../src/graph/identity.js";
 import { createMailFromEnv, mailConfigFromEnv } from "../src/mail/from-env.js";
 import { createGraphManager } from "../src/graph/manager.js";
 import { drainConfirmedIntroductions } from "../src/graph/introductions.js";
-import { drainPartyConsent } from "../src/graph/consent.js";
+import { drainPartyConsent, profileCard, renderCard } from "../src/graph/consent.js";
 import {
   createIntelligenceProvider,
   resolveIntelligenceConfig,
@@ -241,6 +241,18 @@ if (deskStore) {
       extractionClient: llm.extractionClient,
       emailClient: deskEmailClient,
       graphEvidence: graph.evidence,
+      // "yente should be able to report to a user what data yente has on
+      // file for themselves" — the member's own graph card, handed to the
+      // voice so every reply is grounded in their complete record.
+      profileCardFor: (address) => {
+        try {
+          const card = profileCard(graph, subjectForAddress(address));
+          const rendered = renderCard(card);
+          return rendered || null;
+        } catch {
+          return null;
+        }
+      },
     });
     desk = createDesk({
       store: deskStore, runtime, log, mode: "yente",
