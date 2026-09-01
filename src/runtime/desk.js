@@ -139,6 +139,21 @@ export function createDesk({
       log("error", "matching_failed", { error: String(error?.message ?? error).slice(0, 300) });
     }
 
+    // THE REPLY DEBT. INV-2 dedupes messages forever, so a message processed
+    // under code that owed no reply is never revisited — the sender is owed a
+    // letter no future tick would ever write. The sweep settles that debt at
+    // the member level: anyone in an intake state Yente has NEVER written to
+    // gets exactly one continuation (qualify if facts allow, clarify if a
+    // source exists, ask for a profile otherwise), and the outbox tracks them
+    // from then on. Idempotent by outbox key; a written-to member is skipped.
+    let answered = 0;
+    try {
+      answered = runtime.sweepUnanswered ? runtime.sweepUnanswered(now) : 0;
+      if (answered > 0) log("info", "reply_debt_settled", { answered });
+    } catch (error) {
+      log("error", "sweep_failed", { error: String(error?.message ?? error).slice(0, 300) });
+    }
+
     const drained = await runtime.drainOutbox(now);
     const sent = Array.isArray(drained)
       ? drained.filter((d) => d?.status === "sent" || d?.sent).length
@@ -149,13 +164,13 @@ export function createDesk({
         started_at: startedAt, finished_at: new Date().toISOString(),
         pid: process.pid, mode, status: "ok",
         ingested: ingested.length, sent, outcomes,
-        facts, rejected, failures: failures.length, proposed, advanced,
+        facts, rejected, failures: failures.length, proposed, advanced, answered,
       });
     } catch { /* ignore */ }
 
     return {
       ingested: ingested.length, sent, outcomes,
-      facts, rejected, failures: failures.length, proposed, advanced,
+      facts, rejected, failures: failures.length, proposed, advanced, answered,
       ms: Date.now() - t0,
     };
   }
