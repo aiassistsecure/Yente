@@ -53,7 +53,7 @@ import {
   ProtocolError, parseJsonBlock, requireSingleBlock, stripFenceLines, textBlock, BLOCK_TAGS,
 } from "../protocol/blocks.js";
 import { verifyFact } from "../extract/spans.js";
-import { createObservationPrompt, createWakeUpPrompt, OBSERVER_SYSTEM } from "./prompt.js";
+import { createObservationPrompt, createResultsPrompt, createWakeUpPrompt, OBSERVER_SYSTEM } from "./prompt.js";
 import { manifestStop, readManifestBlocks } from "./manifest.js";
 import {
   OBSERVATION_SCHEMA_VERSION,
@@ -85,7 +85,11 @@ import {
 // venture"). The bump is the retroactive lever: the boot requeue re-reads
 // every letter under v16 once, so EVERY participant who ever sent a resume
 // gets proposals, not just the ones who arrive after the deploy.
-export const PROMPT_VERSION = "obs_prompt_v16";
+// v17: graded rounds + quote-the-item + short source ids all land together.
+// The bump is again the retroactive lever: every letter whose cached envelope
+// carries historical rejects (hash typos, drifted skills-line quotes) gets
+// re-read once under the protocol that would have saved those claims.
+export const PROMPT_VERSION = "obs_prompt_v17";
 
 /** Default attempts. Transient failures are retried; deterministic ones are not. */
 const DEFAULT_ATTEMPTS = 3;
@@ -759,6 +763,13 @@ export function createIntelligenceProvider({
   // deliberately, per model, from the shell.
   prefill = process.env.YENTE_LLM_PREFILL ?? null,
   attempts: maxAttempts = DEFAULT_ATTEMPTS,
+  // Graded rounds: how many times a PARTLY-verified answer earns a results
+  // turn — accepted claims banked, rejects shown with the parser's reasons —
+  // before we settle for what verified. 0 disables the protocol.
+  rounds: maxRounds = process.env.YENTE_LLM_MAX_ROUNDS === undefined
+      || process.env.YENTE_LLM_MAX_ROUNDS === ""
+    ? 2
+    : Math.max(0, Number(process.env.YENTE_LLM_MAX_ROUNDS) || 0),
   retryDelayMs = DEFAULT_RETRY_DELAY_MS,
   // Optional live telemetry. The transport still returns only validated text;
   // this observer lets the operator see whether Muse is reasoning, answering,
@@ -847,6 +858,19 @@ export function createIntelligenceProvider({
 
     const failures = [];
     let attempt = 0;
+    // Graded rounds — Mark's protocol, 2026-08-31: "make the model submit
+    // claims more frequently and show it the results. 200 OK: 9 accepted,
+    // 2 rejected: evidence <12 chars." A PARTLY-verified answer earns a
+    // results turn: accepted claims bank (numbered, never resent), rejects
+    // come back with the parser's own reasons, the model fixes what the
+    // source supports and drops what it does not. Each round extends the
+    // attempt budget by one, so a round is never paid for with a retry.
+    let roundsUsed = 0;
+    // The rejected-claims feedback for the next results turn, or null.
+    let resultsFeedback = null;
+    // A claim rejected TWICE with the same reason is not going to fix
+    // itself — it stops being relitigated. Silence is free.
+    const rejectSeen = new Map();
     let lastText = null;
     // The full accumulated stream from the most recent mid-generation
     // failure, held OUTSIDE the failure records so result.failures stays
@@ -875,7 +899,7 @@ export function createIntelligenceProvider({
       return entries;
     };
 
-    while (attempt < maxAttempts) {
+    while (attempt < maxAttempts + roundsUsed) {
       attempt += 1;
       try {
         // A retry after a loop does NOT resend the prompt that caused it. It
@@ -888,7 +912,13 @@ export function createIntelligenceProvider({
               thoughts: lastReasoningText,
               extracted: banked.map(({ group, claim }) => wireClaimLine(group, claim)),
             })
-          : basePrompt;
+          : resultsFeedback
+            ? createResultsPrompt({
+                sources: promptSources, context,
+                accepted: banked.map(({ group, claim }) => wireClaimLine(group, claim)),
+                rejected: resultsFeedback,
+              })
+            : basePrompt;
 
         const completion = await client.complete({
           prompt: repairNote ? `${prompt}\n\n${repairNote}` : prompt,
@@ -953,8 +983,50 @@ export function createIntelligenceProvider({
         // which is the cheap general fix for a model that states one fact
         // twice.
         const kept = applyReviews(banked, reviews);
-        const { verified, duplicates } =
+        const { entries: acceptedEntries, verified, duplicates } =
           mergeEntries(kept, flattenVerified(attemptVerified));
+
+        // THE GRADED ROUND. This answer verified partly: bank what held,
+        // grade what did not, and spend one extended attempt showing the
+        // model its results — the parser's own codes and messages, which
+        // were written to be read (divergenceOf exists for this reader).
+        // A reject seen twice with the same grade is dropped from the
+        // conversation instead of relitigated; when every reject has been
+        // graded twice, the loop settles for what verified.
+        resultsFeedback = null;
+        if (roundsUsed < maxRounds
+            && (schemaRejected.length > 0 || groundingRejected.length > 0)) {
+          const feedback = [];
+          const grade = (line, code, message) => {
+            const key = `${code}|${line}`;
+            const seen = (rejectSeen.get(key) ?? 0) + 1;
+            rejectSeen.set(key, seen);
+            if (seen === 1) feedback.push({ line, code, message });
+          };
+          for (const row of schemaRejected) {
+            const claim = raw?.[row.group]?.[row.index];
+            if (!claim || typeof claim !== "object") continue;
+            grade(JSON.stringify(claim).replace(/<<<|>>>/g, "").slice(0, 600),
+              row.code, row.message);
+          }
+          for (const row of groundingRejected) {
+            const claim = envelope?.[row.group]?.[row.index];
+            if (!claim) continue;
+            grade(wireClaimLine(row.group, claim).slice(0, 600),
+              row.code, row.message);
+          }
+          if (feedback.length > 0) {
+            banked = acceptedEntries;
+            resultsFeedback = feedback;
+            roundsUsed += 1;
+            onStream?.({
+              phase: "graded", attempt, evidence, contentHash,
+              accepted: acceptedEntries.length, rejected: feedback.length,
+              round: roundsUsed,
+            });
+            continue;
+          }
+        }
 
         const result = {
           envelope,
@@ -965,6 +1037,7 @@ export function createIntelligenceProvider({
           discrepancies,
           failures: Object.freeze(failures),
           attempts: attempt,
+          rounds: roundsUsed,
           cached: false,
           // Which reader got it. Null means the strict block path; anything else
           // is drift worth watching, because a model that stops using the frame
