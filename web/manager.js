@@ -203,6 +203,17 @@ function readBody(req) {
 const STYLE = `
 :root{--ink:#12141a;--dim:#6b7280;--line:#e5e7eb;--bg:#fbfbfd;--card:#fff;
 --yes:#0f766e;--no:#9f1239;--warn:#b45309;--curated:#4338ca}
+.chip{display:inline-block;font-size:12px;padding:2px 9px;border:1px solid var(--line);
+border-radius:99px;color:#374151;background:#fff;margin:2px 3px 2px 0;text-decoration:none}
+.chip:hover{border-color:var(--dim)}
+.gone{text-decoration:line-through;color:var(--dim)}
+details{margin:6px 0}
+details summary{cursor:pointer;font-size:12px;color:var(--dim)}
+.grade{font-size:11px;padding:2px 7px;border-radius:99px;margin-left:6px;
+border:1px solid #a7f3d0;background:#ecfdf5;color:var(--yes);text-transform:uppercase;letter-spacing:.05em}
+.kv{font-size:13px;margin:2px 0}
+.kv b{display:inline-block;min-width:110px;color:var(--dim);font-weight:600;
+font-size:11px;text-transform:uppercase;letter-spacing:.06em}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--ink);
 font:15px/1.55 ui-sans-serif,-apple-system,"Segoe UI",system-ui,sans-serif}
@@ -338,9 +349,75 @@ export function renderProfile({ profile }) {
 </table>
 <p class="empty" style="padding-top:4px">${esc(profile.signal.label ?? "")}</p>
 
+${profile.proposals.length ? `<h2>Yente's read</h2>
+${profile.proposals.map((c) => `
+  <div class="card">
+    <div><b>${esc(String(c.predicate).replace(/^proposal:/, "").replace(/_/g, " "))}</b>
+      → ${esc(c.object ?? "")}
+      ${c.attributes?.grade ? `<span class="grade">${esc(c.attributes.grade)}</span>` : ""}
+    </div>
+    ${c.quote ? `<blockquote>“${esc(c.quote)}”<cite>${
+      c.evidenceId ? `<code>${esc(String(c.evidenceId).slice(0, 16))}</code>` : "asserted"
+    }</cite></blockquote>` : ""}
+    <form class="row" method="post" action="/?back=${encodeURIComponent(`/subject?id=${profile.id}`)}">
+      <input type="hidden" name="observationId" value="${esc(c.id ?? c._id ?? "")}">
+      <input type="text" name="note" placeholder="what's wrong with it">
+      <button class="no" name="action" value="wrong_claim">Wrong</button>
+    </form>
+  </div>`).join("")}` : ""}
+
 <h2>Seeking / offering</h2>
 ${profile.intents.length ? profile.intents.map(claim).join("")
     : `<p class="empty">Nothing yet. Intent is what matchmaking runs on, so this is the section that matters.</p>`}
+
+${(() => {
+    // EVERYTHING THEY DISCLOSED — the bulk of a résumé read, and the section
+    // this page never had: role, employer, capability, geography, credential…
+    // Grouped by field, every value with its verbatim quote one click away,
+    // every row correctable. "manager doesn't show all the claims" — it does now.
+    const SHOWN = new Set(["is_person", "is_organization", "opportunity", "note"]);
+    const disclosures = profile.current.filter((c) => {
+      const predicate = String(c.predicate);
+      return !SHOWN.has(predicate)
+        && !predicate.startsWith("intent:")
+        && !predicate.startsWith("proposal:")
+        && !predicate.startsWith("matchmaking")
+        && !profile.relationships.includes(c);
+    });
+    if (disclosures.length === 0) return "";
+    const byField = new Map();
+    for (const c of disclosures) {
+      const held = byField.get(c.predicate) ?? [];
+      held.push(c);
+      byField.set(c.predicate, held);
+    }
+    return `<h2>What we can evidence (${disclosures.length})</h2>
+${[...byField.entries()].map(([field, claims]) => `
+  <div class="card">
+    <div><b>${esc(field)}</b> <span class="badge">${claims.length}</span></div>
+    ${claims.map((c) => `
+    <details>
+      <summary>${esc(String(c.object ?? ""))}${c.authority >= 400 ? ' <span class="badge curated">you</span>' : ""}</summary>
+      ${c.quote ? `<blockquote>“${esc(c.quote)}”<cite>${
+        c.evidenceId
+          ? `<a href="/thread?id=${encodeURIComponent(c.evidenceId)}"><code>${esc(String(c.evidenceId).slice(0, 16))}</code></a>`
+          : "asserted"
+      } · ${esc(String(c.observedAt ?? "").slice(0, 16).replace("T", " "))}${
+        typeof c.confidence === "number" ? ` · conf ${esc(String(c.confidence))}` : ""}</cite></blockquote>` : ""}
+      <form class="row" method="post" action="/?back=${encodeURIComponent(`/subject?id=${profile.id}`)}">
+        <input type="hidden" name="observationId" value="${esc(c.id ?? c._id ?? "")}">
+        <input type="text" name="note" placeholder="what's wrong with it">
+        <button class="no" name="action" value="wrong_claim">Wrong</button>
+      </form>
+    </details>`).join("")}
+  </div>`).join("")}`;
+  })()}
+
+${profile.substantiated.length ? `<h2>Their documents can vouch for</h2>
+<div class="card">${profile.substantiated.map((w) =>
+    `<a class="chip" href="/search?q=${encodeURIComponent(w.word)}">${esc(w.word)}${
+      w.count > 1 ? ` ×${esc(String(w.count))}` : ""}</a>`).join("")}
+</div>` : ""}
 
 <h2>Connections</h2>
 ${profile.relationships.length ? profile.relationships.map(claim).join("")
@@ -367,9 +444,29 @@ ${profile.evidence.length === 0 ? `<p class="empty">None.</p>`
       ? `<a href="${esc(e.threadHref)}">${esc(e.meta?.subject ?? e.meta?.filename ?? e.id)}</a>`
       : esc(e.meta?.subject ?? e.meta?.filename ?? "—")}
       ${e.meta?.structure && Object.keys(e.meta.structure).length
-        ? `<span class="empty">${esc(JSON.stringify(e.meta.structure))}</span>` : ""}</td>
+        ? `<span class="empty">${esc(JSON.stringify(e.meta.structure))}</span>` : ""}
+      ${e.claimCount > 0 ? `
+      <details>
+        <summary>${esc(String(e.claimCount))} claim${e.claimCount === 1 ? "" : "s"} from this ${esc(e.kind)}</summary>
+        ${e.claims.map((c) => `<div class="kv"><b>${esc(String(c.predicate).replace(/^intent:/, "").replace(/^proposal:/, ""))}</b> ${
+          esc(shortSubject(String(c.object ?? "")))}${c.attributes?.retracted ? ' <span class="gone">retracted</span>' : ""}</div>`).join("")}
+      </details>` : ""}</td>
     <td>${esc(String(e.receivedAt ?? "").slice(0, 16).replace("T", " "))}</td>
   </tr>`).join("")}</table>`}
+
+<h2>History</h2>
+${profile.history.length === 0 ? `<p class="empty">Nothing recorded.</p>` : `
+<details>
+  <summary>${esc(String(profile.history.length))} observations, newest first — including retracted and superseded</summary>
+  <table><tr><th>when</th><th>claim</th><th>from</th></tr>
+  ${profile.history.map((c) => `<tr${c.attributes?.retracted ? ' class="gone"' : ""}>
+    <td>${esc(String(c.observedAt ?? "").slice(0, 16).replace("T", " "))}</td>
+    <td><b>${esc(String(c.predicate))}</b> ${esc(shortSubject(String(c.object ?? "")))}</td>
+    <td>${c.evidenceId
+      ? `<a href="/thread?id=${encodeURIComponent(c.evidenceId)}"><code>${esc(String(c.evidenceId).slice(0, 12))}</code></a>`
+      : "asserted"}</td>
+  </tr>`).join("")}</table>
+</details>`}
 
 <h2>Corrections</h2>
 <div class="card">
