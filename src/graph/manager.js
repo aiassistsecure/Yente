@@ -538,11 +538,26 @@ export function createGraphManager({
    * lifecycle that is not enforcing anything.
    */
   function setProfileState({ subject: id, state, evidenceId = null, quote = null, by = null }) {
-    const current = profileState(graph.observations.project(id));
+    const rows = graph.observations.project(id);
+    const current = profileState(rows);
     if (!isLegalTransition(current, state)) {
       throw new Error(`cannot move ${id} from ${current} to ${state}`);
     }
-    const at = now();
+    // STRICTLY AFTER the previous state row. The projection orders states by
+    // observedAt, and project() returns rows in hash order — so two
+    // transitions inside the same millisecond (two quick operator clicks, a
+    // scripted walk) would tie and the WINNER would be a coin flip. A
+    // lifecycle that can silently lose a step is not enforcing anything, so
+    // the clock is bumped rather than trusted here.
+    const latestStateAt = rows
+      .filter((row) => row.predicate === PROFILE_STATE_PREDICATE)
+      .map((row) => String(row.observedAt ?? ""))
+      .sort()
+      .pop() ?? "";
+    let at = now();
+    if (at <= latestStateAt) {
+      at = new Date(new Date(latestStateAt).getTime() + 1).toISOString();
+    }
     const observation = graph.observations.append({
       subject: id,
       predicate: PROFILE_STATE_PREDICATE,
@@ -568,42 +583,6 @@ export function createGraphManager({
     return profileState(graph.observations.project(id));
   }
 
-  /**
-   * Profile state transitions are append-only and enforced. "When did they
-   * qualify, and on the strength of what" is answerable by TRACE. An illegal
-   * move throws: a lifecycle that silently accepts any transition is a
-   * lifecycle that is not enforcing anything.
-   */
-  function setProfileState({ subject: id, state, evidenceId = null, quote = null, by = null }) {
-    const current = profileState(graph.observations.project(id));
-    if (!isLegalTransition(current, state)) {
-      throw new Error(`cannot move ${id} from ${current} to ${state}`);
-    }
-    const at = now();
-    const observation = graph.observations.append({
-      subject: id,
-      predicate: PROFILE_STATE_PREDICATE,
-      object: state,
-      evidenceId,
-      quote: quote || `${current} -> ${state}`,
-      // The person's own approval is a correction in the strongest sense: it
-      // outranks every inference the pipeline made about them.
-      authority: state === PROFILE_STATES.QUALIFIED || by
-        ? AUTHORITY.USER_CORRECTION
-        : AUTHORITY.DETERMINISTIC,
-      confidence: 1,
-      observedAt: at,
-    });
-    graph.decisions.record({
-      kind: "profile", target: id, verdict: state,
-      by: by || actor, at, detail: { from: current, evidenceId },
-    });
-    return observation;
-  }
-
-  function profileStateOf(id) {
-    return profileState(graph.observations.project(id));
-  }
 
   /** Counts for the header, so the operator can see the loop moving. */
   /**
