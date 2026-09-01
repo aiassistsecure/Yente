@@ -302,3 +302,56 @@ test("no voice model configured: exactly the old behavior, no crash", async () =
   await runtime.drainOutbox(NOW);
   assert.equal(transport.sent.length, 1, "one profile request; the second note stays unanswered as before");
 });
+
+
+test("what do you have on file for me? — answered from the member's own graph card", async () => {
+  // Mark, 2026-09-01: "yente should be able to report to a user what data
+  // yente has on file for themselves." The runtime takes profileCardFor —
+  // a bridge to the graph — and the voice's PROFILE block becomes the
+  // member's COMPLETE evidenced record, with instructions to reproduce it
+  // faithfully when asked.
+  const voice = politeVoice();
+  const store = openInMemory();
+  const repositories = createRepositories(store);
+  const transport = createMemoryTransport();
+  const rows = [
+    {
+      id: "message:f1", kind: "message", text: "Any candidates yet?",
+      meta: { rfcMessageId: "<f1@live.test>", from: WHO, to: ["yente@ccme.network"], subject: "checking in" },
+      receivedAt: T0,
+    },
+    {
+      id: "message:f2", kind: "message", text: "What do you have on file for me?",
+      meta: { rfcMessageId: "<f2@live.test>", from: WHO, to: ["yente@ccme.network"], subject: "my data" },
+      receivedAt: T0,
+    },
+  ];
+  const runtime = createRuntime({
+    repositories, transport, extractionClient: emptyModel, emailClient: voice,
+    graphEvidence: { all: () => rows, get: () => null },
+    profileCardFor: (address) => address === WHO
+      ? "  Role: Co-founder of World Vapor Expo\n  Contact: +1-844-VAPE-B2B\n  Yente's read: hire for: vapor industry leadership (strong)"
+      : null,
+    config: { extractionRetryDelayMs: 0 },
+  });
+  let member = beginIntake(createMember({
+    memberId: WHO, address: WHO, inboundEstablishedAt: T0, createdAt: T0,
+  }), T0);
+  repositories.members.save(member);
+  store.put(COLLECTIONS.PROFILE_FACTS, `${WHO}:role:0`, {
+    memberId: WHO, field: "role", value: "desk-only fact",
+    offset: 0, quote: "desk-only fact",
+  });
+
+  await runtime.ingest(NOW);
+  const prompt = voice.calls.at(-1)?.prompt ?? "";
+  assert.match(prompt, /Co-founder of World Vapor Expo/,
+    "the voice sees the member's full graph card");
+  assert.match(prompt, /\+1-844-VAPE-B2B/, "contact routes included — it is THEIR data");
+  assert.match(prompt, /reproduce it faithfully/,
+    "and is instructed to hand the record over when asked");
+  assert.match(prompt, /their words[\s\S]{0,10}outrank your reading/i,
+    "with the correction right attached");
+  assert.doesNotMatch(prompt, /desk-only fact/,
+    "the graph card supersedes the thinner desk facts when the bridge exists");
+});

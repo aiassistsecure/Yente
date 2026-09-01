@@ -139,6 +139,12 @@ export function createRuntime({
   // so the graph's LISTEN loop and the desk's tick never race for the same
   // inbox.
   graphEvidence = null,
+  // The member's own graph card, on request. When the graph is running in
+  // the same process (bin/yente.mjs), this is a closure over the graph's
+  // observations: (address) => rendered card text or null. It grounds every
+  // conversational reply in the person's COMPLETE evidenced record — and it
+  // is how "what do you have on file for me?" gets its real answer.
+  profileCardFor = null,
   // A desk with no policies could not qualify anybody: `policies` had no
   // default and the only qualification policy in the tree lived in
   // test-support/fixtures.js, so `policies.memberQualification` was undefined in
@@ -346,9 +352,18 @@ export function createRuntime({
     const facts = store.query(
       `FROM ${COLLECTIONS.PROFILE_FACTS} WHERE memberId = ${quote(address)}`,
     );
-    const known = facts
-      .map((fact) => `- ${fact.field}: ${fact.value}`)
-      .join("\n");
+    // Prefer the GRAPH card — the complete evidenced record, the same card
+    // the consent round shows to others, now shown to its owner. The desk's
+    // own profile facts are the fallback context when no graph is wired.
+    let known = null;
+    try {
+      known = profileCardFor ? profileCardFor(address) : null;
+    } catch { known = null; }
+    if (!known) {
+      known = facts
+        .map((fact) => `- ${fact.field}: ${fact.value}`)
+        .join("\n");
+    }
 
     const prompt = composeBlocks(
       textBlock(BLOCK_TAGS.TASK, [
@@ -358,6 +373,11 @@ export function createRuntime({
         "- acknowledge what they actually said,",
         "- reflect what you already have on file (the PROFILE block), so they",
         "  know they were read,",
+        "- if they are asking WHAT YOU HAVE ON FILE about them, the PROFILE",
+        "  block is the complete answer: reproduce it faithfully, line by",
+        "  line, then remind them they can correct any line just by telling",
+        "  you, and can reply STOP or DELETE ME at any time — their words",
+        "  outrank your reading,",
         `- be honest about where things stand (their pipeline state is`,
         `  ${member.state}) without inventing progress,`,
         "- NEVER name, describe, or hint at any other member or candidate,",
