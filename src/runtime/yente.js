@@ -198,25 +198,34 @@ export function createRuntime({
     // parent so ingestOne stays the single pipeline: STOP is evaluated
     // before any résumé is mined, and qualify() runs once after every
     // source on that mail has been stored.
+    // Rows are keyed by whichever name they arrived wearing — repository
+    // rows carry `id`, raw store rows `_id`. A row with NEITHER is skipped
+    // outright rather than keyed on undefined: one undefined in the
+    // processed-set once made the desk deaf to every message after the
+    // first, because has(undefined) was true forever after.
+    const nameOf = (evidence) => evidence.id ?? evidence._id ?? null;
+
     const attachmentsByMessage = new Map();
     for (const evidence of evidenceSource.all()) {
       if (evidence.kind !== "attachment") continue;
-      if (processedEvidence.has(evidence.id)) continue;
+      const name = nameOf(evidence);
+      if (!name || processedEvidence.has(name)) continue;
       const parentId = evidence.meta?.messageEvidenceId ?? null;
       if (!parentId) continue;
       const list = attachmentsByMessage.get(parentId) ?? [];
-      list.push(evidence);
+      list.push({ ...evidence, id: name });
       attachmentsByMessage.set(parentId, list);
     }
 
     const results = [];
     for (const evidence of evidenceSource.all()) {
       if (evidence.kind !== "message") continue;
-      if (processedEvidence.has(evidence.id)) continue;
-      processedEvidence.add(evidence.id);
-      const attachments = attachmentsByMessage.get(evidence.id) ?? [];
+      const name = nameOf(evidence);
+      if (!name || processedEvidence.has(name)) continue;
+      processedEvidence.add(name);
+      const attachments = attachmentsByMessage.get(name) ?? [];
       for (const attachment of attachments) processedEvidence.add(attachment.id);
-      results.push(await ingestFromEvidence(evidence, attachments, now));
+      results.push(await ingestFromEvidence({ ...evidence, id: name }, attachments, now));
     }
     return results;
   }

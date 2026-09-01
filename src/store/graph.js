@@ -182,7 +182,16 @@ export class EvidenceRepository {
   }
 
   all() {
-    return this.store.query(`FROM ${GRAPH_COLLECTIONS.EVIDENCE}`);
+    // Queried rows carry the engine's `_id`, not the `id` that record() and
+    // get() callers hold. The desk's ingest keyed its processed-set on
+    // `evidence.id` and got `undefined` for EVERY row here — so the first
+    // tick processed one message, poisoned the set with undefined, and the
+    // desk went deaf: every later evidence row, including brand-new mail,
+    // was skipped as "already processed". One repository, one shape: every
+    // row leaves here wearing its name.
+    return this.store
+      .query(`FROM ${GRAPH_COLLECTIONS.EVIDENCE}`)
+      .map((row) => ({ ...row, id: row.id ?? row._id }));
   }
 }
 
