@@ -581,6 +581,32 @@ export class IntelligenceJobRepository {
    * reads, because a diagnostic that reads a different name than the store
    * writes is how an SMTP timeout stayed invisible for a day.
    */
+  /**
+   * Return an INTERRUPTED job to the front of the line. A shutdown is not
+   * the job's failure: LANE_SHUTDOWN counted as an attempt and stamped
+   * 30s/120s of backoff, so every Ctrl-C rotated the queue — the two
+   * in-flight jobs went to the back, the next boot picked the next-oldest
+   * pair, and the tape read as if the queue were random (live, 2026-09-01).
+   * Release refunds the attempt and makes the job due immediately, which is
+   * what "oldest first" actually means across restarts.
+   */
+  release(evidenceId, { at, reason = null }) {
+    const job = this.store.get(GRAPH_COLLECTIONS.INTELLIGENCE_JOBS, evidenceId);
+    if (!job) return null;
+    return this.store.put(GRAPH_COLLECTIONS.INTELLIGENCE_JOBS, evidenceId, {
+      ...job,
+      state: JOB_STATES.READY,
+      attempts: Math.max(0, Number(job.attempts ?? 1) - 1),
+      // Back to its ORIGINAL place in line, not the back of it: ready()
+      // orders by availableAt, so stamping "now" would still rotate the
+      // queue past everything enqueued in between.
+      availableAt: job.enqueuedAt ?? at,
+      finishedAt: null,
+      retryInMs: null,
+      ...(reason ? { lastError: String(reason), lastErrorAt: at } : {}),
+    });
+  }
+
   fail(evidenceId, { at, error, transient = true, maxAttempts = null, backoff = {} }) {
     const job = this.store.get(GRAPH_COLLECTIONS.INTELLIGENCE_JOBS, evidenceId);
     if (!job) return null;

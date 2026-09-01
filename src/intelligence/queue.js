@@ -520,6 +520,21 @@ export async function drainIntelligence({
         //
         // The one exception is a request that is itself wrong (an HTTP 400, an
         // oversized prompt): repeating it unchanged is a slower way to fail.
+        // A shutdown is OUR event, not the job's failure. Consuming an
+        // attempt and stamping backoff for it meant every restart pushed the
+        // in-flight jobs behind the rest of the backlog — the "random queue"
+        // of the live tape. Released jobs are due immediately, attempt
+        // refunded, and the next boot resumes exactly where this one stopped.
+        if (error?.code === "LANE_SHUTDOWN") {
+          graph.jobs.release(job.evidenceId, { at: now(), reason: "interrupted by shutdown" });
+          summary.failed += 1;
+          log("info", "job_released", {
+            evidence: job.evidenceId,
+            note: "interrupted by shutdown; due immediately on next boot, attempt refunded",
+          });
+          continue;
+        }
+
         const permanent = error?.code === "HTTP_ERROR"
           && Number(error?.meta?.status ?? error?.meta?.failures?.[0]?.status ?? 0) === 400;
 
