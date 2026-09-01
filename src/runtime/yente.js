@@ -94,6 +94,31 @@ export function triage(text) {
 
 /* --- the runtime -------------------------------------------------------- */
 
+/** The three asks — ONE wording, used by intake and the reply-debt sweep. */
+const PROFILE_REQUEST_LETTER = Object.freeze({
+  subject: "What best explains your work?",
+  text:
+    "Hi — I make introductions between people who can help each other.\n\n" +
+    "Three things get you matched, in any order:\n\n" +
+    "1. Send your resume (attach it, any common format).\n" +
+    "2. Send your LinkedIn profile URL.\n" +
+    "3. Tell me which of these you are — one or more:\n" +
+    "   hiring · seeking employment · seeking funding · funding startups\n\n" +
+    "Reply STOP at any time and I will not write again.",
+});
+
+const NO_FACTS_LETTER = Object.freeze({
+  subject: "I read it, but I could not use it yet",
+  text:
+    "Thanks — I received what you sent, but I could not pull verifiable " +
+    "facts from it.\n\nAny of these will get you matched:\n\n" +
+    "1. A resume, attached in any common format.\n" +
+    "2. Your LinkedIn profile URL.\n" +
+    "3. Which of these you are — one or more:\n" +
+    "   hiring · seeking employment · seeking funding · funding startups\n\n" +
+    "Reply STOP at any time and I will not write again.",
+});
+
 export function createRuntime({
   repositories,
   transport,
@@ -333,27 +358,7 @@ export function createRuntime({
         OUTBOUND_PURPOSES.PROFILE_REQUEST,
         `profile:${address}`,
         [address],
-        {
-          subject: "What best explains your work?",
-          // THE THREE ASKS, in the order the pipeline consumes them. Each maps
-          // to a different extraction path with a different authority:
-          //   résumé        -> local parse, span-verified facts
-          //   LinkedIn URL  -> structured vendor lookup, deterministic
-          //   the four-way  -> declaredRoles(), deterministic — the closed
-          //                    question that replaced inferred intent, because
-          //                    every bad match came from mining prose
-          // The wording of the four options matches roles.js ANSWER_PHRASES
-          // exactly: the ask and the parser must agree, and the cheapest
-          // guarantee is for the ask to use the parser's own words.
-          text:
-            "Hi — I make introductions between people who can help each other.\n\n" +
-            "Three things get you matched, in any order:\n\n" +
-            "1. Send your resume (attach it, any common format).\n" +
-            "2. Send your LinkedIn profile URL.\n" +
-            "3. Tell me which of these you are — one or more:\n" +
-            "   hiring · seeking employment · seeking funding · funding startups\n\n" +
-            "Reply STOP at any time and I will not write again.",
-        },
+        PROFILE_REQUEST_LETTER,
         now,
         [message],
       );
@@ -437,17 +442,7 @@ export function createRuntime({
         OUTBOUND_PURPOSES.CLARIFICATION,
         `clarify:nofacts:${address}`,
         [address],
-        {
-          subject: "I read it, but I could not use it yet",
-          text:
-            "Thanks — I received what you sent, but I could not pull verifiable " +
-            "facts from it.\n\nAny of these will get you matched:\n\n" +
-            "1. A resume, attached in any common format.\n" +
-            "2. Your LinkedIn profile URL.\n" +
-            "3. Which of these you are — one or more:\n" +
-            "   hiring · seeking employment · seeking funding · funding startups\n\n" +
-            "Reply STOP at any time and I will not write again.",
-        },
+        NO_FACTS_LETTER,
         now,
         [message],
       );
@@ -925,6 +920,63 @@ export function createRuntime({
     return duplicate ? null : stored;
   }
 
+  /**
+   * THE REPLY-DEBT SWEEP — Mark, 2026-09-01: "are we keeping track of yente's
+   * outbound so we can trigger replies on reboot idempotently."
+   *
+   * The outbox tracks LETTERS durably — queued survives reboot, sent is sent
+   * forever. What it never tracked was OWED replies: a message processed
+   * under code that decided nothing is deduped by INV-2 and never revisited,
+   * so the person who triggered a dead end stayed unanswered across every
+   * restart. This sweep closes that: any live member still in intake who has
+   * NEVER been written to gets the continuation their last message deserved —
+   * qualify() when facts are on file, the no-facts letter when a source is,
+   * the three asks when nothing is. Idempotent three ways: the outbox keys
+   * dedupe, a member with ANY letter on record is skipped, and INV-9 still
+   * gates every recipient.
+   */
+  function sweepUnanswered(now) {
+    const owedStates = new Set([
+      MEMBER_STATES.NEW, MEMBER_STATES.NEEDS_PROFILE, MEMBER_STATES.INTERVIEWING,
+    ]);
+    const written = new Set();
+    for (const job of store.query(`FROM ${COLLECTIONS.OUTBOX}`)) {
+      for (const recipient of job.recipients ?? []) written.add(normalizeAddress(recipient));
+    }
+
+    let answered = 0;
+    for (const member of store.query(`FROM ${COLLECTIONS.MEMBERS}`)) {
+      if (!owedStates.has(member.state)) continue;
+      const address = member.address ?? member._id;
+      if (written.has(normalizeAddress(address))) continue;
+      if (!canReceiveOutbound(member)) continue;
+
+      const facts = store.query(
+        `FROM ${COLLECTIONS.PROFILE_FACTS} WHERE memberId = ${quote(address)}`,
+      );
+      if (facts.length > 0) {
+        try {
+          const result = qualify(address, null, now);
+          if (result.qualified) acknowledge(address, now, []);
+          answered += 1;
+          continue;
+        } catch { /* fall through to the letters */ }
+      }
+      const sources = store.query(
+        `FROM ${COLLECTIONS.SOURCES} WHERE memberId = ${quote(address)}`,
+      );
+      if (sources.length > 0) {
+        queue(OUTBOUND_PURPOSES.CLARIFICATION, `clarify:nofacts:${address}`,
+          [address], NO_FACTS_LETTER, now, []);
+      } else {
+        queue(OUTBOUND_PURPOSES.PROFILE_REQUEST, `profile:${address}`,
+          [address], PROFILE_REQUEST_LETTER, now, []);
+      }
+      answered += 1;
+    }
+    return answered;
+  }
+
   async function drainOutbox(now) {
     if (isSendingHalted({ haltOutbound })) {
       const pending = repositories.outbox.claimable(now).length;
@@ -1021,6 +1073,7 @@ export function createRuntime({
     proposeMatches,
     advanceDeadlines,
     drainOutbox,
+    sweepUnanswered,
     outboxStates: () =>
       Object.fromEntries(
         Object.values(OUTBOX_STATES).map((state) => [

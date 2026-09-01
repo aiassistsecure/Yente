@@ -435,7 +435,7 @@ async function deskLoop() {
     begin("store", "desk:tick", "desk tick");
     try {
       const r = await desk.tick();
-      if (r.ingested > 0 || r.sent > 0 || r.proposed > 0 || r.advanced > 0) {
+      if (r.ingested > 0 || r.sent > 0 || r.proposed > 0 || r.advanced > 0 || r.answered > 0) {
         log("info", "tick", r);
       }
     } catch (error) {
