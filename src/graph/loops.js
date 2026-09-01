@@ -61,6 +61,10 @@ export function createGraphLoops({
   signal,
   isStopping = () => false,
   intervals = {},
+  // Promote graph subjects to QUALIFIED automatically each scan (Mark's
+  // directive: intake autonomous, HITL on introductions only). On by default;
+  // YENTE_AUTOQUALIFY=0 restores the strict §20 operator-driven lifecycle.
+  autoQualify = true,
   concurrency = undefined,
   onMessage = null,
   transport = null,
@@ -211,7 +215,7 @@ export function createGraphLoops({
       // immediately when the flag is up.
       connectPending = false;
       try {
-        const observations = graph.observations
+        let observations = graph.observations
           .all()
           // §20: an excluded subject is not a matching candidate. Read here
           // rather than filtered at write time so the exclusion stays reversible.
@@ -222,6 +226,24 @@ export function createGraphLoops({
           // them, let alone agreed to it. Matching an unapproved profile is
           // matching on facts the person has never confirmed.
           .filter((row) => manager.isMatchable(row.subject));
+
+        // AUTONOMY BEFORE THE SCAN. Intake is autonomous by directive — the
+        // human gate is the introduction review queue, not the lifecycle.
+        // Promote everybody the graph can stand behind, then score.
+        if (autoQualify) {
+          const promoted = manager.autoQualify();
+          if (promoted.length > 0) {
+            log("info", "auto_qualified", {
+              members: promoted.length,
+              subjects: promoted.map((p) => p.subject).join(", "),
+            });
+            // The freshly qualified are matchable NOW; rescan from the graph
+            // rather than the stale pre-promotion filter above.
+            observations = graph.observations
+              .all()
+              .filter((row) => manager.isMatchable(row.subject));
+          }
+        }
 
         begin("connect", "match:scan", `scoring ${observations.length} observations`);
         const proposals = proposeIntroductions({ observations });
