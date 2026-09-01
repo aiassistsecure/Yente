@@ -854,7 +854,7 @@ test("a confirmed graph match sends one autonomous introduction and stops", asyn
   assert.equal(again.sent, 0, "an introduced match is terminal and cannot send twice");
   assert.equal(transport.sent.length, 1);
   assert.deepEqual(transport.sent[0].to.sort(), ["david@dev.io", "sarah@acme.com"]);
-  assert.match(transport.sent[0].text, /I’m stepping out/);
+  assert.match(transport.sent[0].text, /take it from here/);
   assert.match(transport.sent[0].text, /— Yente/);
   assert.match(transport.sent[0].messageId, /^<yente-introduction-/);
   assert.equal(graph.matches.get(id).state, MATCH_STATES.INTRODUCED);

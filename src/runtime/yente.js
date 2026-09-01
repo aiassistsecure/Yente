@@ -59,7 +59,17 @@ import {
   createReferenceIntroduction,
   createReferencePrivatePreview,
 } from "../domain/email-artifacts.js";
-import { parseEmailArtifact } from "../protocol/blocks.js";
+import {
+  BLOCK_TAGS,
+  composeBlocks,
+  createEmailArtifact,
+  jsonBlock,
+  namedTextBlock,
+  parseEmailArtifact,
+  textBlock,
+} from "../protocol/blocks.js";
+import { generateEmail } from "../llm/generate.js";
+import { YENTE_SYSTEM_IDENTITY } from "../llm/identity.js";
 import { extractText } from "../extract/sources.js";
 import { extractProfileFacts } from "../extract/profile.js";
 import { DEFAULT_POLICIES } from "../domain/policies.js";
@@ -253,7 +263,156 @@ export function createRuntime({
     };
     return ingestOne(inbound, now);
   }
+  /**
+   * THE VOICE, FINALLY WIRED — Mark, 2026-09-01: "the model which is supposed
+   * to be yapping is not yapping."
+   *
+   * generateEmail, the disclosure guard, the email artifact protocol and the
+   * voice seat (YENTE_MODEL_MESSAGE, the voice lanes) all existed — and had
+   * ZERO callers. Every letter Yente ever sent was a template, and worse:
+   * every template is idempotent by address or by asked-question, so a member
+   * who already received their letter and wrote AGAIN ("any candidates?")
+   * deduped to nothing. Repeat mail was answered exactly zero times. The
+   * identity file even orders the opposite: "Reply to every email promptly.
+   * Silence is the one failure mode a matchmaker cannot afford."
+   *
+   * The wrapper below is the yap gate: run the intake pipeline, and when it
+   * queued NOTHING for a live conversational message, the voice model
+   * composes the reply — through guardEmailDisclosure, with a deterministic
+   * fallback, queued per-message (reply:<rfcMessageId>) so one inbound earns
+   * exactly one answer. No emailClient configured -> exactly the old silence,
+   * which is what every existing test asserts.
+   */
+  // Exclusion, not inclusion: any live conversational message the pipeline
+  // answered with NOTHING deserves the voice — including a repeat note from
+  // a member whose profile-request or clarification key is already used up.
+  // Control words, duplicates and the suppressed are the only true silences.
+  const SILENT_OUTCOMES = new Set([
+    "duplicate", "stop", "delete", "suppressed",
+    "pass", "introduce", "correct",
+  ]);
+  const outboxDepth = () => store.query(`FROM ${COLLECTIONS.OUTBOX}`).length;
+
   async function ingestOne(inbound, now) {
+    const before = outboxDepth();
+    const result = await runIntakePipeline(inbound, now);
+    if (
+      emailClient
+      && result?.address
+      && !SILENT_OUTCOMES.has(result?.outcome)
+      && outboxDepth() === before
+    ) {
+      try {
+        result.replied = await converse(result.address, inbound, now);
+      } catch (error) {
+        (result.failures ??= []).push({
+          code: "CONVERSE_FAILED", message: String(error?.message ?? error),
+        });
+        log("error", "converse_failed", {
+          to: result.address, error: String(error?.message ?? error).slice(0, 200),
+        });
+      }
+    }
+    return result;
+  }
+
+  /** Compose one conversational reply in Yente's own voice, and queue it. */
+  async function converse(address, inbound, now) {
+    const member = repositories.members.findByAddress(address);
+    if (!member || !canReceiveOutbound(member)) return false;
+
+    // Only the sender's OWN material enters the prompt: their message, their
+    // facts, their state. Nothing about any other member exists in context,
+    // so nothing about any other member can leak — and the disclosure guard
+    // still checks the output for stranger addresses anyway.
+    const facts = store.query(
+      `FROM ${COLLECTIONS.PROFILE_FACTS} WHERE memberId = ${quote(address)}`,
+    );
+    const known = facts
+      .map((fact) => `- ${fact.field}: ${fact.value}`)
+      .join("\n");
+
+    const prompt = composeBlocks(
+      textBlock(BLOCK_TAGS.TASK, [
+        "A person wrote to your mailbox and no templated letter answers them",
+        "this tick, so YOU write back. Compose a short, warm, concrete reply",
+        "in your own voice:",
+        "- acknowledge what they actually said,",
+        "- reflect what you already have on file (the PROFILE block), so they",
+        "  know they were read,",
+        `- be honest about where things stand (their pipeline state is`,
+        `  ${member.state}) without inventing progress,`,
+        "- NEVER name, describe, or hint at any other member or candidate,",
+        "  never promise or announce an introduction, and never include any",
+        "  email address other than theirs,",
+        "- a few sentences, no forms, sign as Yente.",
+      ].join("\n")),
+      namedTextBlock(
+        BLOCK_TAGS.SOURCE,
+        "their_message",
+        String(inbound.text ?? "").trim().slice(0, 4000) || "(an empty message)",
+      ),
+      ...(known ? [textBlock(BLOCK_TAGS.PROFILE, known)] : []),
+      textBlock(BLOCK_TAGS.OUTPUT_CONTRACT, [
+        "Answer as exactly three sentinel blocks, in this order, with NOTHING",
+        "outside a block. Each block opens with the tag between triple angle",
+        "brackets on its own line and closes with END between triple angle",
+        "brackets on its own line, exactly like the blocks in this prompt:",
+        "",
+        '  META        one JSON object, exactly {"template": "conversation",',
+        '              "facts_used": []}',
+        "  SUBJECT     one line, at most 200 characters",
+        "  EMAIL_TEXT  the letter itself, plain text",
+      ].join("\n")),
+    );
+
+    // §11.6: a deterministic fallback where one exists. A wedged voice model
+    // must degrade to a plain acknowledgment, never to silence.
+    const fallback = () => createEmailArtifact({
+      meta: { template: "conversation", facts_used: [] },
+      subject: "I read your note",
+      text:
+        "I read your note and it is on file. I am working with what you have "
+        + "given me and will write the moment there is something concrete to "
+        + "tell you.\n\n\u2014 Yente",
+    });
+
+    const generated = await generateEmail({
+      client: emailClient,
+      prompt,
+      system: YENTE_SYSTEM_IDENTITY,
+      expect: {
+        template: "conversation",
+        allowedFactIds: [],
+        allowedAddresses: [address, "yente@ccme.network"],
+      },
+      fallback,
+    });
+    if (!generated.email) return false;
+
+    // The stored inbound row (it carries the hash provenance wants and the
+    // rfcMessageId that threads the reply under their own conversation).
+    const causedBy = store.query(
+      `FROM ${COLLECTIONS.MESSAGES} WHERE rfcMessageId = ${quote(String(inbound.rfcMessageId))}`,
+    ).slice(0, 1);
+
+    const job = queue(
+      OUTBOUND_PURPOSES.CONVERSATION,
+      `reply:${inbound.rfcMessageId}`,
+      [address],
+      { subject: generated.email.subject, text: generated.email.text },
+      now,
+      causedBy,
+    );
+    if (job) {
+      log("info", "conversation_reply", {
+        to: address, source: generated.source, attempts: generated.attempts,
+      });
+    }
+    return job != null;
+  }
+
+  async function runIntakePipeline(inbound, now) {
     // INV-2: dedupe and record BEFORE anything can act on it.
     const { message, duplicate } = repositories.messages.recordInbound({
       rfcMessageId: inbound.rfcMessageId,

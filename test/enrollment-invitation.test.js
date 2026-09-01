@@ -177,12 +177,17 @@ test("the purpose list stays closed, and every member of it is deliberate", () =
   // "send me a document" and "send me one URL" are different questions, asked
   // once each (idempotency key linkedin:<address>), and the "never ask for a
   // résumé twice" invariant is only checkable while they stay distinguishable.
+  // conversation is the eleventh, added 2026-09-01 when the voice seat was
+  // finally wired: a model-composed reply to a message no template answered,
+  // one per inbound message (key reply:<rfcMessageId>) — still transactional,
+  // still a reply to something THEY sent, never promotional.
   assert.deepEqual(Object.values(OUTBOUND_PURPOSES), [
     "profile_request",
     "linkedin_request",
     "interview_question",
     "clarification",
     "profile_confirmation",
+    "conversation",
     "private_match_preview",
     "joint_introduction",
     "stop_confirmation",
