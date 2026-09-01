@@ -12,10 +12,14 @@ Yente turns resume-shaped evidence into careful B2B introductions:
 2. Yente asks for a resume or equivalent professional information.
 3. An LLM extracts evidenced facts and conducts the interview.
 4. Deterministic policy qualifies people and scores potential matches.
-5. Each party privately receives a match-safe preview and may approve, pass,
-   correct the record, stop, or request deletion.
-6. If neither party stops the process during the veto window, Yente sends one
-   joint CCME introduction and steps out.
+5. Each party privately receives their own preview letter carrying the other
+   side's evidenced profile card, and may approve, pass, correct the record,
+   stop, or request deletion.
+6. Yente sends one joint CCME introduction and steps out — only after BOTH
+   parties say yes. Approvals may be a control word or plain English (the LLM
+   reads the reply; its verdict must quote the words that carry it, and an
+   unclear reply moves nothing). The desk's fully-automated flow additionally
+   honours a veto window before its introduction goes out.
 
 Yente does not cold-email strangers, schedule meetings, create calendar events,
 or join calls. The introduced people choose whether and how to meet; the final
@@ -61,8 +65,10 @@ process** (`node bin/yente.mjs`):
   (extraction, observation, span-verified grounding), `YENTE_MODEL_MESSAGE`
   is the voice: it composes conversational replies and writes the joint
   introduction itself. Every generated email passes a disclosure guard
-  (closed template set, no un-authorised addresses, no raw source quotes)
-  and degrades to a deterministic letter — never to silence. Local models
+  (closed template set, no un-authorised addresses, no raw source quotes).
+  There is no canned fallback: a letter the model cannot compose is not
+  sent — the reply goes on a durable owed ledger and the voice retries it
+  every tick until a real, guard-passing letter pays the debt. Local models
   over an OpenAI-style endpoint are first-class; see
   [`docs/PROVIDERS.md`](docs/PROVIDERS.md).
 - **Understanding pipeline** — models answer in Sentinel observation
@@ -81,7 +87,12 @@ process** (`node bin/yente.mjs`):
   (intent × complementary intent, and graded candidates answering live
   hiring/investing asks), auto-qualifies members the graph can stand behind
   (`YENTE_AUTOQUALIFY=0` restores the operator-driven lifecycle), and queues
-  introduction candidates for human review.
+  introduction candidates for human review. Operator confirmation opens a
+  **consent round**: each party is mailed the other's evidenced profile card
+  and the joint introduction sends only when both reply yes — approvals
+  quoted verbatim on the match record, one decline ends it, and no one
+  carries more than five live introductions at a time
+  (`YENTE_PARTY_APPROVAL=0` restores operator-only instant sends).
 - **Operator manager** — a private web console with the full dossier per
   person (every claim with its quote and source, proposal grades, lifecycle
   controls, match review), plus a status tape that reports the standing
