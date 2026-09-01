@@ -1223,24 +1223,41 @@ export function createIntelligenceProvider({
 /**
  * The configured provider, from the environment.
  *
- * `YENTE_INTELLIGENCE_PROVIDER` / `YENTE_MODEL` are the names the brief asks
- * for. The older `YENTE_LLM_*` pair is still honoured as a fallback so a box
- * configured for the current daemon keeps working across the cutover — and the
- * precedence is stated here rather than discovered later.
+ * TWO MODEL VARS, AND ONLY TWO — Mark, 2026-08-31: "clean up the various env
+ * vars we have for models and just use those 2." There were three names for
+ * the same knob (YENTE_MODEL, YENTE_LLM_MODEL, and the split pair), which is
+ * how a box ends up serving a model nobody remembers choosing. Now:
+ *
+ *   YENTE_MODEL_DOCUMENT  the heavyweight read — résumés, attachments.
+ *                         Also the client's base model.
+ *   YENTE_MODEL_MESSAGE   short bodies; defaults to the document model,
+ *                         so an unsplit config is one variable.
+ *
+ * The retired names are not honoured as silent fallbacks: a stale config
+ * gets a boot-time error that says exactly what to set, not a quiet third
+ * alias that resurrects the sprawl.
  */
 export function resolveIntelligenceConfig(env = process.env) {
-  const model = env.YENTE_MODEL || env.YENTE_LLM_MODEL || "muse-local:latest";
+  for (const legacy of ["YENTE_MODEL", "YENTE_LLM_MODEL"]) {
+    if (env[legacy]) {
+      throw new TypeError(
+        `${legacy} is retired — the model vars are YENTE_MODEL_DOCUMENT `
+        + "(the heavyweight read: résumés and attachments; also the default "
+        + "for everything) and YENTE_MODEL_MESSAGE (short bodies; optional, "
+        + `defaults to the document model). Move "${env[legacy]}" to the seat `
+        + "it belongs in and remove the old variable.");
+    }
+  }
+  // THE SPLIT FOLLOWS THE WORK, measured on one live run: a short message
+  // took 1m1s of deliberation to decide whether to attach an email address
+  // to one entity, while the résumé pass in the same minute produced 63
+  // typed claims. Messages are short bodies whose right answer is usually
+  // zero or one claim; documents reward a model that thinks.
+  const documentModel = env.YENTE_MODEL_DOCUMENT || "muse-local:latest";
   return Object.freeze({
     provider: env.YENTE_INTELLIGENCE_PROVIDER || env.YENTE_LLM_PROVIDER || "pin",
-    model,
-    // THE SPLIT FOLLOWS THE WORK, measured on one live run: a short message
-    // took 1m1s of deliberation to decide whether to attach an email address
-    // to one entity, while the résumé pass in the same minute produced 63
-    // typed claims. Messages are short bodies whose right answer is usually
-    // zero or one claim; documents reward a model that thinks.
-    //
-    // Both default to `model`, so an unsplit config changes nothing.
-    messageModel: env.YENTE_MODEL_MESSAGE || model,
-    documentModel: env.YENTE_MODEL_DOCUMENT || model,
+    model: documentModel,
+    messageModel: env.YENTE_MODEL_MESSAGE || documentModel,
+    documentModel,
   });
 }

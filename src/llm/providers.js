@@ -50,17 +50,25 @@ import { createModelClient } from "./client.js";
 /**
  * The model name, from the environment.
  *
- * `YENTE_MODEL` is the name the intelligence-runtime brief specifies;
- * `YENTE_LLM_MODEL` is what the existing daemon and every deployed box already
- * set. Both are honoured, new name first, so the cutover does not require
- * editing a live box's environment in the same change that ships the code.
+ * ONE name: `YENTE_MODEL_DOCUMENT` — the heavyweight seat, which is also the
+ * client's base model (YENTE_MODEL_MESSAGE is a per-call override threaded by
+ * the intelligence config, never read here). The retired names — YENTE_MODEL,
+ * YENTE_LLM_MODEL — fail loudly instead of silently winning: three aliases
+ * for one knob is how a box serves a model nobody remembers choosing.
  *
  * One helper rather than four call sites, because the last time a name existed
  * in more than one place with slightly different resolution, all sixteen of a
  * member's verified facts were silently dropped.
  */
 function envModel(fallback) {
-  return process.env.YENTE_MODEL || process.env.YENTE_LLM_MODEL || fallback;
+  for (const legacy of ["YENTE_MODEL", "YENTE_LLM_MODEL"]) {
+    if (process.env[legacy]) {
+      throw new TypeError(
+        `${legacy} is retired — set YENTE_MODEL_DOCUMENT (and optionally `
+        + "YENTE_MODEL_MESSAGE for short bodies) and remove the old variable.");
+    }
+  }
+  return process.env.YENTE_MODEL_DOCUMENT || fallback;
 }
 
 export const PROVIDERS = Object.freeze({
@@ -250,7 +258,7 @@ export function createLlmClients({ provider, log } = {}) {
   // A MODEL NAME THAT DOES NOT BELONG TO THE CHOSEN UPSTREAM IS THE EXACT BUG
   // WE FOUND IN AIAS'S OWN ROUTER: its groq fallback kept the anthropic model
   // name and every request died as "Groq: The model claude-fable-5 does not
-  // exist". Switching provider to pin while YENTE_LLM_MODEL is still set to a
+  // exist". Switching provider to pin while YENTE_MODEL_DOCUMENT is still set to a
   // claude name reproduces it here. Explicit model still wins — the operator may
   // know something we do not — but it must not be silent.
   const upstream = name === "pin" ? "pin" : (process.env.YENTE_LLM_UPSTREAM || "");
@@ -272,7 +280,7 @@ export function createLlmClients({ provider, log } = {}) {
       model, upstream, looks_like: family,
       note: `model "${model}" looks like a ${family} model but the upstream is `
         + `${upstream}. This is the shape of the AiAS fallback bug — the gateway `
-        + "will likely reject it. Set YENTE_LLM_MODEL to match, or clear it.",
+        + "will likely reject it. Set YENTE_MODEL_DOCUMENT to match, or clear it.",
     });
   }
 

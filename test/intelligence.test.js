@@ -893,25 +893,26 @@ test("a failed inference never reaches the cache", async () => {
 
 /* --- configuration ------------------------------------------------------ */
 
-test("the configured default is PIN and muse-local, with the old env names honoured", () => {
-  // deepEqual on the two ORIGINAL fields only: the config also carries the
-  // message/document split now, which defaults to `model` and is covered by
-  // its own suite.
+test("two model vars, and only two — the retired names fail loudly", () => {
   const core = ({ provider, model }) => ({ provider, model });
 
   assert.deepEqual(core(resolveIntelligenceConfig({})),
     { provider: "pin", model: "muse-local:latest" });
 
   assert.deepEqual(
-    core(resolveIntelligenceConfig({ YENTE_INTELLIGENCE_PROVIDER: "aias", YENTE_MODEL: "muse-chat:latest" })),
+    core(resolveIntelligenceConfig({
+      YENTE_INTELLIGENCE_PROVIDER: "aias", YENTE_MODEL_DOCUMENT: "muse-chat:latest",
+    })),
     { provider: "aias", model: "muse-chat:latest" });
 
-  // A box configured for the current daemon keeps working across the cutover.
-  assert.deepEqual(
-    core(resolveIntelligenceConfig({ YENTE_LLM_PROVIDER: "local", YENTE_LLM_MODEL: "x" })),
-    { provider: "local", model: "x" });
+  // A stale config gets a boot-time answer that says what to set — never a
+  // silent third alias. "clean up the various env vars... just use those 2."
+  assert.throws(() => resolveIntelligenceConfig({ YENTE_MODEL: "x" }),
+    /YENTE_MODEL is retired.*YENTE_MODEL_DOCUMENT/s);
+  assert.throws(() => resolveIntelligenceConfig({ YENTE_LLM_MODEL: "x" }),
+    /YENTE_LLM_MODEL is retired/);
 
-  // And the new names win when both are set.
+  // Provider naming is untouched by the model cleanup.
   assert.deepEqual(
     core(resolveIntelligenceConfig({ YENTE_INTELLIGENCE_PROVIDER: "pin", YENTE_LLM_PROVIDER: "local" })),
     { provider: "pin", model: "muse-local:latest" });

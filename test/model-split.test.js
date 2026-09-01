@@ -13,20 +13,21 @@ import {
   createIntelligenceProvider, inferenceKey, resolveIntelligenceConfig,
 } from "../src/intelligence/provider.js";
 
-test("both models default to THE model, so an unsplit config changes nothing", () => {
-  const config = resolveIntelligenceConfig({ YENTE_MODEL: "muse-local:latest" });
-  assert.equal(config.messageModel, "muse-local:latest");
-  assert.equal(config.documentModel, "muse-local:latest");
+test("one variable is a whole config: the message seat follows the document seat", () => {
+  const config = resolveIntelligenceConfig({ YENTE_MODEL_DOCUMENT: "GLM-4-32B" });
+  assert.equal(config.messageModel, "GLM-4-32B");
+  assert.equal(config.documentModel, "GLM-4-32B");
+  assert.equal(config.model, "GLM-4-32B", "the client base model IS the document seat");
 });
 
 test("the split is two env vars, each independent", () => {
   const config = resolveIntelligenceConfig({
-    YENTE_MODEL: "muse-local:latest",
-    YENTE_MODEL_MESSAGE: "small:latest",
+    YENTE_MODEL_DOCUMENT: "GLM-4-32B",
+    YENTE_MODEL_MESSAGE: "llama-3.1-8b",
   });
-  assert.equal(config.messageModel, "small:latest");
-  assert.equal(config.documentModel, "muse-local:latest",
-    "an unset half keeps the default rather than following the other half");
+  assert.equal(config.messageModel, "llama-3.1-8b");
+  assert.equal(config.documentModel, "GLM-4-32B",
+    "an unset half keeps its own seat rather than following the other half");
 });
 
 test("the cache key changes with the model, so a swap cannot serve stale answers", () => {

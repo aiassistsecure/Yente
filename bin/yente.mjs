@@ -49,7 +49,7 @@
  *   YENTE_GRAPH_DATA_PATH=./data/graph the listener (evidence, observations)
  *   YENTE_PORT=7688 YENTE_HOST=127.0.0.1
  *   YENTE_MAIL_HOST / YENTE_MAIL_USER / YENTE_MAIL_PASS / YENTE_IMAP_PORT
- *   YENTE_MODEL=muse-local:latest  YENTE_INTELLIGENCE_PROVIDER=pin
+ *   YENTE_MODEL_DOCUMENT=GLM-4-32B  YENTE_INTELLIGENCE_PROVIDER=pin
  *   YENTE_OPERATOR=mark              whose name goes on a decision
  *   YENTE_DESK=0                     listener only
  *   YENTE_HTTP=0                     no web surface
