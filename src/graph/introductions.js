@@ -1,8 +1,6 @@
 import { createHash } from "node:crypto";
 import { MATCH_STATES } from "../store/graph.js";
-import {
-  BLOCK_TAGS, composeBlocks, createEmailArtifact, textBlock,
-} from "../protocol/blocks.js";
+import { BLOCK_TAGS, composeBlocks, textBlock } from "../protocol/blocks.js";
 import { generateEmail } from "../llm/generate.js";
 import { YENTE_SYSTEM_IDENTITY } from "../llm/identity.js";
 
@@ -134,14 +132,19 @@ export async function composeIntroductionWithVoice({ match, manager, emailClient
       allowedFactIds: [],
       allowedAddresses: [...base.to, "yente@ccme.network"],
     },
-    fallback: () => createEmailArtifact({
-      meta: { template: "joint_introduction", facts_used: [] },
-      subject: base.subject,
-      text: base.text,
-    }),
   });
 
-  if (!generated.email) return { ...base, source: "template" };
+  // NO DUMB FALLBACK (Mark, 2026-09-01). With a voice configured, the model
+  // writes this letter or it does not go out this pass: the throw lands in
+  // failIntroduction's exponential-backoff lane and the voice tries again.
+  // The deterministic template above serves only a desk with NO voice seat.
+  if (!generated.email) {
+    throw Object.assign(
+      new Error(`the voice could not compose this introduction: ${
+        generated.failures.map((f) => f.code).join(",") || "no output"}`),
+      { code: "VOICE_UNAVAILABLE", failures: generated.failures },
+    );
+  }
   return {
     ...base,
     subject: generated.email.subject,

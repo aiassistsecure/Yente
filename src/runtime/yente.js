@@ -287,6 +287,9 @@ export function createRuntime({
   // answered with NOTHING deserves the voice — including a repeat note from
   // a member whose profile-request or clarification key is already used up.
   // Control words, duplicates and the suppressed are the only true silences.
+  // Conversation debts the voice has not yet paid — worked every tick.
+  const OWED_REPLIES = "owed_replies";
+
   const SILENT_OUTCOMES = new Set([
     "duplicate", "stop", "delete", "suppressed",
     "pass", "introduce", "correct",
@@ -312,11 +315,26 @@ export function createRuntime({
           to: result.address, error: String(error?.message ?? error).slice(0, 200),
         });
       }
+      if (result.replied !== true) {
+        // The reply is OWED, durably. INV-2 will never revisit this message,
+        // so the debt gets its own ledger and retryOwedReplies works it every
+        // tick until the voice produces a real letter.
+        store.put(OWED_REPLIES, `reply:${inbound.rfcMessageId}`, {
+          address: result.address,
+          rfcMessageId: inbound.rfcMessageId,
+          text: String(inbound.text ?? "").slice(0, 4000),
+          owedAt: (now instanceof Date ? now : new Date(now)).toISOString(),
+        });
+      }
     }
     return result;
   }
 
-  /** Compose one conversational reply in Yente's own voice, and queue it. */
+  /**
+   * Compose one conversational reply in Yente's own voice, and queue it.
+   * `inbound` needs only { rfcMessageId, text } — a live message and a
+   * stored owed-reply row both qualify.
+   */
   async function converse(address, inbound, now) {
     const member = repositories.members.findByAddress(address);
     if (!member || !canReceiveOutbound(member)) return false;
@@ -366,17 +384,11 @@ export function createRuntime({
       ].join("\n")),
     );
 
-    // §11.6: a deterministic fallback where one exists. A wedged voice model
-    // must degrade to a plain acknowledgment, never to silence.
-    const fallback = () => createEmailArtifact({
-      meta: { template: "conversation", facts_used: [] },
-      subject: "I read your note",
-      text:
-        "I read your note and it is on file. I am working with what you have "
-        + "given me and will write the moment there is something concrete to "
-        + "tell you.\n\n\u2014 Yente",
-    });
-
+    // NO DUMB FALLBACK — Mark, 2026-09-01: "thats not how we do business
+    // with yente." A canned letter pretending to be her voice is worse than
+    // a short wait. If the model cannot produce a guard-passing letter in
+    // this round, nothing sends: the debt is recorded durably and retried
+    // every tick until the voice speaks for real. voice_failed says why.
     const generated = await generateEmail({
       client: emailClient,
       prompt,
@@ -386,9 +398,16 @@ export function createRuntime({
         allowedFactIds: [],
         allowedAddresses: [address, "yente@ccme.network"],
       },
-      fallback,
     });
-    if (!generated.email) return false;
+    if (!generated.email) {
+      log("warn", "voice_failed", {
+        to: address,
+        codes: generated.failures.map((f) => f.code).join(","),
+        first: String(generated.failures[0]?.message ?? "").slice(0, 160),
+        note: "no letter sent; the reply stays owed and retries next tick",
+      });
+      return false;
+    }
 
     // The stored inbound row (it carries the hash provenance wants and the
     // rfcMessageId that threads the reply under their own conversation).
@@ -1125,6 +1144,37 @@ export function createRuntime({
    * dedupe, a member with ANY letter on record is skipped, and INV-9 still
    * gates every recipient.
    */
+  /**
+   * Work the owed-reply ledger: every debt the voice has not paid gets
+   * another model round this tick. Success queues the letter (the outbox
+   * key reply:<rfcMessageId> makes double-settlement impossible) and clears
+   * the debt; failure leaves it for the next tick. No canned letters, ever.
+   */
+  async function retryOwedReplies(now) {
+    if (!emailClient) return 0;
+    let settled = 0;
+    for (const owed of store.query(`FROM ${OWED_REPLIES}`)) {
+      const member = repositories.members.findByAddress(owed.address);
+      if (!member || !canReceiveOutbound(member)) {
+        store.delete(OWED_REPLIES, owed._id);
+        continue;
+      }
+      let spoke = false;
+      try {
+        spoke = await converse(owed.address, owed, now);
+      } catch (error) {
+        log("error", "converse_failed", {
+          to: owed.address, error: String(error?.message ?? error).slice(0, 200),
+        });
+      }
+      if (spoke) {
+        store.delete(OWED_REPLIES, owed._id);
+        settled += 1;
+      }
+    }
+    return settled;
+  }
+
   function sweepUnanswered(now) {
     const owedStates = new Set([
       MEMBER_STATES.NEW, MEMBER_STATES.NEEDS_PROFILE, MEMBER_STATES.INTERVIEWING,
@@ -1264,6 +1314,7 @@ export function createRuntime({
     advanceDeadlines,
     drainOutbox,
     sweepUnanswered,
+    retryOwedReplies,
     outboxStates: () =>
       Object.fromEntries(
         Object.values(OUTBOX_STATES).map((state) => [

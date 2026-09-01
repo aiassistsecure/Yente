@@ -210,6 +210,24 @@ export function stripFenceLines(artifact) {
     .join("\n");
 }
 
+/**
+ * The reading tolerance for WHOLE artifacts, live-traced 2026-09-01: the
+ * voice model wrapped a perfectly valid META/SUBJECT/EMAIL_TEXT triple in
+ * "Sure! Here is the email:" and a markdown fence — and the strict parser
+ * (rightly) refused text outside blocks, twice, so every reply Yente sent
+ * was the canned fallback. Preamble and postamble around a model's answer
+ * are transport noise, not a protocol violation: slice from the first frame
+ * to the last END, strip fence lines, and let the strict validators judge
+ * everything INSIDE. Reading edges only — composed artifacts stay strict.
+ */
+export function extractArtifact(raw) {
+  const text = stripFenceLines(String(raw ?? ""));
+  const first = text.indexOf("<<<");
+  const last = text.lastIndexOf("<<<END>>>");
+  if (first === -1 || last === -1 || last < first) return text;
+  return text.slice(first, last + "<<<END>>>".length);
+}
+
 export function textBlock(tag, content) {
   requireKnownTag(tag);
   return wrap(tag, requireText(content, tag));

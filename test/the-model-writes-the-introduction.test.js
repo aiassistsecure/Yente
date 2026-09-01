@@ -104,8 +104,12 @@ test("the voice seat writes the introduction and it actually sends", async () =>
     "and the offerer's");
 });
 
-test("a leaky voice falls back to the human template — the letter still goes", async () => {
+test("a leaky voice sends NOTHING — the introduction waits for a real letter", async () => {
+  // NO DUMB FALLBACK: with a voice configured, the model writes this letter
+  // or it does not go out this pass. The failure lands in the introduction
+  // retry lane (exponential backoff), and the voice tries again.
   const { graph, manager } = confirmedMatch();
+  const matchId = graph.matches.all()[0].id ?? graph.matches.all()[0]._id;
   const transport = createMemoryTransport();
   const leaky = {
     async complete() {
@@ -123,10 +127,14 @@ test("a leaky voice falls back to the human template — the letter still goes",
   const summary = await drainConfirmedIntroductions({
     graph, manager, transport, emailClient: leaky, now: () => T0,
   });
-  assert.equal(summary.sent, 1, "the guard rejects the leak; the introduction still sends");
-  const [sent] = transport.sent;
-  assert.doesNotMatch(sent.text, /stranger@elsewhere\.test/);
-  assert.match(sent.text, /you two should be talking/, "the human template spoke instead");
+  assert.equal(summary.sent, 0, "a letter the guard refuses is not replaced by a template");
+  assert.equal(summary.failed, 1);
+  assert.equal(transport.sent.length, 0, "nothing left the desk");
+
+  const held = graph.matches.get(matchId);
+  assert.equal(held.state, MATCH_STATES.CONFIRMED, "back in the retry lane");
+  assert.match(String(held.introductionLastError), /voice could not compose/);
+  assert.ok(String(held.introductionAvailableAt) > T0, "with a backoff deadline");
 });
 
 test("no voice seat: the human template, exactly as before", async () => {
