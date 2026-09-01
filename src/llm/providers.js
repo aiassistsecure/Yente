@@ -302,11 +302,27 @@ export function createLlmClients({ provider, log } = {}) {
     ...settings,
   });
 
+  // THE TWO SEATS — Mark, 2026-08-31: "YENTE_MODEL_DOCUMENT to be the model
+  // used for yente ingestion, and YENTE_MODEL_MESSAGE used for the model
+  // that speaks to users." The seam always existed (extractionClient and
+  // emailClient were returned separately) — they were just the same client.
+  // Now the voice can be its own weights: everything observe() reads runs on
+  // the document model; everything a HUMAN receives is written by the
+  // message model. Unset, the voice follows the ingestion seat and nothing
+  // changes.
+  const voiceModel = process.env.YENTE_MODEL_MESSAGE || model;
+  const emailClient = voiceModel === model ? client : createModelClient({
+    baseUrl, model: voiceModel, apiKey,
+    fetchImpl: withHeaders(spec.headers()),
+    ...settings,
+  });
+
   return {
     extractionClient: client,
-    emailClient: client,
+    emailClient,
     describe: {
       provider: name, label: spec.label, model, baseUrl, thirdParty,
+      voice_model: voiceModel,
       first_token_ms: client.settings.firstTokenTimeoutMs,
     },
   };

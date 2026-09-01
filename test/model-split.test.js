@@ -1,10 +1,14 @@
 /**
- * One model for messages, another for documents — the split follows the work.
+ * The two seats — Mark, 2026-08-31: "YENTE_MODEL_DOCUMENT to be the model
+ * used for yente ingestion, and YENTE_MODEL_MESSAGE used for the model that
+ * speaks to users."
  *
- * Measured live: a short message took 1m1s of deliberation to decide whether to
- * attach an email address to one entity; the résumé pass in the same minute
- * produced 63 typed claims. Messages are short bodies whose right answer is
- * usually zero or one claim; documents reward a model that thinks.
+ * The split is by AUDIENCE, not by evidence size. Ingestion talks to the
+ * parser: its output dies in verification gates, so it wants the careful
+ * reader. The voice talks to people: its output lands in a stranger's inbox
+ * wearing Yente's name. extractionClient runs the document seat; emailClient
+ * runs the message seat; unset, the voice follows ingestion and nothing
+ * changes.
  */
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -12,6 +16,33 @@ import test from "node:test";
 import {
   createIntelligenceProvider, inferenceKey, resolveIntelligenceConfig,
 } from "../src/intelligence/provider.js";
+import { createLlmClients } from "../src/llm/providers.js";
+
+test("the voice is its own client when YENTE_MODEL_MESSAGE is set", () => {
+  const held = {
+    doc: process.env.YENTE_MODEL_DOCUMENT, msg: process.env.YENTE_MODEL_MESSAGE,
+  };
+  try {
+    process.env.YENTE_MODEL_DOCUMENT = "GLM-4-32B";
+    process.env.YENTE_MODEL_MESSAGE = "llama-3.1-8b";
+    const clients = createLlmClients({ provider: "pin" });
+    assert.equal(clients.describe.model, "GLM-4-32B", "ingestion seat");
+    assert.equal(clients.describe.voice_model, "llama-3.1-8b", "voice seat");
+    assert.notEqual(clients.emailClient, clients.extractionClient,
+      "two seats, two clients");
+
+    delete process.env.YENTE_MODEL_MESSAGE;
+    const unsplit = createLlmClients({ provider: "pin" });
+    assert.equal(unsplit.emailClient, unsplit.extractionClient,
+      "unset, the voice follows ingestion — one client, nothing changes");
+    assert.equal(unsplit.describe.voice_model, "GLM-4-32B");
+  } finally {
+    if (held.doc === undefined) delete process.env.YENTE_MODEL_DOCUMENT;
+    else process.env.YENTE_MODEL_DOCUMENT = held.doc;
+    if (held.msg === undefined) delete process.env.YENTE_MODEL_MESSAGE;
+    else process.env.YENTE_MODEL_MESSAGE = held.msg;
+  }
+});
 
 test("one variable is a whole config: the message seat follows the document seat", () => {
   const config = resolveIntelligenceConfig({ YENTE_MODEL_DOCUMENT: "GLM-4-32B" });

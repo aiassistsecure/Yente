@@ -952,8 +952,8 @@ export function createIntelligenceProvider({
         if (/spent its whole token budget/i.test(completion.text)) {
           throw new IntelligenceError("TOKEN_BUDGET_UPSTREAM",
             "the model reasoned through its entire token budget and never "
-            + "answered — raise YENTE_LLM_MAX_TOKENS or use a lighter model "
-            + "for this evidence kind (YENTE_MODEL_MESSAGE/_DOCUMENT)",
+            + "answered — raise YENTE_LLM_MAX_TOKENS or seat a lighter "
+            + "ingestion model (YENTE_MODEL_DOCUMENT)",
             { transient: true });
         }
 
@@ -1228,10 +1228,12 @@ export function createIntelligenceProvider({
  * the same knob (YENTE_MODEL, YENTE_LLM_MODEL, and the split pair), which is
  * how a box ends up serving a model nobody remembers choosing. Now:
  *
- *   YENTE_MODEL_DOCUMENT  the heavyweight read — résumés, attachments.
- *                         Also the client's base model.
- *   YENTE_MODEL_MESSAGE   short bodies; defaults to the document model,
- *                         so an unsplit config is one variable.
+ *   YENTE_MODEL_DOCUMENT  INGESTION — every observe() job, messages and
+ *                         résumés alike. Also the client's base model.
+ *   YENTE_MODEL_MESSAGE   THE VOICE — everything Yente writes TO people
+ *                         (interviews, confirmations, introductions).
+ *                         Defaults to the document model, so an unsplit
+ *                         config is one variable.
  *
  * The retired names are not honoured as silent fallbacks: a stale config
  * gets a boot-time error that says exactly what to set, not a quiet third
@@ -1242,17 +1244,17 @@ export function resolveIntelligenceConfig(env = process.env) {
     if (env[legacy]) {
       throw new TypeError(
         `${legacy} is retired — the model vars are YENTE_MODEL_DOCUMENT `
-        + "(the heavyweight read: résumés and attachments; also the default "
-        + "for everything) and YENTE_MODEL_MESSAGE (short bodies; optional, "
-        + `defaults to the document model). Move "${env[legacy]}" to the seat `
-        + "it belongs in and remove the old variable.");
+        + "(ingestion: every observe job; also the default for everything) "
+        + "and YENTE_MODEL_MESSAGE (the voice: everything Yente writes to "
+        + `people; optional). Move "${env[legacy]}" to the seat it belongs `
+        + "in and remove the old variable.");
     }
   }
-  // THE SPLIT FOLLOWS THE WORK, measured on one live run: a short message
-  // took 1m1s of deliberation to decide whether to attach an email address
-  // to one entity, while the résumé pass in the same minute produced 63
-  // typed claims. Messages are short bodies whose right answer is usually
-  // zero or one claim; documents reward a model that thinks.
+  // THE SPLIT FOLLOWS THE AUDIENCE. Ingestion talks to the PARSER — its
+  // output dies in verification gates and graded rounds, so it wants the
+  // model that reads carefully. The voice talks to PEOPLE — its output
+  // lands in a stranger's inbox wearing Yente's name, so it wants the model
+  // that writes well and fast. Same knob shape, entirely different stakes.
   const documentModel = env.YENTE_MODEL_DOCUMENT || "muse-local:latest";
   return Object.freeze({
     provider: env.YENTE_INTELLIGENCE_PROVIDER || env.YENTE_LLM_PROVIDER || "pin",
