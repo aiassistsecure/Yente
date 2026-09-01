@@ -437,6 +437,74 @@ function sharedVocabulary(seekerVocab, offererVocab) {
   return shared.sort((a, b) => a.word.localeCompare(b.word));
 }
 
+/** Which live ask each proposal kind answers. */
+const ASK_FAMILY = Object.freeze({
+  "intent:HIRING": "hire_for",
+  "intent:INVESTING": "invest_in",
+});
+
+/** The grade IS the base confidence — good clears the default threshold, barely. */
+const GRADE_CONFIDENCE = Object.freeze({ good: 0.55, strong: 0.65, exceptional: 0.75 });
+
+function proposalAnswers({ observations, endorsements }) {
+  const out = [];
+  const asks = observations.filter((row) =>
+    ASK_FAMILY[String(row?.predicate ?? "")] && !row?.attributes?.retracted);
+
+  for (const ask of asks) {
+    // The intake conversation is never an ask, on this arm like every other.
+    if (isIntakeArtifact(ask.object)) continue;
+    const family = ASK_FAMILY[ask.predicate];
+    const askWords = new Set(significantWords(ask.object));
+    if (askWords.size === 0) continue;
+
+    for (const [candidate, graded] of endorsements) {
+      if (candidate === ask.subject) continue;
+
+      // The BEST overlapping proposal speaks for the candidate; two grades
+      // for adjacent targets are one introduction, not two.
+      let best = null;
+      for (const proposal of graded) {
+        if (proposal.kind !== family) continue;
+        const matched = significantWords(proposal.target)
+          .filter((word) => askWords.has(word));
+        if (matched.length === 0) continue;
+        const confidence = Math.min(1,
+          (GRADE_CONFIDENCE[proposal.grade] ?? GRADE_CONFIDENCE.good)
+          + Math.min(0.1, 0.05 * (matched.length - 1)));
+        if (!best || confidence > best.confidence) {
+          best = { proposal, matched: [...new Set(matched)], confidence };
+        }
+      }
+      if (!best) continue;
+
+      out.push(Object.freeze({
+        seeker: ask.subject,
+        offerer: candidate,
+        matchType: `${ask.predicate.replace(/^intent:/, "").toLowerCase()}_x_${family}`,
+        confidence: Number(best.confidence.toFixed(3)),
+        reasons: Object.freeze([{
+          id: "graded_candidate",
+          weight: best.confidence,
+          detail: `Yente graded them ${best.proposal.grade} for ${best.proposal.target}; `
+            + `the ask is ${ask.object} — sharing ${best.matched.join(", ")}`,
+          matched: best.matched,
+        }]),
+        conflicts: Object.freeze([]),
+        // Both sides carry their own words: the ask as they typed it, and the
+        // resume sentence the grade stands on. INV-5 applies to a match's
+        // reason as much as to the claim underneath it.
+        evidence: Object.freeze([
+          { subject: ask.subject, quote: ask.quote, evidenceId: ask.evidenceId, said: ask.object },
+          { subject: candidate, quote: best.proposal.quote,
+            evidenceId: best.proposal.evidenceId, said: best.proposal.target },
+        ]),
+      }));
+    }
+  }
+  return out;
+}
+
 export function proposeIntroductions({ observations, threshold = 0.5, limit = 50 }) {
   const intents = observations.filter((row) => String(row.predicate ?? "").startsWith("intent:"));
 
@@ -461,6 +529,18 @@ export function proposeIntroductions({ observations, threshold = 0.5, limit = 50
   // order of authority: the person says what they want, their résumé says what
   // they can do.
   proposals.push(...proposeFromRoles({ observations, vocabularies, proposals: endorsements }));
+
+  // A GRADED CANDIDATE ANSWERS A LIVE ASK. Observed 2026-09-01: a hiring
+  // email ("I'm hiring a rust backend engineer") sat unanswered next to a
+  // person Yente itself had graded `hire_for: exceptional` for exactly those
+  // roles — because the candidate's only intent rows were intake artifacts,
+  // and a proposal could WARM a pair but never establish one. That was the
+  // proposals feature failing at its own founding sentence: "best candidate
+  // for job xyz." Now a live HIRING/INVESTING ask pairs directly with another
+  // person's graded proposal when the targets share real words — evidence on
+  // both sides (their ask, the resume quote the grade stands on), and the
+  // grade sets how warmly the introduction opens.
+  proposals.push(...proposalAnswers({ observations, endorsements }));
 
   for (const a of intents) {
     for (const b of intents) {
