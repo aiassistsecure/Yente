@@ -671,7 +671,7 @@ export class GraphMatchRepository {
     const held = this.store.get(GRAPH_COLLECTIONS.MATCHES, id);
 
     if (held && held.state !== MATCH_STATES.PROPOSED) {
-      return { match: held, decided: true };
+      return { match: held, decided: true, fresh: false };
     }
     // A human proposal must not be downgraded to a machine one by a later
     // scorer pass over the same pair.
@@ -688,7 +688,12 @@ export class GraphMatchRepository {
       decidedAt: null,
       decidedBy: null,
     });
-    return { match: { ...match, id }, decided: false };
+    // `fresh` is the difference between a proposal and a re-scoring of one.
+    // Every scan re-proposes every still-standing pair (confidence and
+    // evidence deserve the refresh), and counting those as newly queued
+    // turned the operator tape into a treadmill: "3 candidates queued" every
+    // pass, forever, on zero new information.
+    return { match: { ...match, id }, decided: false, fresh: !held };
   }
 
   decide({ matchId, state, by, at, note = null }) {
