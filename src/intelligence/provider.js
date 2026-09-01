@@ -920,6 +920,26 @@ export function createIntelligenceProvider({
       return entries;
     };
 
+    // The content twin of bankThinking — Mark, 2026-09-01: "I just dont want
+    // wasted claims going in the trash." Salvage used to fire only at
+    // EXHAUSTION, and only on the LAST attempt's partial text: forty claim
+    // lines a dying transport delivered whole on attempt 1 were re-paid in
+    // full by attempt 2, and lost outright if attempt 2 died earlier than
+    // attempt 1 did. Now every failed attempt's delivered lines go through
+    // the same gates IMMEDIATELY and join the bank — the wake-up shows them
+    // in EXTRACTED_CLAIMS, the retry never re-pays them, and exhaustion
+    // keeps them. Content lines are ranked ahead of thinking (they were the
+    // model's ANSWER), which mergeEntries' first-wins order provides.
+    const bankPartial = (current, partialText) => {
+      const harvest = salvageLines(partialText);
+      if (!harvest?.raw) return current;
+      const canonical = canonicalizeSourceIds(harvest.raw, aliases);
+      const { envelope } = validateEnvelope(canonical, { knownSourceIds, providedRefs });
+      const { verified } = verifyEnvelope(envelope, sourceTextById);
+      const { entries } = mergeEntries(flattenVerified(verified), current);
+      return entries;
+    };
+
     while (attempt < maxAttempts + roundsUsed) {
       attempt += 1;
       try {
@@ -1145,6 +1165,11 @@ export function createIntelligenceProvider({
         // shown to the model for review on the wake-up, kept at exhaustion.
         // Ten minutes of deliberation over a résumé is never paid for twice.
         banked = bankThinking(banked, lastReasoningText);
+        if (typeof error?.meta?.partialText === "string" && error.meta.partialText.length > 0) {
+          try {
+            banked = bankPartial(banked, error.meta.partialText);
+          } catch { /* a salvage failure must never worsen the failure it salvages */ }
+        }
         onStream?.({ phase: "rejected", ...failure, evidence, contentHash });
 
         // Tell the next attempt what broke. Sentinel tokens are stripped from
