@@ -32,6 +32,7 @@ import { drainIntelligence } from "../intelligence/queue.js";
 import { proposeIntroductions } from "./matching.js";
 import { MATCH_STATES } from "../store/graph.js";
 import { drainConfirmedIntroductions } from "./introductions.js";
+import { drainPartyConsent } from "./consent.js";
 
 /**
  * @param {object}   deps
@@ -72,6 +73,8 @@ export function createGraphLoops({
   // The voice seat — when present, confirmed introductions are written by
   // the model (guard-checked, human-template fallback) instead of the template.
   emailClient = null,
+  // The document seat, for READING party replies in the consent round.
+  consentClient = null,
 }) {
   if (!graph) throw new TypeError("createGraphLoops requires the graph repositories");
   if (!observer) throw new TypeError("createGraphLoops requires an observer");
@@ -277,9 +280,13 @@ export function createGraphLoops({
         // graph every scan; absolute, reboot-proof, and free.
         log("info", "match_tally", {
           pending: graph.matches.byState(MATCH_STATES.PROPOSED).length,
+          awaiting: graph.matches.byState(MATCH_STATES.AWAITING_PARTIES).length,
           confirmed: graph.matches.byState(MATCH_STATES.CONFIRMED).length,
           introduced: graph.matches.byState(MATCH_STATES.INTRODUCED).length,
         });
+        // Consent first, then the confirmed drain: the second yes recorded on
+        // this pass sends its joint introduction on this same pass.
+        await drainPartyConsent({ graph, manager, transport, consentClient, log });
         await drainConfirmedIntroductions({ graph, manager, transport, emailClient, log });
       } catch (error) {
         end("match:scan");

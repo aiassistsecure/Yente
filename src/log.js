@@ -134,7 +134,7 @@ export function createLogger({ pid = process.pid, quiet = false } = {}) {
     // The standing match tally, read from the graph each connect scan —
     // absolute state, not a per-session counter (which read "matches 0"
     // over a full review queue after every reboot).
-    matchesPending: 0, matchesConfirmed: 0, matchesIntroduced: 0,
+    matchesPending: 0, matchesAwaiting: 0, matchesConfirmed: 0, matchesIntroduced: 0,
     observeMs: [],                 // for the sparkline and the average
   };
 
@@ -439,6 +439,7 @@ export function createLogger({ pid = process.pid, quiet = false } = {}) {
 
       case "match_tally":
         stats.matchesPending = Number(meta.pending ?? 0);
+        stats.matchesAwaiting = Number(meta.awaiting ?? 0);
         stats.matchesConfirmed = Number(meta.confirmed ?? 0);
         stats.matchesIntroduced = Number(meta.introduced ?? 0);
         return; // silent — the dashboard is where a tally lives
@@ -538,6 +539,7 @@ export function createLogger({ pid = process.pid, quiet = false } = {}) {
         + `${(jobs.FAILED ?? 0) > 0 ? c.red(` dead ${jobs.FAILED}`) : ""}`
         + `${stats.retries ? c.yellow(` retries ${stats.retries}`) : ""}`,
       `${c.green("matches")} ${stats.matchesPending} to review`
+        + (stats.matchesAwaiting > 0 ? c.yellow(` ${stats.matchesAwaiting} awaiting yes`) : "")
         + (stats.matchesConfirmed > 0 ? c.yellow(` ${stats.matchesConfirmed} confirmed`) : "")
         + (stats.matchesIntroduced > 0 ? c.green(` ${stats.matchesIntroduced} made`) : ""),
       `${c.grey("avg")} ${avg} ${c.magenta(spark(stats.observeMs))}`,

@@ -69,6 +69,13 @@ export const BLOCK_TAGS = Object.freeze({
    */
   RESULTS: "RESULTS",
   REJECTED_CLAIMS: "REJECTED_CLAIMS",
+  /**
+   * The consent verdict: the document model's read of a party's reply to a
+   * match preview — {"decision": approve|decline|unclear, "quote": ...},
+   * where the quote must be a verbatim substring of the reply or the
+   * verdict demotes to unclear. See graph/consent.js.
+   */
+  CONSENT: "CONSENT",
   MISSING_FIELDS: "MISSING_FIELDS",
   INTERVIEW_PLAN: "INTERVIEW_PLAN",
   MATCH: "MATCH",

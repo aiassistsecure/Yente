@@ -637,6 +637,10 @@ export class IntelligenceJobRepository {
 
 export const MATCH_STATES = Object.freeze({
   PROPOSED: "PROPOSED",
+  // Operator said yes; now BOTH PARTIES must. Each gets the other's
+  // evidenced profile card by mail, and the match sits here until two
+  // legible approvals arrive (-> CONFIRMED) or one decline does (-> REJECTED).
+  AWAITING_PARTIES: "AWAITING_PARTIES",
   CONFIRMED: "CONFIRMED",
   INTRODUCTION_SENDING: "INTRODUCTION_SENDING",
   INTRODUCED: "INTRODUCED",
@@ -703,6 +707,77 @@ export class GraphMatchRepository {
     // turned the operator tape into a treadmill: "3 candidates queued" every
     // pass, forever, on zero new information.
     return { match: { ...match, id }, decided: false, fresh: !held };
+  }
+
+  /**
+   * Operator confirmation under party approval: the match leaves the review
+   * queue and enters the consent round. Only a PROPOSED match can enter;
+   * anything already decided stays decided.
+   */
+  awaitParties(matchId, { by, at }) {
+    const held = this.store.get(GRAPH_COLLECTIONS.MATCHES, matchId);
+    if (!held || held.state !== MATCH_STATES.PROPOSED) return null;
+    return this.store.put(GRAPH_COLLECTIONS.MATCHES, matchId, {
+      ...held, state: MATCH_STATES.AWAITING_PARTIES,
+      previews: {}, partyDecisions: {}, consentSeen: [],
+      operatorConfirmedBy: by, operatorConfirmedAt: at, updatedAt: at,
+    });
+  }
+
+  markPartyPreviewSent(matchId, { address, at }) {
+    const held = this.store.get(GRAPH_COLLECTIONS.MATCHES, matchId);
+    if (!held) return null;
+    return this.store.put(GRAPH_COLLECTIONS.MATCHES, matchId, {
+      ...held,
+      previews: { ...held.previews, [String(address).toLowerCase()]: { sentAt: at } },
+      updatedAt: at,
+    });
+  }
+
+  noteConsentEvidence(matchId, evidenceId) {
+    const held = this.store.get(GRAPH_COLLECTIONS.MATCHES, matchId);
+    if (!held) return null;
+    const seen = held.consentSeen ?? [];
+    if (seen.includes(evidenceId)) return held;
+    return this.store.put(GRAPH_COLLECTIONS.MATCHES, matchId, {
+      ...held, consentSeen: [...seen, evidenceId],
+    });
+  }
+
+  /**
+   * One party's legible answer. A decline rejects the match outright — one
+   * no is a no. The SECOND approval confirms it, with the introduction
+   * available immediately: both consents are already on file, quoted.
+   */
+  recordPartyDecision(matchId, { address, decision, quote = null, evidenceId = null, at }) {
+    const held = this.store.get(GRAPH_COLLECTIONS.MATCHES, matchId);
+    if (!held || held.state !== MATCH_STATES.AWAITING_PARTIES) return null;
+    const key = String(address).toLowerCase();
+    const partyDecisions = {
+      ...held.partyDecisions,
+      [key]: { decision, quote, evidenceId, at },
+    };
+    if (decision === "decline") {
+      return this.store.put(GRAPH_COLLECTIONS.MATCHES, matchId, {
+        ...held, partyDecisions, state: MATCH_STATES.REJECTED,
+        decidedAt: at, decidedBy: key, updatedAt: at,
+      });
+    }
+    const approvals = Object.values(partyDecisions)
+      .filter((row) => row.decision === "approve").length;
+    if (approvals >= 2) {
+      return this.store.put(GRAPH_COLLECTIONS.MATCHES, matchId, {
+        ...held, partyDecisions, state: MATCH_STATES.CONFIRMED,
+        decidedAt: at, decidedBy: "both parties",
+        introductionAvailableAt: at,
+        introductionAttempts: Number(held.introductionAttempts ?? 0),
+        introductionLastError: null,
+        updatedAt: at,
+      });
+    }
+    return this.store.put(GRAPH_COLLECTIONS.MATCHES, matchId, {
+      ...held, partyDecisions, updatedAt: at,
+    });
   }
 
   decide({ matchId, state, by, at, note = null }) {

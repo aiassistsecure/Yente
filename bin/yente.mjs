@@ -82,6 +82,7 @@ import { subjectForAddress } from "../src/graph/identity.js";
 import { createMailFromEnv, mailConfigFromEnv } from "../src/mail/from-env.js";
 import { createGraphManager } from "../src/graph/manager.js";
 import { drainConfirmedIntroductions } from "../src/graph/introductions.js";
+import { drainPartyConsent } from "../src/graph/consent.js";
 import {
   createIntelligenceProvider,
   resolveIntelligenceConfig,
@@ -357,7 +358,12 @@ log("info", "intelligence", {
   third_party: clients.describe.thirdParty,
 });
 
-const manager = createGraphManager({ graph });
+// BOTH PARTIES SAY YES (default on): operator confirmation mails each party
+// the other's evidenced profile card and waits for two legible approvals —
+// the document model reads the replies. YENTE_PARTY_APPROVAL=0 restores the
+// operator-only instant introduction.
+const partyApproval = String(process.env.YENTE_PARTY_APPROVAL ?? "1") === "1";
+const manager = createGraphManager({ graph, partyApproval });
 const strandedIntroductions = graph.matches.requeueStrandedIntroductions(new Date().toISOString());
 if (strandedIntroductions > 0) {
   log("warn", "introductions_requeued", { count: strandedIntroductions });
@@ -402,6 +408,7 @@ const { source, imap, mailbox, configured } = createMailFromEnv({ graph, log });
 const loops = createGraphLoops({
   graph, source, observer, manager, log, begin, end,
   emailClient: voiceClient,
+  consentClient: clients.extractionClient,
   autoQualify: String(process.env.YENTE_AUTOQUALIFY ?? "1") === "1",
   signal: abort.signal,
   isStopping: () => stopping,
@@ -523,9 +530,17 @@ if (on("YENTE_HTTP")) {
     try {
       const handled = await handleManagerRequest({
         req, res, manager, graph, health,
-        onConfirmed: () => drainConfirmedIntroductions({
-          graph, manager, transport, emailClient: voiceClient, log,
-        }),
+        onConfirmed: async () => {
+          // A confirm click should act NOW, not a connect-interval later:
+          // send the party previews (or, with approval off, the joint
+          // introduction) in the same request's wake.
+          await drainPartyConsent({
+            graph, manager, transport, consentClient: clients.extractionClient, log,
+          });
+          await drainConfirmedIntroductions({
+            graph, manager, transport, emailClient: voiceClient, log,
+          });
+        },
       });
       if (handled) return;
       const html = renderManager({
