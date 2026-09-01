@@ -9,6 +9,7 @@ import {
   openWaitlistRepository,
 } from "../src/waitlist/repository.js";
 import { subscribersToCsv } from "../src/waitlist/csv.js";
+import { directoryPage } from "./pages/directory.mjs";
 
 const HERE = fileURLToPath(new URL(".", import.meta.url));
 const DEFAULT_PUBLIC_DIR = resolve(HERE, "public");
@@ -221,6 +222,10 @@ export function createSiteHandler({
   trustProxy = false,
   clock,
   graphStats = null,
+  // (query) => cards, built over the graph — see src/graph/directory.js. The
+  // route exists only when a graph is in the process (bin/yente.mjs); a
+  // waitlist-only deployment simply has no directory yet.
+  directory = null,
 } = {}) {
   if (!repository) throw new TypeError("A waitlist repository is required");
   const allowRequest = makeRateLimiter(clock);
@@ -310,6 +315,18 @@ export function createSiteHandler({
           "Content-Disposition": `attachment; filename="yente-subscribers-${date}.csv"`,
         });
         return response.end(csv);
+      }
+
+      if (request.method === "GET" && url.pathname === "/directory" && directory) {
+        const query = (url.searchParams.get("q") ?? "").slice(0, 120);
+        const cards = directory(query);
+        if (url.searchParams.get("format") === "json") {
+          return sendJson(response, 200, {
+            query, total: cards.length, people: cards,
+          }, { "Cache-Control": "no-store" });
+        }
+        return sendText(response, 200, directoryPage({ cards, query }),
+          "text/html; charset=utf-8");
       }
 
       if (request.method === "GET" && serveStatic(response, publicDir, url.pathname)) {

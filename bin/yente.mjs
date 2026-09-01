@@ -69,6 +69,7 @@ import {
 } from "../src/index.js";
 import { openDatabases , COLLECTIONS } from "../src/store/db.js";
 import { createGraphRepositories } from "../src/store/graph.js";
+import { buildDirectory } from "../src/graph/directory.js";
 import { createLlmClients } from "../src/llm/providers.js";
 import { openWaitlistRepository } from "../src/waitlist/repository.js";
 import { claimSeatFromInbound } from "../src/waitlist/inbound.js";
@@ -457,6 +458,10 @@ if (on("YENTE_HTTP")) {
         observations: graph.observations.all().length,
         queued: graph.jobs.counts().READY ?? 0,
       }),
+      // The resume directory: Yente's verified read of every resume, one
+      // deduped card per resolved person, searchable — pure NEDB lookups
+      // over the same graph the desk writes.
+      directory: (query) => buildDirectory({ graph }, { query }),
     }));
     const port = Number(process.env.YENTE_PORT || 7688);
     bind(siteServer, port, host, () => {
