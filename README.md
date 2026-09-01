@@ -44,20 +44,55 @@ cannot be hidden in prose.
 
 ## Current status
 
-**Phase 1a — deterministic genesis core.** The repository now contains:
+**Running desk.** Phase 1a shipped the deterministic genesis core — the v2
+contract in [`SPEC_v2.md`](SPEC_v2.md), Sentinel Block protocol helpers,
+evidenced qualification, deterministic match scoring with hard gates, the
+private-preview / veto-window / joint-introduction state machine, and the
+executable tests that pin all of it. Everything the genesis README said was
+"not yet" built has since been built, and it runs in production as **one
+process** (`node bin/yente.mjs`):
 
-- the v2 product and runtime contract in [`SPEC_v2.md`](SPEC_v2.md);
-- Sentinel Block protocol helpers and strict email artifact validation;
-- evidenced qualification checks;
-- bidirectional deterministic match scoring with hard gates;
-- private-preview, veto-window, and joint-introduction state transitions;
-- reference prompt and email artifacts; and
-- executable tests covering policy, protocol, and workflow invariants.
+- **Mailbox adapter** — a single IMAP read path (imapflow, durable UID
+  cursor, UIDVALIDITY handling) feeds an append-only, content-addressed
+  **evidence ledger**; the desk consumes the ledger rather than racing for
+  the inbox. Attachments are parsed in-process (PDF via unpdf, DOCX via
+  mammoth).
+- **LLM adapter, two seats** — `YENTE_MODEL_DOCUMENT` reads evidence
+  (extraction, observation, span-verified grounding), `YENTE_MODEL_MESSAGE`
+  is the voice: it composes conversational replies and writes the joint
+  introduction itself. Every generated email passes a disclosure guard
+  (closed template set, no un-authorised addresses, no raw source quotes)
+  and degrades to a deterministic letter — never to silence. Local models
+  over an OpenAI-style endpoint are first-class; see
+  [`docs/PROVIDERS.md`](docs/PROVIDERS.md).
+- **Understanding pipeline** — models answer in Sentinel observation
+  envelopes, one JSON claim per line, each claim span-verified against the
+  source before it can enter the graph. Partly-verified answers get a graded
+  RESULTS round (accepted claims banked, rejections returned with parser
+  reason codes) instead of a blind retry.
+- **Supervisor lanes** — the main thread owns the stores and dispatches
+  model work to worker-thread pools, sized per seat with
+  `YENTE_INGEST_WORKERS` / `YENTE_VOICE_WORKERS` (0 keeps a seat
+  in-process). A crashed lane costs one attempt of one task, never data.
+- **Durable outbox** — every outbound letter is queued with an idempotency
+  key and drained separately, so a crash between deciding and sending leaves
+  a durable job, and reboots settle any owed replies exactly once.
+- **Matching, always on** — the connect loop scores the graph continuously
+  (intent × complementary intent, and graded candidates answering live
+  hiring/investing asks), auto-qualifies members the graph can stand behind
+  (`YENTE_AUTOQUALIFY=0` restores the operator-driven lifecycle), and queues
+  introduction candidates for human review.
+- **Operator manager** — a private web console with the full dossier per
+  person (every claim with its quote and source, proposal grades, lifecycle
+  controls, match review), plus a status tape that reports the standing
+  match tally, per-tick extraction outcomes, and send failures.
+- **Public résumé directory** — an identity-resolved, searchable directory
+  of evidenced profiles at `/directory` on the landing page, built from pure
+  store reads. No email addresses are ever rendered.
 
-It does **not** yet contain the production mailbox adapter, attachment parsers,
-LLM adapter, durable mailbox workflow repositories/outbox, or a running worker. The earlier
-founder/investor design remains in [`SPEC.md`](SPEC.md) as historical context; v2
-is the active contract.
+The earlier founder/investor design remains in [`SPEC.md`](SPEC.md) as
+historical context; v2 is the active contract. Operational references live in
+[`docs/`](docs/): collections, polling, providers, and the state machine.
 
 ## Public Founding Network
 
@@ -99,6 +134,31 @@ Requires Node.js 24 or newer.
 npm install
 npm test
 ```
+
+## Run Yente
+
+One process, everything she is — desk, listener, understanding, matching, and
+the web surfaces on one port (the operator manager on its own):
+
+```sh
+set -a; source .env; set +a
+node bin/yente.mjs
+```
+
+The halves still run alone when you want them to: `bin/daemon.mjs` (desk
+only), `bin/graph.mjs` (listener/graph only), plus `bin/inspect.mjs`,
+`bin/extract-once.mjs`, and `bin/observe-once.mjs` for reading and replaying
+without a running desk. Key environment:
+
+```sh
+YENTE_MODEL_DOCUMENT=…    # the model that reads evidence
+YENTE_MODEL_MESSAGE=…     # the model that writes to people (defaults to document)
+YENTE_INGEST_WORKERS=2    # document-seat worker lanes (0 = in-process)
+YENTE_VOICE_WORKERS=1     # voice-seat worker lanes (0 = in-process)
+YENTE_AUTOQUALIFY=1       # graph-driven qualification (0 = operator-driven)
+```
+
+See [`.env.example`](.env.example) for the full set.
 
 ## Licence
 

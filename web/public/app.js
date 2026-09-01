@@ -12,7 +12,9 @@
   "use strict";
 
   var CAPACITY_URL = "/api/founding-network/capacity";
-  var BASE_MS = 30000;
+  // 10 seconds while the tab is visible — the README's public promise for the
+  // live counters. Errors still back off exponentially toward MAX_MS.
+  var BASE_MS = 10000;
   var MAX_MS = 240000;
   var NUMBER = new Intl.NumberFormat("en-US");
   var delay = BASE_MS;

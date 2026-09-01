@@ -57,7 +57,8 @@ export function composeGraphIntroduction({ match, manager }) {
         : `${offererName}, ${seekerName} is looking for exactly what you do.`,
       "",
       "You have each other now — just hit reply-all, say hello, and take it "
-        + "from here. I'll get out of the way.",
+        + "from here. If a conversation makes sense, one of you can share a "
+        + "calendar link or a couple of times. I'll get out of the way.",
       why ? `\nP.S. For the curious: ${why}.` : null,
       "",
       "— Yente",
@@ -96,7 +97,9 @@ export async function composeIntroductionWithVoice({ match, manager, emailClient
       "  below). Quote or closely paraphrase each side; never invent facts,",
       "  achievements, or enthusiasm they did not state.",
       "- No scoring language, no 'my review process', no bullet points.",
-      "- Close by stepping out: tell them to reply-all and take it from here.",
+      "- Close by stepping out: tell them to reply-all and take it from here,",
+      "  and that one of them can share a calendar link or a couple of times",
+      "  if they want to meet.",
       "- NEVER include any email address in the body except your own signature,",
       "  and never mention anyone who is not one of these two people.",
       "- A few short paragraphs. Sign as Yente with yente@ccme.network.",
