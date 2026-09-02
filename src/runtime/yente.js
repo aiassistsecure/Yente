@@ -104,6 +104,48 @@ export function triage(text) {
 
 /* --- the runtime -------------------------------------------------------- */
 
+/** Desk field paths, as a person reads them. Order is the order of the letter. */
+const KNOWN_LINES = Object.freeze([
+  ["professional.display_name", "Name"],
+  ["professional.roles", "Role"],
+  ["professional.employers", "Where"],
+  ["professional.capabilities", "Works with"],
+  ["professional.geographies", "Based"],
+  ["professional.industries", "Industries"],
+  ["professional.years_experience", "Experience"],
+  ["professional.education", "Education"],
+  ["professional.credentials", "Credentials"],
+  ["professional.contact", "Contact"],
+  ["intent.seeks", "Looking for"],
+  ["intent.introductionTypes", "Useful introductions"],
+  ["intent.constraints", "Constraints"],
+]);
+
+/**
+ * The desk's own profile facts, deduped and labelled — the PROFILE block
+ * when no graph is wired. Live tape 2026-09-02: the raw dump read
+ * `professional.display_name: Mark Allen Evans` six times. A field path is
+ * a system's name for a thing; a member gets the human one, once.
+ */
+export function describeFacts(facts) {
+  const byField = new Map();
+  for (const fact of facts ?? []) {
+    const field = String(fact?.field ?? "").trim();
+    const value = String(fact?.value ?? "").trim();
+    if (!field || !value) continue;
+    const held = byField.get(field) ?? [];
+    if (!held.some((v) => v.toLowerCase() === value.toLowerCase())) held.push(value);
+    byField.set(field, held);
+  }
+  const labelFor = (field) => KNOWN_LINES.find(([path]) => path === field)?.[1]
+    ?? field.split(".").pop().replace(/[_-]+/g, " ").replace(/^\w/, (c) => c.toUpperCase());
+  const ordered = [
+    ...KNOWN_LINES.map(([path]) => path).filter((path) => byField.has(path)),
+    ...[...byField.keys()].filter((field) => !KNOWN_LINES.some(([path]) => path === field)),
+  ];
+  return ordered.map((field) => `  ${labelFor(field)}: ${byField.get(field).join(" \u00b7 ")}`).join("\n");
+}
+
 /** The three asks — ONE wording, used by intake and the reply-debt sweep. */
 const PROFILE_REQUEST_LETTER = Object.freeze({
   subject: "What best explains your work?",
@@ -359,11 +401,7 @@ export function createRuntime({
     try {
       known = profileCardFor ? profileCardFor(address) : null;
     } catch { known = null; }
-    if (!known) {
-      known = facts
-        .map((fact) => `- ${fact.field}: ${fact.value}`)
-        .join("\n");
-    }
+    if (!known) known = describeFacts(facts);
 
     const prompt = composeBlocks(
       textBlock(BLOCK_TAGS.TASK, [
@@ -375,7 +413,8 @@ export function createRuntime({
         "  know they were read,",
         "- if they are asking WHAT YOU HAVE ON FILE about them, the PROFILE",
         "  block is the complete answer: reproduce it faithfully, line by",
-        "  line, then remind them they can correct any line just by telling",
+        "  line — every label, count and date, nothing added, nothing",
+        "  repeated — then remind them they can correct any line just by telling",
         "  you, and can reply STOP or DELETE ME at any time — their words",
         "  outrank your reading,",
         `- be honest about where things stand (their pipeline state is`,
@@ -835,20 +874,8 @@ export function createRuntime({
    * who can definitely spot it.
    */
   function describeKnown(profile) {
-    const LINES = [
-      ["professional.roles", "Role"],
-      ["professional.employers", "Where"],
-      ["professional.capabilities", "Works with"],
-      ["professional.geographies", "Based"],
-      ["professional.industries", "Industries"],
-      ["professional.years_experience", "Experience"],
-      ["professional.education", "Education"],
-      ["intent.seeks", "Looking for"],
-      ["intent.introductionTypes", "Useful introductions"],
-      ["intent.constraints", "Constraints"],
-    ];
     const out = [];
-    for (const [path, label] of LINES) {
+    for (const [path, label] of KNOWN_LINES) {
       const { spec } = resolveField(path);
       const value = spec ? profile?.[spec.group]?.[spec.key] : null;
       const text = Array.isArray(value) ? value.join(", ") : value;
