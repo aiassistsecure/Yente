@@ -238,7 +238,22 @@ export async function interpretConsent({ client, text, counterpartName }) {
  * rejects the match, the second approval confirms it — and the existing
  * confirmed-introduction drain sends the joint letter on the same pass.
  */
-export async function drainPartyConsent({
+/**
+ * One drain at a time. Two entrants — the manager's confirm hook and the
+ * connect tick — used to overlap inside transport.send()'s await window
+ * and each mail the same letter. The claim below makes that impossible per
+ * letter; this latch makes it impossible per drain, so the two never even
+ * interleave their reads.
+ */
+let drainInFlight = null;
+
+export async function drainPartyConsent(deps) {
+  if (drainInFlight) return drainInFlight;
+  drainInFlight = drainPartyConsentOnce(deps).finally(() => { drainInFlight = null; });
+  return drainInFlight;
+}
+
+async function drainPartyConsentOnce({
   graph, manager, transport, consentClient = null,
   now = () => new Date().toISOString(),
   log = () => {},
@@ -256,9 +271,16 @@ export async function drainPartyConsent({
     for (const side of sides) {
       const address = addressOf(side.subject);
       if (!address) continue;
-      const sentAt = held.previews?.[address]?.sentAt ?? null;
+      const preview = held.previews?.[address] ?? null;
+      const sentAt = preview?.sentAt ?? null;
 
       if (!sentAt) {
+        // Claim FIRST — synchronously, before any await — so a concurrent
+        // entrant finds the slot taken. A claim without a send is released
+        // on failure; a claim that is somehow stranded (process died between
+        // claim and send) is retried by the stranded sweep below.
+        if (preview?.claimedAt) continue; // another pass holds it right now
+        if (!graph.matches.claimPartyPreview(matchId, { address, at: now() })) continue;
         try {
           const message = composePartyPreview({
             match: { ...held, id: matchId }, graph, manager,
@@ -269,6 +291,7 @@ export async function drainPartyConsent({
           summary.previews += 1;
           log("info", "party_preview_sent", { match: matchId, to: address });
         } catch (error) {
+          graph.matches.releasePartyPreview(matchId, { address });
           log("error", "party_preview_failed", {
             match: matchId, to: address, error: String(error?.message ?? error).slice(0, 200),
           });

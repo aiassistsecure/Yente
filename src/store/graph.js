@@ -750,12 +750,45 @@ export class GraphMatchRepository {
     });
   }
 
+  /**
+   * CLAIM the letter before SMTP. Live, 2026-09-02: both parties received
+   * their preview twice, two seconds apart. Not two processes and not NEDB
+   * — one thread, two entrants (the confirm click's hook and the connect
+   * tick) both awaiting transport.send() on the same match with the same
+   * empty previews map, because the "sent" mark used to be written AFTER
+   * the send. This claim is a synchronous read-modify-write: the second
+   * entrant sees the claim and skips. Returns null when already claimed.
+   */
+  claimPartyPreview(matchId, { address, at }) {
+    const held = this.store.get(GRAPH_COLLECTIONS.MATCHES, matchId);
+    if (!held) return null;
+    const key = String(address).toLowerCase();
+    if (held.previews?.[key]) return null;
+    return this.store.put(GRAPH_COLLECTIONS.MATCHES, matchId, {
+      ...held,
+      previews: { ...held.previews, [key]: { claimedAt: at, sentAt: null } },
+      updatedAt: at,
+    });
+  }
+
+  /** The letter did not go out: release the claim so the next pass retries. */
+  releasePartyPreview(matchId, { address }) {
+    const held = this.store.get(GRAPH_COLLECTIONS.MATCHES, matchId);
+    if (!held) return null;
+    const key = String(address).toLowerCase();
+    if (held.previews?.[key]?.sentAt) return held; // sent is sent; never unmark
+    const previews = { ...held.previews };
+    delete previews[key];
+    return this.store.put(GRAPH_COLLECTIONS.MATCHES, matchId, { ...held, previews });
+  }
+
   markPartyPreviewSent(matchId, { address, at }) {
     const held = this.store.get(GRAPH_COLLECTIONS.MATCHES, matchId);
     if (!held) return null;
+    const key = String(address).toLowerCase();
     return this.store.put(GRAPH_COLLECTIONS.MATCHES, matchId, {
       ...held,
-      previews: { ...held.previews, [String(address).toLowerCase()]: { sentAt: at } },
+      previews: { ...held.previews, [key]: { ...(held.previews?.[key] ?? {}), sentAt: at } },
       updatedAt: at,
     });
   }
@@ -866,6 +899,26 @@ export class GraphMatchRepository {
       introductionLastErrorAt: at,
       updatedAt: at,
     });
+  }
+
+  /**
+   * A claim with no send behind it is a crash artifact: the process died
+   * between claimPartyPreview and transport.send. Released at boot so the
+   * first drain retries the letter. Sent slots are never touched.
+   */
+  releaseStrandedPartyPreviews() {
+    let released = 0;
+    for (const held of this.byState(MATCH_STATES.AWAITING_PARTIES)) {
+      const previews = { ...held.previews };
+      let changed = false;
+      for (const [address, slot] of Object.entries(previews)) {
+        if (slot?.claimedAt && !slot?.sentAt) { delete previews[address]; changed = true; released += 1; }
+      }
+      if (changed) {
+        this.store.put(GRAPH_COLLECTIONS.MATCHES, held.id ?? held._id, { ...held, previews });
+      }
+    }
+    return released;
   }
 
   requeueStrandedIntroductions(at) {
