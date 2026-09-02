@@ -231,6 +231,15 @@ export function extractArtifact(raw) {
   // the newline the grammar wants around each. Content inside is untouched,
   // so every validator downstream still judges the model's actual words.
   let text = stripFenceLines(String(raw ?? ""))
+    // HALF-TOKENS, live-traced 2026-09-02 18:19 ("she wrote: ‹‹‹META\n{…}"):
+    // the 8B opens a block with a bare `<<<META` at line start and never
+    // closes the opener with `>>>` — and closes content with a bare `<<<END`.
+    // A tag name after `<<<` alone on a line is an opener in every way that
+    // matters; give it its `>>>`. Line-anchored, so a `<<<` inside content
+    // is never touched.
+    .replace(/^[ \t]*<<<[ \t]*end[ \t]*$/gim, "<<<END>>>")
+    .replace(/^[ \t]*<<<[ \t]*([A-Za-z][A-Za-z0-9_]*)((?:[ \t]+[^>\r\n]*)?)[ \t]*$/gm,
+      (whole, tag, arg) => `<<<${tag.toUpperCase()}${arg.replace(/[ \t]+$/, "")}>>>`)
     .replace(/<<<\s*end\s*>>>/gi, "<<<END>>>")
     .replace(/<<<\s*([A-Za-z][A-Za-z0-9_]*)((?:[ \t]+[^>\r\n]*)?)\s*>>>/g,
       (whole, tag, arg) => tag.toUpperCase() === "END" ? "<<<END>>>" : `<<<${tag.toUpperCase()}${arg}>>>`)
@@ -238,6 +247,28 @@ export function extractArtifact(raw) {
     .replace(/(<<<(?!END>>>)[A-Z][A-Z0-9_]*(?:[ \t]+[^>\r\n]*)?>>>)[ \t]*(?=\S)(?!\r?\n)/g, "$1\n")
     // a closer glued to the end of its content
     .replace(/(\S)[ \t]*<<<END>>>/g, "$1\n<<<END>>>");
+  // OPENER-DELIMITED BLOCKS: `<<<META>>> … <<<SUBJECT>>> … <<<EMAIL_TEXT>>> …`
+  // with no END anywhere — the model used the next opener as the closer.
+  // Insert the END the grammar needs before each opener that follows an
+  // unclosed one, and at the tail. Only frames move; content is untouched.
+  {
+    const opener = /^<<<(?!END>>>)[A-Z][A-Z0-9_]*(?:[ \t]+[^>\r\n]*)?>>>[ \t]*$/;
+    const closer = /^<<<END>>>[ \t]*$/;
+    const lines = text.split(/\r?\n/);
+    const out = [];
+    let open = false;
+    for (const line of lines) {
+      if (opener.test(line)) {
+        if (open) out.push("<<<END>>>");
+        open = true;
+      } else if (closer.test(line)) {
+        open = false;
+      }
+      out.push(line);
+    }
+    if (open) out.push("<<<END>>>");
+    text = out.join("\n");
+  }
   const first = text.indexOf("<<<");
   const last = text.lastIndexOf("<<<END>>>");
   if (first === -1 || last === -1 || last < first) return text;

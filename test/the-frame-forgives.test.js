@@ -80,3 +80,22 @@ test("boot clears a stored backoff: a confirmed introduction is due immediately"
   assert.equal(graph.matches.confirmedReady(BOOT).length, 1, "due on the first pass after boot");
   assert.equal(graph.matches.get(match.id).introductionAttempts, 2, "history is kept; only the wait is cleared");
 });
+
+test("bare openers and bare END — the half-token shape she actually wrote — are frames", () => {
+  // Live sample, 18:19: "‹‹‹META\n{...}" — the opener never closed with >>>.
+  const bareEnd = `<<<META\n${META}\n<<<END\n<<<SUBJECT\nMeet Mark\n<<<END\n<<<EMAIL_TEXT\nHello both.\n<<<END`;
+  const noEnd = `<<<META\n${META}\n<<<SUBJECT\nMeet Mark\n<<<EMAIL_TEXT\nHello both.`;
+  const mixed = `<<<META\n${META}\n<<<END>>>\n<<<SUBJECT\nMeet Mark\n<<<END>>>\n<<<EMAIL_TEXT\nHello both.\n<<<END>>>`;
+  for (const [name, raw] of [["bareEnd", bareEnd], ["noEnd", noEnd], ["mixed", mixed]]) {
+    const email = parseEmailArtifact(extractArtifact(raw));
+    assert.equal(email.subject, "Meet Mark", `${name}: read as frames`);
+    assert.equal(email.text, "Hello both.", `${name}: content intact`);
+    assert.equal(email.meta.template, "joint_introduction");
+  }
+});
+
+test("a <<< inside content is never mistaken for a frame", () => {
+  const raw = `<<<META>>>\n${META}\n<<<END>>>\n<<<SUBJECT>>>\nshift <<< left\n<<<END>>>\n<<<EMAIL_TEXT>>>\nHello both.\n<<<END>>>`;
+  const email = parseEmailArtifact(extractArtifact(raw));
+  assert.equal(email.subject, "shift <<< left", "mid-line delimiters are content");
+});
