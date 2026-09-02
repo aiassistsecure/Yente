@@ -377,6 +377,8 @@ log("info", "intelligence", {
 const partyApproval = String(process.env.YENTE_PARTY_APPROVAL ?? "1") === "1";
 const manager = createGraphManager({ graph, partyApproval });
 const strandedIntroductions = graph.matches.requeueStrandedIntroductions(new Date().toISOString());
+const strandedPreviews = graph.matches.releaseStrandedPartyPreviews();
+if (strandedPreviews > 0) log("warn", "stranded_previews_released", { count: strandedPreviews });
 if (strandedIntroductions > 0) {
   log("warn", "introductions_requeued", { count: strandedIntroductions });
 }
