@@ -82,7 +82,8 @@ import { subjectForAddress } from "../src/graph/identity.js";
 import { createMailFromEnv, mailConfigFromEnv } from "../src/mail/from-env.js";
 import { createGraphManager } from "../src/graph/manager.js";
 import { drainConfirmedIntroductions } from "../src/graph/introductions.js";
-import { drainPartyConsent, profileCard, renderCard } from "../src/graph/consent.js";
+import { drainPartyConsent } from "../src/graph/consent.js";
+import { renderFile } from "../src/graph/file.js";
 import {
   createIntelligenceProvider,
   resolveIntelligenceConfig,
@@ -246,9 +247,10 @@ if (deskStore) {
       // voice so every reply is grounded in their complete record.
       profileCardFor: (address) => {
         try {
-          const card = profileCard(graph, subjectForAddress(address));
-          const rendered = renderCard(card);
-          return rendered || null;
+          // The member's own file: deduped card, stats, proposals, match
+          // counts — resolved through identity, so a folded alias still
+          // finds its record.
+          return renderFile(graph, subjectForAddress(address)) || null;
         } catch {
           return null;
         }

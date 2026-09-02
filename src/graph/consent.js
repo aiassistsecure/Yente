@@ -31,7 +31,7 @@
 import { createHash } from "node:crypto";
 
 import { MATCH_STATES } from "../store/graph.js";
-import { resolveObservations } from "./identity.js";
+import { buildIdentityIndex, resolveObservations } from "./identity.js";
 import { BLOCK_TAGS, composeBlocks, extractArtifact, textBlock, parseJsonBlock, namedTextBlock } from "../protocol/blocks.js";
 import { YENTE_SYSTEM_IDENTITY } from "../llm/identity.js";
 
@@ -63,32 +63,61 @@ export function addressOf(subject) {
  * travels). Email addresses are never card lines.
  */
 export function profileCard(graph, subjectId) {
-  const rows = resolveObservations(graph.observations.all())
-    .filter((row) => !row?.attributes?.retracted && row.subject === subjectId);
+  const all = graph.observations.all();
+  // Resolved rows wear their CANONICAL subject. A member whose addresses were
+  // folded together (same_as) owns a card under the canonical id only — asking
+  // for it under the raw `person:<address>` id returned an EMPTY card on the
+  // live desk (2026-09-02), and the voice fell back to undeduped desk facts.
+  const canonical = buildIdentityIndex(all).canonical(subjectId);
+  const rows = resolveObservations(all)
+    .filter((row) => !row?.attributes?.retracted && row.subject === canonical);
 
-  const card = { name: null, fields: new Map(), intents: [], proposals: [] };
+  const card = {
+    subject: canonical, name: null, names: [], fields: new Map(), intents: [], proposals: [],
+    claims: rows.length, evidenceIds: [], firstSeen: null, lastSeen: null,
+  };
+  const evidence = new Set();
   let nameSeenAt = "";
   for (const row of rows) {
+    if (row.evidenceId) evidence.add(row.evidenceId);
+    const at = String(row.observedAt ?? "");
+    if (at) {
+      if (!card.firstSeen || at < card.firstSeen) card.firstSeen = at;
+      if (!card.lastSeen || at > card.lastSeen) card.lastSeen = at;
+    }
     const predicate = String(row.predicate ?? "");
     const value = String(row.object ?? "").trim();
     if (!value) continue;
     if (predicate === "is_person") {
-      if (String(row.observedAt ?? "") >= nameSeenAt) {
+      if (!card.names.some((v) => v.toLowerCase() === value.toLowerCase())) card.names.push(value);
+      if (at >= nameSeenAt) {
         card.name = value;
-        nameSeenAt = String(row.observedAt ?? "");
+        nameSeenAt = at;
       }
     } else if (CARD_FIELDS.some(([field]) => field === predicate)) {
       const held = card.fields.get(predicate) ?? [];
-      if (!held.some((v) => v.toLowerCase() === value.toLowerCase())) held.push(value);
+      const twin = held.findIndex((v) => v.toLowerCase() === value.toLowerCase());
+      if (twin === -1) held.push(value);
+      // Same value, different casing: keep the better-dressed spelling.
+      else if (capitals(value) > capitals(held[twin])) held[twin] = value;
       card.fields.set(predicate, held);
     } else if (predicate.startsWith("intent:")) {
-      card.intents.push(`${predicate.slice("intent:".length)}: ${value}`);
+      pushUnique(card.intents, `${predicate.slice("intent:".length)}: ${value}`);
     } else if (predicate.startsWith("proposal:")) {
       const grade = row.attributes?.grade ? ` (${row.attributes.grade})` : "";
-      card.proposals.push(`${predicate.slice("proposal:".length).replace(/_/g, " ")}: ${value}${grade}`);
+      pushUnique(card.proposals, `${predicate.slice("proposal:".length).replace(/_/g, " ")}: ${value}${grade}`);
     }
   }
+  card.evidenceIds = [...evidence];
   return card;
+}
+
+function capitals(text) {
+  return (String(text).match(/[A-Z]/g) ?? []).length;
+}
+
+function pushUnique(list, line) {
+  if (!list.some((held) => held.toLowerCase() === line.toLowerCase())) list.push(line);
 }
 
 export function renderCard(card) {
