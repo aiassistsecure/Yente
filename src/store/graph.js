@@ -921,9 +921,21 @@ export class GraphMatchRepository {
     return released;
   }
 
+  /**
+   * Boot is OPTIMISTIC — Mark, 2026-09-02: "lets ensure the model retries
+   * optimistically on reboot right." Two kinds of leftover:
+   *   - INTRODUCTION_SENDING with no process behind it: the crash artifact.
+   *     Back to CONFIRMED, due now.
+   *   - CONFIRMED with a stored backoff deadline in the future: the voice
+   *     failed a few times before the process died, and the exponential
+   *     wait was stamped on the row. A fresh process is a fresh chance —
+   *     the backoff exists to stop a LIVE loop hammering a broken model,
+   *     not to make the operator's restart wait out yesterday's curve. Due
+   *     now; the attempt count stays (it is history), the wait does not.
+   */
   requeueStrandedIntroductions(at) {
-    const stranded = this.byState(MATCH_STATES.INTRODUCTION_SENDING);
-    for (const match of stranded) {
+    let count = 0;
+    for (const match of this.byState(MATCH_STATES.INTRODUCTION_SENDING)) {
       const id = match.id ?? match._id;
       this.store.put(GRAPH_COLLECTIONS.MATCHES, id, {
         ...match,
@@ -932,8 +944,19 @@ export class GraphMatchRepository {
         introductionLastError: "requeued after restart",
         updatedAt: at,
       });
+      count += 1;
     }
-    return stranded.length;
+    for (const match of this.byState(MATCH_STATES.CONFIRMED)) {
+      if (!match.introductionAvailableAt || String(match.introductionAvailableAt) <= String(at)) continue;
+      const id = match.id ?? match._id;
+      this.store.put(GRAPH_COLLECTIONS.MATCHES, id, {
+        ...match,
+        introductionAvailableAt: at,
+        updatedAt: at,
+      });
+      count += 1;
+    }
+    return count;
   }
 
   get(matchId) {
