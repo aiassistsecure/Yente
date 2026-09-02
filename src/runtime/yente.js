@@ -424,6 +424,7 @@ export function createRuntime({
         to: address,
         codes: generated.failures.map((f) => f.code).join(","),
         first: String(generated.failures[0]?.message ?? "").slice(0, 160),
+        wrote: String(generated.failures.find((f) => f.sample)?.sample ?? "").slice(0, 160) || undefined,
         note: "no letter sent; the reply stays owed and retries next tick",
       });
       return false;

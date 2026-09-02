@@ -147,7 +147,14 @@ export async function generateEmail({ client, prompt, expect, fallback, system, 
       return { source: "model", artifact, email, attempts: attempt, failures };
     } catch (error) {
       if (!(error instanceof ProtocolError)) throw error;
-      failures.push({ attempt, code: error.code, message: error.message });
+      // WHAT THE MODEL ACTUALLY SENT. "MALFORMED_ARTIFACT,MALFORMED_ARTIFACT"
+      // in a tape is a code without a body; the body is the evidence.
+      // Sentinel delimiters are neutralized so a sample can never be
+      // mistaken for, or pasted back as, a frame.
+      failures.push({
+        attempt, code: error.code, message: error.message,
+        sample: String(completion.text ?? "").replace(/<<<|>>>/g, "‹‹‹").slice(0, 400),
+      });
       if (attempt === 2) break;
       currentPrompt = withValidationFeedback(prompt, error);
     }

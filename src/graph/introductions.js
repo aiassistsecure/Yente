@@ -139,9 +139,11 @@ export async function composeIntroductionWithVoice({ match, manager, emailClient
   // failIntroduction's exponential-backoff lane and the voice tries again.
   // The deterministic template above serves only a desk with NO voice seat.
   if (!generated.email) {
+    const first = generated.failures.find((f) => f.sample)?.sample;
     throw Object.assign(
       new Error(`the voice could not compose this introduction: ${
-        generated.failures.map((f) => f.code).join(",") || "no output"}`),
+        generated.failures.map((f) => f.code).join(",") || "no output"}${
+        first ? ` — she wrote: ${first.slice(0, 160)}` : ""}`),
       { code: "VOICE_UNAVAILABLE", failures: generated.failures },
     );
   }

@@ -221,7 +221,23 @@ export function stripFenceLines(artifact) {
  * everything INSIDE. Reading edges only — composed artifacts stay strict.
  */
 export function extractArtifact(raw) {
-  const text = stripFenceLines(String(raw ?? ""));
+  // FRAME FORGIVENESS, live-traced 2026-09-02: the voice model's introduction
+  // failed MALFORMED_ARTIFACT twice — "No canonical Sentinel Blocks found" —
+  // for a letter whose every block was present. The 8B wrote `...text<<<END>>>`
+  // with no newline before the closer, and `<<<end>>>` in lowercase. The
+  // frame regex needs `\n` on both sides of the content and an uppercase
+  // END; neither is information, both are reflexes. Normalize the FRAMES
+  // (never the content): uppercase the closer and known-shaped openers, put
+  // the newline the grammar wants around each. Content inside is untouched,
+  // so every validator downstream still judges the model's actual words.
+  let text = stripFenceLines(String(raw ?? ""))
+    .replace(/<<<\s*end\s*>>>/gi, "<<<END>>>")
+    .replace(/<<<\s*([A-Za-z][A-Za-z0-9_]*)((?:[ \t]+[^>\r\n]*)?)\s*>>>/g,
+      (whole, tag, arg) => tag.toUpperCase() === "END" ? "<<<END>>>" : `<<<${tag.toUpperCase()}${arg}>>>`)
+    // an opener followed by content on the same line
+    .replace(/(<<<(?!END>>>)[A-Z][A-Z0-9_]*(?:[ \t]+[^>\r\n]*)?>>>)[ \t]*(?=\S)(?!\r?\n)/g, "$1\n")
+    // a closer glued to the end of its content
+    .replace(/(\S)[ \t]*<<<END>>>/g, "$1\n<<<END>>>");
   const first = text.indexOf("<<<");
   const last = text.lastIndexOf("<<<END>>>");
   if (first === -1 || last === -1 || last < first) return text;
