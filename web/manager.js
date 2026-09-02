@@ -606,7 +606,9 @@ export function renderManager({ manager, health = {}, mailSilenceMinutes = null 
     <span><b>${summary.jobs.READY ?? 0}</b> queued</span>
     <span><b>${summary.matches.proposed}</b> to review</span>
     ${awaiting.length > 0 ? `<span><b>${awaiting.length}</b> awaiting yes</span>` : ""}
-    <span><b>${summary.matches.confirmed}</b> introduced</span>
+    ${summary.matches.confirmed + summary.matches.sending > 0
+      ? `<span><b>${summary.matches.confirmed + summary.matches.sending}</b> sending</span>` : ""}
+    <span><b>${summary.matches.introduced}</b> introduced</span>
     <span><a href="/stats">stats</a></span>
   </div>
 </header>
@@ -847,7 +849,7 @@ export function renderStats({ stats }) {
     <span><b>${stats.subjects}</b> people</span>
     <span><b>${stats.claims.total}</b> live claims</span>
     <span><b>${stats.proposals.total}</b> proposals</span>
-    <span><b>${stats.matches.confirmed}</b> introduced</span>
+    <span><b>${stats.matches.introduced}</b> introduced</span>
     <span><a href="/search">search</a></span>
   </div>
 </header>
